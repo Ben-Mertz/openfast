@@ -487,6 +487,8 @@ CONTAINS
                      read (OptValue,*) p%inertialF
                   else if ( OptString == 'INERTIALF_RAMPT') then
                      read (OptValue,*) p%inertialF_rampT
+                  else if ( OptString == 'WAVEKIN_RAMPT') then 
+                     read (OptValue,*) p%waveKin_rampT
                   else if ( OptString == 'OUTSWITCH') then
                      read (OptValue,*) p%OutSwitch
                   else if ( OptString == 'DISABLEOUTTIME') then

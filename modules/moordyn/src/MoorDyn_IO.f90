@@ -1668,8 +1668,8 @@ CONTAINS
            ! calculate number of output entries to write for this line
            !LineNumOuts = 3*(m%LineList(I)%N + 1)*SUM(m%LineList(I)%OutFlagList(2:5)) + m%LineList(I)%N*SUM(m%LineList(I)%OutFlagList(6:9))
            
-           LineNumOuts = 3*(m%LineList(I)%N + 1)*SUM(m%LineList(I)%OutFlagList(2:6)) &
-                         + (m%LineList(I)%N + 1)*SUM(m%LineList(I)%OutFlagList(7:9)) &
+           LineNumOuts = 3*(m%LineList(I)%N + 1)*SUM(m%LineList(I)%OutFlagList(2:7)) & 
+                         + (m%LineList(I)%N + 1)*SUM(m%LineList(I)%OutFlagList(8:9)) &
                                + m%LineList(I)%N*SUM(m%LineList(I)%OutFlagList(10:18))
            
            if (m%LineList(I)%OutFlagList(2) == 1) THEN   ! if node positions are included, make them using a float format for higher precision

@@ -1033,6 +1033,14 @@ CONTAINS
          call SetErrStat(ErrID_Fatal, "Invalid value of p%WaterKin", ErrStat, ErrMsg, RoutineName)
       end select
 
+      ! Apply ramp time
+      IF (t < p%waveKin_rampT) THEN 
+         U = U * t / p%waveKin_rampT
+         Ud = Ud * t / p%waveKin_rampT
+         zeta = zeta * t / p%waveKin_rampT
+         PDyn = PDyn * t / p%waveKin_rampT
+      END IF
+
    END SUBROUTINE getWaterKin
 
    ! ----- process WaterKin input value, potentially reading wave inputs and generating wave field -----
