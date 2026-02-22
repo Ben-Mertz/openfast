@@ -631,7 +631,7 @@ CONTAINS
         ! error
         ELSE
           CALL DenoteInvalidOutput(p%OutParam(I)) ! flag as invalid
-          CALL WrScr('Warning: invalid output specifier '//trim(OutListTmp)//'.  Must start with L, R, or B')
+          CALL WrScr('Warning: invalid output specifier '//trim(OutListTmp)//'.')
           CYCLE
         END IF
 
