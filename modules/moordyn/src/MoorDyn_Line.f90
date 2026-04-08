@@ -184,11 +184,21 @@ CONTAINS
          Line%dl_1 = 0.0_DbKi
       end if
 
+      ! allocate node accelerations if needed for VIV or output
+      if (Line%store_rdd) then
+         ALLOCATE ( Line%rdd_old(3,0:N), STAT = ErrStat )
+         IF ( ErrStat /= ErrID_None ) THEN
+            ErrMsg  = ' Error allocating rdd_old array.'
+            !CALL CleanUp()
+            RETURN
+         END IF
+         Line%rdd_old = 0.0_DbKi
+      end if
+
       ! if using VIV model, allocate additional state quantities.
       if (Line%Cl > 0) then
          if (wordy > 1) print *, "Using the VIV model"
-         ! allocate old acclerations [for VIV] 
-         ALLOCATE ( Line%phi(0:N), Line%rdd_old(3,0:N), Line%yd_rms_old(0:N), Line%ydd_rms_old(0:N), STAT = ErrStat )
+         ALLOCATE ( Line%phi(0:N), Line%yd_rms_old(0:N), Line%ydd_rms_old(0:N), STAT = ErrStat )
          IF ( ErrStat /= ErrID_None ) THEN
             ErrMsg  = ' Error allocating VIV arrays.'
             !CALL CleanUp()
@@ -196,7 +206,6 @@ CONTAINS
          END IF
 
          ! initialize other things to 0
-         Line%rdd_old = 0.0_DbKi
          Line%yd_rms_old = 0.0_DbKi
          Line%yd_rms_old = 0.0_DbKi
       end if
@@ -1730,17 +1739,17 @@ CONTAINS
          DO J=1,3
 
             ! calculate RHS constant (premultiplying force vector by inverse of mass matrix  ... i.e. rhs = S*Forces)
-            Sum1 = 0.0_DbKi                               ! reset temporary accumulator <<< could turn this into a Line%a array to save and output node accelerations
+            Sum1 = 0.0_DbKi                               ! reset temporary accumulator
             DO K = 1, 3
               Sum1 = Sum1 + Line%S(K,J,I) * Line%Fnet(K,I)   ! matrix-vector multiplication [S i]{Forces i}  << double check indices
             END DO ! K
-            
+
             ! update states
             Xd(3*N-3 + 3*I-3 + J) = Line%rd(J,I);       ! dxdt = V  (velocities)
             Xd(        3*I-3 + J) = Sum1                ! dVdt = RHS * A  (accelerations)
-            
-            IF (Line%Cl > 0) THEN 
-               Line%rdd_old(J,I) = Sum1 ! saving the acceleration for VIV RMS calculation. End nodes are left at zero, VIV disabled for end nodes
+
+            IF (Line%store_rdd) THEN
+               Line%rdd_old(J,I) = Sum1 ! store node acceleration for VIV and/or output. End nodes are left at zero (VIV is disabled for end nodes).
             ENDIF
 
          END DO ! J

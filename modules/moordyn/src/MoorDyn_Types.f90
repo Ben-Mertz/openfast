@@ -326,6 +326,7 @@ IMPLICIT NONE
     REAL(DbKi) , DIMENSION(:), ALLOCATABLE  :: yd_rms_old      !< node old cf vel rms [m/s]
     REAL(DbKi) , DIMENSION(:), ALLOCATABLE  :: ydd_rms_old      !< node old cf accel rms [m/s^2]
     REAL(DbKi) , DIMENSION(:,:), ALLOCATABLE  :: rdd_old      !< node accelerations previous iteration [m/s^2]
+    LOGICAL  :: store_rdd = .FALSE.      !< flag to store node accelerations (for VIV or output) [-]
   END TYPE MD_Line
 ! =======================
 ! =========  MD_ExtLd  =======
@@ -2212,6 +2213,7 @@ subroutine MD_CopyLine(SrcLineData, DstLineData, CtrlCode, ErrStat, ErrMsg)
       end if
       DstLineData%rdd_old = SrcLineData%rdd_old
    end if
+   DstLineData%store_rdd = SrcLineData%store_rdd
 end subroutine
 
 subroutine MD_DestroyLine(LineData, ErrStat, ErrMsg)
@@ -2407,6 +2409,7 @@ subroutine MD_PackLine(RF, Indata)
    call RegPackAlloc(RF, InData%yd_rms_old)
    call RegPackAlloc(RF, InData%ydd_rms_old)
    call RegPackAlloc(RF, InData%rdd_old)
+   call RegPack(RF, InData%store_rdd)
    if (RegCheckErr(RF, RoutineName)) return
 end subroutine
 
@@ -2495,6 +2498,7 @@ subroutine MD_UnPackLine(RF, OutData)
    call RegUnpackAlloc(RF, OutData%yd_rms_old); if (RegCheckErr(RF, RoutineName)) return
    call RegUnpackAlloc(RF, OutData%ydd_rms_old); if (RegCheckErr(RF, RoutineName)) return
    call RegUnpackAlloc(RF, OutData%rdd_old); if (RegCheckErr(RF, RoutineName)) return
+   call RegUnpack(RF, OutData%store_rdd); if (RegCheckErr(RF, RoutineName)) return
 end subroutine
 
 subroutine MD_CopyExtLd(SrcExtLdData, DstExtLdData, CtrlCode, ErrStat, ErrMsg)

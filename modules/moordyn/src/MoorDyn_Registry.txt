@@ -306,6 +306,7 @@ typedef  ^            ^                DbKi               t_old         -       
 typedef  ^            ^                DbKi               yd_rms_old   {:}       -  -   "node old cf vel rms"  "m/s"
 typedef  ^            ^                DbKi               ydd_rms_old  {:}       -  -   "node old cf accel rms"  "m/s^2"
 typedef  ^            ^                DbKi               rdd_old      {:}{:}    -  -   "node accelerations previous iteration"  "m/s^2"
+typedef  ^            ^                Logical            store_rdd     -     .FALSE.  -   "flag to store node accelerations (for VIV or output)"  -
 
 
 # this is the ExtLd type, which holds data for each external load specification

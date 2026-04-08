@@ -1637,24 +1637,28 @@ CONTAINS
                   ! process output flag characters (LineOutString) and set line output flag array (OutFlagList)
                   m%LineList(l)%OutFlagList = 0  ! first set array all to zero
                   ! per node 3 component
-                  IF ( scan( LineOutString, 'p') > 0 )  m%LineList(l)%OutFlagList(2) = 1  ! node position (p)
-                  IF ( scan( LineOutString, 'v') > 0 )  m%LineList(l)%OutFlagList(3) = 1  ! node velocity (v)
-                  IF ( scan( LineOutString, 'U') > 0 )  m%LineList(l)%OutFlagList(4) = 1  ! node displacement (U)
-                  IF ( scan( LineOutString, 'D') > 0 )  m%LineList(l)%OutFlagList(5) = 1  ! node rotation (D)
-                  IF ( scan( LineOutString, 'b') > 0 )  m%LineList(l)%OutFlagList(6) = 1  ! seabed contact forces (B)
-                  IF ( scan( LineOutString, 'V') > 0 )  m%LineList(l)%OutFlagList(7) = 1   ! VIV forces
+                  IF ( scan( LineOutString, 'p') > 0 )  m%LineList(l)%OutFlagList(2)  = 1  ! node position (p)
+                  IF ( scan( LineOutString, 'v') > 0 )  m%LineList(l)%OutFlagList(3)  = 1  ! node velocity (v)
+                  IF ( scan( LineOutString, 'a') > 0 )  m%LineList(l)%OutFlagList(4)  = 1  ! node acceleration (a)
+                  IF ( scan( LineOutString, 'U') > 0 )  m%LineList(l)%OutFlagList(5)  = 1  ! wave velocity (U)
+                  IF ( scan( LineOutString, 'D') > 0 )  m%LineList(l)%OutFlagList(6)  = 1  ! hydrodynamic force (D)
+                  IF ( scan( LineOutString, 'b') > 0 )  m%LineList(l)%OutFlagList(7)  = 1  ! seabed contact forces (b)
+                  IF ( scan( LineOutString, 'V') > 0 )  m%LineList(l)%OutFlagList(8)  = 1  ! VIV forces
                   ! per node 1 component
-                  IF ( scan( LineOutString, 'W') > 0 )  m%LineList(l)%OutFlagList(8) = 1  ! node weight/buoyancy (positive up)
-                  IF ( scan( LineOutString, 'K') > 0 )  m%LineList(l)%OutFlagList(9) = 1  ! curvature at node
+                  IF ( scan( LineOutString, 'W') > 0 )  m%LineList(l)%OutFlagList(9)  = 1  ! node weight/buoyancy (positive up)
+                  IF ( scan( LineOutString, 'K') > 0 )  m%LineList(l)%OutFlagList(10) = 1  ! curvature at node
                   ! per element 1 component
-                  IF ( scan( LineOutString, 't') > 0 )  m%LineList(l)%OutFlagList(10) = 1  ! segment tension force (just EA)
-                  IF ( scan( LineOutString, 'c') > 0 )  m%LineList(l)%OutFlagList(11) = 1  ! segment internal damping force
-                  IF ( scan( LineOutString, 's') > 0 )  m%LineList(l)%OutFlagList(12) = 1  ! Segment strain
-                  IF ( scan( LineOutString, 'd') > 0 )  m%LineList(l)%OutFlagList(13) = 1  ! Segment strain rate
-                  IF ( scan( LineOutString, 'l') > 0 )  m%LineList(l)%OutFlagList(14) = 1  ! Segment stretched length
+                  IF ( scan( LineOutString, 't') > 0 )  m%LineList(l)%OutFlagList(11) = 1  ! segment tension force (just EA)
+                  IF ( scan( LineOutString, 'c') > 0 )  m%LineList(l)%OutFlagList(12) = 1  ! segment internal damping force
+                  IF ( scan( LineOutString, 's') > 0 )  m%LineList(l)%OutFlagList(13) = 1  ! Segment strain
+                  IF ( scan( LineOutString, 'd') > 0 )  m%LineList(l)%OutFlagList(14) = 1  ! Segment strain rate
+                  IF ( scan( LineOutString, 'l') > 0 )  m%LineList(l)%OutFlagList(15) = 1  ! Segment stretched length
 
                   IF (SUM(m%LineList(l)%OutFlagList) > 0)   m%LineList(l)%OutFlagList(1) = 1  ! this first entry signals whether to create any output file at all
                   ! the above letter-index combinations define which OutFlagList entry corresponds to which output type
+
+                  ! set flag to store node accelerations if needed for VIV or acceleration output
+                  m%LineList(l)%store_rdd = (m%LineTypeList(m%LineList(l)%PropsIdNum)%Cl > 0) .OR. (m%LineList(l)%OutFlagList(4) == 1)
 
 
                   if (p%writeLog > 1) then
