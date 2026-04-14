@@ -503,6 +503,16 @@ CONTAINS
                   Line = NextLine(i)
 
                END DO
+
+               ! extract dtCoupling from input and warn if dtOut is invalid
+               p%dtCoupling = DTcoupling  ! store coupling time step for use in updatestates
+               print*, "Coupling time step read in as: ", p%dtCoupling
+               print*, "Output time step read in as: ", p%dtOut
+               IF (p%dtOut > 0.0_DbKi .and. p%dtOut < DTcoupling) THEN
+                  ErrStat2 = ErrID_Info
+                  ErrMsg2 = 'MoorDyn dtOut is less than the coupling time step. Output will be written at the coupling time step.'
+                  CALL CheckError( ErrStat2, ErrMsg2 )
+               END IF
                
                if (p%writeLog > 1) then
                   write(p%UnLog, '(A)'        ) "  - Options List:"
@@ -2936,9 +2946,6 @@ CONTAINS
          END DO
 
       end if ! InputFileDat%TMaxIC > 0
-      
-
-      p%dtCoupling = DTcoupling  ! store coupling time step for use in updatestates
 
       other%dummy = 0
       xd%dummy    = 0

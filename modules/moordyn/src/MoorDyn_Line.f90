@@ -1229,11 +1229,20 @@ CONTAINS
          CALL UnitVector(Line%r(:,N-1), Line%r(:,N), Line%q(:,N), dummyLength)
       end if
       
-      ! apply wave kinematics (if there are any) 
-      DO i=0,N
-         CALL getWaterKin(p, m, Line%r(1,i), Line%r(2,i), Line%r(3,i), Line%time, Line%U(:,i), Line%Ud(:,i), Line%zeta(i), Line%PDyn(i), ErrStat2, ErrMsg2)
-         CALL SetErrStat(ErrStat2,ErrMsg2,ErrStat,ErrMsg,RoutineName)
-      END DO
+      ! apply wave kinematics (if there are any)
+      ! For SeaState (WaterKin==3), skip during IC_gen (otherwise will never find steady state because of waves)
+      ! and skip if inside a coupling timestep (because external kinematics do not change between coupling steps)
+      if (p%WaterKin == 3 .and. (m%IC_gen .or. &
+         (abs(MOD(Line%time - 0.5*p%dtCoupling, p%dtCoupling) - 0.5*p%dtCoupling) >= 0.5*p%dtM0) .and. Line%time > 0.0_DbKi)) then
+         ! retain existing kinematics values
+         ! This does introduce some error, as the interpolation location does not track the motion exactly. But the change between 
+         ! coupling steps should be small enough that the error is negligible. 
+      else
+         DO i=0,N
+            CALL getWaterKin(p, m, Line%r(1,i), Line%r(2,i), Line%r(3,i), Line%time, Line%U(:,i), Line%Ud(:,i), Line%zeta(i), Line%PDyn(i), ErrStat2, ErrMsg2)
+            CALL SetErrStat(ErrStat2,ErrMsg2,ErrStat,ErrMsg,RoutineName)
+         END DO
+      end if
       
       ! --------- calculate line partial submergence (Line::calcSubSeg from MD-C) ---------
       DO i=1,N

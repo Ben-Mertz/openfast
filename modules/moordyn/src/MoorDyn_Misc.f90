@@ -944,7 +944,7 @@ CONTAINS
 
       ! local 
       CHARACTER(120)             :: RoutineName = 'getWaterKin'   
-   
+
       ErrStat = ErrID_None
       ErrMsg  = ""
 
@@ -1009,9 +1009,6 @@ CONTAINS
 
       ! SeaState wave kinematics
       case (3)
-
-         ! disable wavekin 3 during IC_gen, otherwise will never find steady state (because of waves)
-         if (m%IC_gen) return
 
          ! SeaState throws warning when queried location is out of bounds from the SeaState grid, so no need to handle here
 
