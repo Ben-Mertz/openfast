@@ -170,7 +170,7 @@ SUBROUTINE WaveField_GetNodeWaveKin( WaveField, WaveField_m, Time, pos, forceNod
 
    ! Check if point is below the seabed
    if (pos(3)<-WaveField%EffWtrDpth) then
-      nodeInWater = 0_IntKi
+      nodeInWater = 1_IntKi  ! Prevent problems with HydroDyn logic
       FV(:)       = 0.0_SiKi
       FA(:)       = 0.0_SiKi
       FDynP       = 0.0_SiKi
@@ -327,7 +327,7 @@ SUBROUTINE WaveField_GetDynP( WaveField, WaveField_m, Time, pos, forceNodeInWate
 
    ! Check if point is below the seabed
    if (pos(3)<-WaveField%EffWtrDpth) then
-      nodeInWater = 0_IntKi
+      nodeInWater = 1_IntKi  ! Prevent problems with HydroDyn logic
       FDynP       = 0.0_SiKi
       return
    end if
@@ -426,7 +426,7 @@ SUBROUTINE WaveField_GetNodeWaveVel( WaveField, WaveField_m, Time, pos, forceNod
 
    ! Check if point is below the seabed
    if (pos(3)<-WaveField%EffWtrDpth) then
-      nodeInWater = 0_IntKi
+      nodeInWater = 1_IntKi  ! Prevent problems with HydroDyn logic
       FV(:)       = 0.0_SiKi
       return
    end if
@@ -547,7 +547,7 @@ SUBROUTINE WaveField_GetNodeWaveVelAcc( WaveField, WaveField_m, Time, pos, force
 
    ! Check if point is below the seabed
    if (pos(3)<-WaveField%EffWtrDpth) then
-      nodeInWater = 0_IntKi
+      nodeInWater = 1_IntKi  ! Prevent problems with HydroDyn logic
       FV(:)       = 0.0_SiKi
       FA(:)       = 0.0_SiKi
       return
