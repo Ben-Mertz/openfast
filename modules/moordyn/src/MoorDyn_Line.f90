@@ -257,7 +257,7 @@ CONTAINS
 
       ! allocate Syrope state variables if Syrope model is being used
       if (Line%ElasticMod == 4) then
-         ALLOCATE ( Line%Tmax(N), Line%Tmean(N) )
+         ALLOCATE ( Line%Tmax(N), Line%Tmean(N), STAT = ErrStat )
          IF ( ErrStat /= ErrID_None ) THEN
             ErrMsg  = ' Error allocating Syrope arrays, Tmax and Tmean.'
             !CALL CleanUp()
@@ -442,7 +442,7 @@ CONTAINS
       ! If using the viscoelastic model (not Syrope), initalize the deltaL_1 to the delta L of the segment. 
       ! This is required here to initalize the state as non-zero, which avoids an initial 
       ! transient where the segment goes from unstretched to stretched in one time step.
-      IF (Line%ElasticMod > 1 .and. Line%ElasticMod <= 4) THEN
+      IF (Line%ElasticMod > 1 .and. Line%ElasticMod < 4) THEN
          DO I = 1, N
             ! calculate current (Stretched) segment lengths and unit tangent vectors (qs) for each segment (this is used for bending calculations)
             CALL UnitVector(Line%r(:,I-1), Line%r(:,I), Line%qs(:,I), Line%lstr(I))
