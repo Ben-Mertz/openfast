@@ -118,7 +118,7 @@ be performed in a different order than if both angles are specified in the same 
 .. _inflow_superposition:
 
 Superposition/Coupling of Wave and Current Inflow
-========================================
+=================================================
 For MHK turbines, wave and current velocities and accelerations are superimposed (i.e., summed) or coupled (see :ref:`sea-waves`) such that all submerged components are exposed
 to the same inflow field. Both AeroDyn and HydroDyn can query SeaState for wave field information. SeaState then queries InflowWind for the current
 field, sums or couples the velocities and accelerations, and returns the flow field information. This has several implications for modeling
