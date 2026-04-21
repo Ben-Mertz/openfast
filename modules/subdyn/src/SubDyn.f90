@@ -869,7 +869,7 @@ SUBROUTINE SD_CalcOutput( t, u, p, x, xd, z, OtherState, y, m, ErrStat, ErrMsg )
             ! --- Rigid body displacements for hydrodyn
             y%Y2mesh%Orientation     (:,:,iSDNode)   = Rg2b
             y%Y2mesh%TranslationDisp (:,iSDNode)     = duP(1:3)                       ! Y2: NOTE: only the rigid-body displacements for floating
-            ! --- Full elastic displacements for others (moordyn)
+            ! --- Elastic displacements without SIM for others (Moordyn)
             y%Y3mesh%Orientation     (:,:,iSDNode)   = EulerConstructZYX(m%U_full_NS(DOFList(4:6)))
             y%Y3mesh%TranslationDisp (:,iSDNode)     = m%U_full_NS     (DOFList(1:3)) ! Y3: Guyan+CB (but no SIM) displacements
             ! --- Elastic velocities and accelerations 
@@ -880,7 +880,9 @@ SUBROUTINE SD_CalcOutput( t, u, p, x, xd, z, OtherState, y, m, ErrStat, ErrMsg )
             end associate
          enddo
       else
-         ! --- Fixed bottom - Y3 and Y2 meshes are identical in this case
+         ! --- Fixed bottom
+         ! Y2: Guyan+CB displacements without SIM
+         ! Y3 = Y2 for all nodes (Guyan+CB, no SIM), then overwrite reaction node(s) with SIM correction for SoilDyn
          do iSDNode = 1,p%nNodes
             associate(DOFList => p%NodesDOF(iSDNode)%List)  ! Alias to shorten notations
             ! TODO TODO which orientation to give for joints with more than 6 dofs?
@@ -894,8 +896,18 @@ SUBROUTINE SD_CalcOutput( t, u, p, x, xd, z, OtherState, y, m, ErrStat, ErrMsg )
             y%Y2mesh%RotationAcc     (:,iSDNode)     = m%U_full_dotdot (DOFList(4:6))
             end associate
          enddo
+         ! Y3 = Y2 for all nodes (Guyan+CB, no SIM)
          y%Y3mesh%TranslationDisp = y%Y2mesh%TranslationDisp
          y%Y3mesh%Orientation     = y%Y2mesh%Orientation
+         ! Overwrite reaction node(s) in Y3 mesh with full elastic displacements including SIM (for SoilDyn) 
+         do i = 1, p%nNodes_C
+            iSDNode = p%Nodes_C(i,1)
+            associate(DOFList => p%NodesDOF(iSDNode)%List)  ! Alias to shorten notations
+            CALL SmllRotTrans( 'UR_bar input angles', m%U_full(DOFList(4)), m%U_full(DOFList(5)), m%U_full(DOFList(6)), DCM, '', ErrStat2, ErrMsg2); if(Failed()) return
+            y%Y3mesh%Orientation     (:,:,iSDNode)   = DCM
+            y%Y3mesh%TranslationDisp (:,iSDNode)     = m%U_full        (DOFList(1:3)) ! Y3: Guyan+CB+SIM displacements
+            end associate
+         enddo
       endif
       ! --- Y3 mesh and Y2 mesh both have elastic (Guyan+CB) velocities and accelerations
       y%Y3mesh%TranslationVel = y%Y2mesh%TranslationVel
@@ -4210,10 +4222,10 @@ SUBROUTINE WriteJSONCommon(FileName, Init, p, m, InitInput, FileKind, UnSum, Err
    do i = 1, size(p%ElemProps)
       if (p%ElemProps(i)%eType == idMemberBeamRect) then
          ! Rectangular beam: MType = 1r. eType = -1
-         write(UnSum, '(A,I0,A,F8.4,A,F8.4,A, F10.6,A,F10.6,A,F10.6,A)', advance='no') '  {"shape": "rectangle", "type": ',p%ElemProps(i)%eType, ', "SideA":',p%ElemProps(i)%Sa(1), ', "SideB":',p%ElemProps(i)%Sb(1), ', "SideA_dir":[',p%ElemProps(i)%DirCos(1,1), ',',p%ElemProps(i)%DirCos(2,1), ',',p%ElemProps(i)%DirCos(3,1),']}'
+         write(UnSum, '(A,I0,A,F8.4,A,F8.4,A,F10.6,A,F10.6,A,F10.6,A)', advance='no') '  {"shape": "rectangle", "type": ',p%ElemProps(i)%eType, ', "SideA":',p%ElemProps(i)%Sa(1), ', "SideB":',p%ElemProps(i)%Sb(1), ', "SideA_dir": [',p%ElemProps(i)%DirCos(1,1), ',',p%ElemProps(i)%DirCos(2,1), ',',p%ElemProps(i)%DirCos(3,1),']}'
       else
          ! Cylindrical shapes (MType = 1 or 1c [cylindrical beam], 2 [cable element], 3 [rigid link]. eType = 1, 2, 3)
-         write(UnSum, '(A,I0,A,F8.4,A)', advance='no') '  {"shape": "cylinder", "type": ',p%ElemProps(i)%eType, ', "Diam":',p%ElemProps(i)%D(1),'}'
+         write(UnSum, '(A,I0,A,F8.4,A,F10.6,A,F10.6,A,F10.6,A)', advance='no') '  {"shape": "cylinder", "type": ',p%ElemProps(i)%eType, ', "Diam":',p%ElemProps(i)%D(1), ', "x_e": [',p%ElemProps(i)%DirCos(1,1), ',',p%ElemProps(i)%DirCos(2,1), ',',p%ElemProps(i)%DirCos(3,1),']}'
       endif
       if (i<size(p%ElemProps)) write(UnSum, '(A)', advance='no')','//NewLine 
    enddo

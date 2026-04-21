@@ -168,6 +168,16 @@ SUBROUTINE WaveField_GetNodeWaveKin( WaveField, WaveField_m, Time, pos, forceNod
    WaveElev = WaveField_GetNodeTotalWaveElev(WaveField, WaveField_m, Time, pos, ErrStat2, ErrMsg2, Elev1=WaveElev1, Elev2=WaveElev2)
    if (Failed()) return
 
+   ! Check if point is below the seabed
+   if (pos(3)<-WaveField%EffWtrDpth) then
+      nodeInWater = 1_IntKi  ! Prevent problems with HydroDyn logic
+      FV(:)       = 0.0_SiKi
+      FA(:)       = 0.0_SiKi
+      FDynP       = 0.0_SiKi
+      FAMCF(:)    = 0.0_SiKi
+      return
+   end if
+
    IF (WaveField%WaveStMod == 0) THEN ! No wave stretching
 
       IF ( pos(3) <= 0.0_ReKi) THEN ! Node is at or below the SWL
@@ -182,10 +192,10 @@ SUBROUTINE WaveField_GetNodeWaveKin( WaveField, WaveField_m, Time, pos, forceNod
          END IF
       ELSE ! Node is above the SWL
          nodeInWater = 0_IntKi
-         FV(:)       = 0.0
-         FA(:)       = 0.0
-         FDynP       = 0.0
-         FAMCF(:)    = 0.0
+         FV(:)       = 0.0_SiKi
+         FA(:)       = 0.0_SiKi
+         FDynP       = 0.0_SiKi
+         FAMCF(:)    = 0.0_SiKi
       END IF
 
    ELSE ! Wave stretching enabled
@@ -251,10 +261,10 @@ SUBROUTINE WaveField_GetNodeWaveKin( WaveField, WaveField_m, Time, pos, forceNod
       ELSE ! Node is out of water - zero-out all wave dynamics
 
          nodeInWater = 0_IntKi
-         FV(:)       = 0.0
-         FA(:)       = 0.0
-         FDynP       = 0.0
-         FAMCF(:)    = 0.0
+         FV(:)       = 0.0_SiKi
+         FA(:)       = 0.0_SiKi
+         FDynP       = 0.0_SiKi
+         FAMCF(:)    = 0.0_SiKi
 
       END IF ! If node is in or out of water
 
@@ -315,6 +325,13 @@ SUBROUTINE WaveField_GetDynP( WaveField, WaveField_m, Time, pos, forceNodeInWate
    ! Wave elevation (Calls WaveField_Interp_Setup3D internally so WaveField_Interp_3D_vec can be used below)
    WaveElev  = WaveField_GetNodeTotalWaveElev( WaveField, WaveField_m, Time, pos, ErrStat2, ErrMsg2 ); if (Failed()) return;
 
+   ! Check if point is below the seabed
+   if (pos(3)<-WaveField%EffWtrDpth) then
+      nodeInWater = 1_IntKi  ! Prevent problems with HydroDyn logic
+      FDynP       = 0.0_SiKi
+      return
+   end if
+
    IF (WaveField%WaveStMod == 0) THEN ! No wave stretching
 
       IF ( pos(3) <= 0.0_ReKi) THEN ! Node is at or below the SWL
@@ -324,7 +341,7 @@ SUBROUTINE WaveField_GetDynP( WaveField, WaveField_m, Time, pos, forceNodeInWate
          FDynP = GridInterp4D   ( WaveField%WaveDynP, WaveField_m )
       ELSE ! Node is above the SWL
          nodeInWater = 0_IntKi
-         FDynP       = 0.0
+         FDynP       = 0.0_SiKi
       END IF
 
    ELSE ! Wave stretching enabled
@@ -365,7 +382,7 @@ SUBROUTINE WaveField_GetDynP( WaveField, WaveField_m, Time, pos, forceNodeInWate
       ELSE ! Node is out of water - zero-out all wave dynamics
 
          nodeInWater = 0_IntKi
-         FDynP       = 0.0
+         FDynP       = 0.0_SiKi
 
       END IF ! If node is in or out of water
    END IF ! If wave stretching is on or off
@@ -407,6 +424,13 @@ SUBROUTINE WaveField_GetNodeWaveVel( WaveField, WaveField_m, Time, pos, forceNod
    ! Wave elevation (Calls WaveField_Interp_Setup3D internally so WaveField_Interp_3D_vec can be used below)
    WaveElev  = WaveField_GetNodeTotalWaveElev( WaveField, WaveField_m, Time, pos, ErrStat2, ErrMsg2 ); if (Failed()) return;
 
+   ! Check if point is below the seabed
+   if (pos(3)<-WaveField%EffWtrDpth) then
+      nodeInWater = 1_IntKi  ! Prevent problems with HydroDyn logic
+      FV(:)       = 0.0_SiKi
+      return
+   end if
+
    IF (WaveField%WaveStMod == 0) THEN ! No wave stretching
 
       IF ( pos(3) <= 0.0_ReKi) THEN ! Node is at or below the SWL
@@ -416,7 +440,7 @@ SUBROUTINE WaveField_GetNodeWaveVel( WaveField, WaveField_m, Time, pos, forceNod
          FV(:) = GridInterp4DVec( WaveField%WaveVel,  WaveField_m )
       ELSE ! Node is above the SWL
          nodeInWater = 0_IntKi
-         FV(:)       = 0.0
+         FV(:)       = 0.0_SiKi
       END IF
 
    ELSE ! Wave stretching enabled
@@ -463,7 +487,7 @@ SUBROUTINE WaveField_GetNodeWaveVel( WaveField, WaveField_m, Time, pos, forceNod
       ELSE ! Node is out of water - zero-out all wave dynamics
 
          nodeInWater = 0_IntKi
-         FV(:)       = 0.0
+         FV(:)       = 0.0_SiKi
 
       END IF ! If node is in or out of water
 
@@ -520,7 +544,15 @@ SUBROUTINE WaveField_GetNodeWaveVelAcc( WaveField, WaveField_m, Time, pos, force
    
    ! Wave elevation
    WaveElev  = WaveField_GetNodeTotalWaveElev( WaveField, WaveField_m, Time, pos, ErrStat2, ErrMsg2 ); if (Failed()) return;
-    
+
+   ! Check if point is below the seabed
+   if (pos(3)<-WaveField%EffWtrDpth) then
+      nodeInWater = 1_IntKi  ! Prevent problems with HydroDyn logic
+      FV(:)       = 0.0_SiKi
+      FA(:)       = 0.0_SiKi
+      return
+   end if
+
    IF (WaveField%WaveStMod == 0) THEN ! No wave stretching
 
       IF ( pos(3) <= 0.0_ReKi) THEN ! Node is at or below the SWL
@@ -531,8 +563,8 @@ SUBROUTINE WaveField_GetNodeWaveVelAcc( WaveField, WaveField_m, Time, pos, force
          FA(:) = GridInterp4DVec( WaveField%WaveAcc,  WaveField_m )
       ELSE ! Node is above the SWL
          nodeInWater = 0_IntKi
-         FV(:)       = 0.0
-         FA(:)       = 0.0
+         FV(:)       = 0.0_SiKi
+         FA(:)       = 0.0_SiKi
       END IF
 
    ELSE ! Wave stretching enabled
@@ -582,8 +614,8 @@ SUBROUTINE WaveField_GetNodeWaveVelAcc( WaveField, WaveField_m, Time, pos, force
       ELSE ! Node is out of water - zero-out all wave dynamics
 
          nodeInWater = 0_IntKi
-         FV(:)       = 0.0
-         FA(:)       = 0.0
+         FV(:)       = 0.0_SiKi
+         FA(:)       = 0.0_SiKi
       END IF ! If node is in or out of water
 
    END IF ! If wave stretching is on or off
@@ -684,7 +716,7 @@ end subroutine WaveField_GetWaveKin
 
 
 ! This subroutine is intended for AeroDyn when modeling MHK turbines
-SUBROUTINE WaveField_GetWaveVelAcc_AD( WaveField, WaveField_m, StartNode, Time, pos, FV, FA, ErrStat, ErrMsg )
+SUBROUTINE WaveField_GetWaveVelAcc_AD( WaveField, WaveField_m, StartNode, Time, pos, FV, FA, ErrStat, ErrMsg, BoxExceedAllow )
    type(SeaSt_WaveFieldType),          intent(in   ) :: WaveField
    type(GridInterp_MiscVarType),       intent(inout) :: WaveField_m
    integer(IntKi),                     intent(in   ) :: StartNode
@@ -694,6 +726,7 @@ SUBROUTINE WaveField_GetWaveVelAcc_AD( WaveField, WaveField_m, StartNode, Time, 
    real(ReKi),       allocatable,      intent(inout) :: FA(:,:)
    integer(IntKi),                     intent(  out) :: ErrStat  ! Error status of the operation
    character(*),                       intent(  out) :: ErrMsg   ! Error message if errStat /= ErrID_None
+   logical,          optional,         intent(in   ) :: BoxExceedAllow
    integer(IntKi),   allocatable                     :: nodeInWater(:)
    integer(IntKi)                                    :: NumPoints, i
    real(SiKi)                                        :: FV_node(3), FA_node(3)
@@ -734,7 +767,12 @@ SUBROUTINE WaveField_GetWaveVelAcc_AD( WaveField, WaveField_m, StartNode, Time, 
       IF (getAcc) THEN
          ALLOCATE(FA_DC( 3, NumPoints ), STAT=ErrStat2); if (FailedMsg('Error allocating FA_DC')) return;
       END IF
-      CALL IfW_FlowField_GetVelAcc(WaveField%CurrField, StartNode, Time, pos, FV_DC, FA_DC, ErrStat2, ErrMsg2, PosOffset=PosOffset); if (Failed()) return;
+
+      IF (PRESENT(BoxExceedAllow)) THEN
+         CALL IfW_FlowField_GetVelAcc(WaveField%CurrField, StartNode, Time, pos, FV_DC, FA_DC, ErrStat2, ErrMsg2, BoxExceedAllow=BoxExceedAllow, PosOffset=PosOffset); if (Failed()) return
+      ELSE
+         CALL IfW_FlowField_GetVelAcc(WaveField%CurrField, StartNode, Time, pos, FV_DC, FA_DC, ErrStat2, ErrMsg2, PosOffset=PosOffset); if (Failed()) return
+      END IF
 
       ! Add contributions from IfW current field if node is in water
       DO i = 1, NumPoints
