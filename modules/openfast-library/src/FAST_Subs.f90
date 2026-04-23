@@ -373,7 +373,7 @@ SUBROUTINE FAST_InitializeAll( t_initial, m_Glue, p_FAST, y_FAST, m_FAST, ED, SE
          ! Save the GearBox index
          p_FAST%GearBox_index = Init%OutData_ED(iRot)%GearBox_index
 
-         ! Assign the inital positions for use by MoorDyn initalization
+         ! Assign the initial positions for use by MoorDyn initialization
          p_FAST%PlatformPosInit = Init%OutData_ED(iRot)%PlatformPos
       
          ! If steady state calculation is enabled
@@ -991,6 +991,15 @@ SUBROUTINE FAST_InitializeAll( t_initial, m_Glue, p_FAST, y_FAST, m_FAST, ED, SE
       CALL MV_AddModule(m_Glue%ModData, Module_SD, 'SD', 1, dt_module, p_FAST%DT, &
                         Init%OutData_SD%Vars, p_FAST%Linearize, ErrStat2, ErrMsg2)
       if (Failed()) return
+
+      ! Assign the initial positions for use by MoorDyn initialization (this overwrites the PlatformPosInit from ED above)
+      if (Init%OutData_SD%SDHasRBDoF) then
+         p_FAST%PlatformPosInit = Init%OutData_SD%PlatformPos
+      else if (.not.Init%OutData_SD%IsFloating) then
+         p_FAST%PlatformPosInit = 0.0_DbKi
+      ! else
+      !    Use PlatformPosInit from ED above
+      end if
 
    case (Module_ExtPtfm)
 
