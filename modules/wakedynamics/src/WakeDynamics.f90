@@ -972,8 +972,9 @@ subroutine WD_UpdateStates( t, n, u, p, x, xd, z, OtherState, m, errStat, errMsg
 
       if ( xd%x_plane(i) > p%x_Buff ) then
 
-         xd%NumPlanes = max( xd%NumPlanes - 1.0, 2.0 )
+         xd%NumPlanes = max( xd%NumPlanes - 1.0, 2.0 )   ! Plane indexing includes 0, hence the -1.0
 
+      ! If a plane overtakes another plane, drop the plane that is doing the overtaking and shift all remaining planes forward. We skip checking the last plane since it can't overtake anything.
       else if ( i+1 < NINT(xd%NumPlanes) .and. xd%x_plane(i) >= xd%x_plane(i+1) ) then
 
          call SetErrStat(ErrID_Warn, ' Turbine '//trim(num2lstr(p%TurbNum))//' wake plane '//trim(num2lstr(i))//' (x_plane='//trim(num2lstr(xd%x_plane(i)))//') has overtaken wake plane '//trim(num2lstr(i+1))//' (x_plane='//trim(num2lstr(xd%x_plane(i+1)))//'). Offending wake plane removed. Reduce f_c to prevent planes from passing each other. ', errStat, errMsg, RoutineName)
@@ -982,14 +983,9 @@ subroutine WD_UpdateStates( t, n, u, p, x, xd, z, OtherState, m, errStat, errMsg
             return
          end if
 
-         ! Remove offending plane and shift everything behind up
-
-         xd%NumPlanes = xd%NumPlanes - 1.0
-
-         ! Didn't check xd%NumPlanes >= 2 here. The first wake plane is unlikely to move upwind of the rotor.
-
+         ! Overwrite the i plane that is passing with the i+1 plane, and shift all following planes back by one plane.
+         ! Didn't check xd%NumPlanes >= 2 here. The first wake plane is unlikely to pass the second plane.
          do j = i+1,NINT(xd%NumPlanes)-1
-
              xd%Vx_wind_disk_filt(j-1) = xd%Vx_wind_disk_filt(j)
              xd%x_plane      (    j-1) = xd%x_plane      (    j)
              xd%TI_amb_filt  (    j-1) = xd%TI_amb_filt  (    j)
@@ -1003,8 +999,10 @@ subroutine WD_UpdateStates( t, n, u, p, x, xd, z, OtherState, m, errStat, errMsg
              xd%Vx_wake2     (:,:,j-1) = xd%Vx_wake2     (:,:,j)
              xd%Vy_wake2     (:,:,j-1) = xd%Vy_wake2     (:,:,j)
              xd%Vz_wake2     (:,:,j-1) = xd%Vz_wake2     (:,:,j)
-
          end do
+
+         ! Now that we shifted the planes up, remove the last one
+         xd%NumPlanes = xd%NumPlanes - 1.0
 
       end if
 
