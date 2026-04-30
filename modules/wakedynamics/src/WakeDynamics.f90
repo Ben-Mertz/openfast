@@ -979,7 +979,10 @@ subroutine WD_UpdateStates( t, n, u, p, x, xd, z, OtherState, m, errStat, errMsg
       if ( i+1 < NINT(xd%NumPlanes)) then
          if (xd%x_plane(i) >= xd%x_plane(i+1) ) then
 
-            call SetErrStat(ErrID_Warn, ' Turbine '//trim(num2lstr(p%TurbNum))//' wake plane '//trim(num2lstr(i))//' (x_plane='//trim(num2lstr(xd%x_plane(i)))//') has overtaken wake plane '//trim(num2lstr(i+1))//' (x_plane='//trim(num2lstr(xd%x_plane(i+1)))//'). Offending wake plane removed. Reduce f_c to prevent planes from passing each other. ', errStat, errMsg, RoutineName)
+            call SetErrStat(ErrID_Warn, ' Turbine '//trim(num2lstr(p%TurbNum))//' wake plane '//trim(num2lstr(i))// &
+                        ' (x_plane='//trim(num2lstr(xd%x_plane(i)))//') has overtaken wake plane '//trim(num2lstr(i+1))// &
+                        ' (x_plane='//trim(num2lstr(xd%x_plane(i+1)))// &
+                        '). Overtaking wake plane removed. Reduce f_c to prevent planes from passing each other. ', errStat, errMsg, RoutineName)
             if (errStat >= AbortErrLev) then
                call Cleanup()
                return
