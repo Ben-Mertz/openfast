@@ -168,7 +168,7 @@ data for a single 6\ **NBody**-by-6\ **NBody** matrix. If **NBodyMod** > 1
 
 .. _hd-outall-option:
 
-**OutAll** option
+**OutAll** Option
 ~~~~~~~~~~~~~~~~~
 
 If **OutAll** is set to TRUE, HydroDyn will output the total strip-theory
@@ -183,7 +183,7 @@ loads on each joint are printed next. For instance, the loads on the first
 joint in the **MEMBER JOINTS** table are printed with the column names
 **J1TotFxi**, **J1TotFyi**, **J1TotFzi**, **J1TotMxi**, **J1TotMyi**, and
 **J1TotMzi**. Note that for these outputs, the members and joints are
-simply numbered based on their order of apperance in the respective tables
+simply numbered based on their order of appearance in the respective tables
 in the input file, so, as an example, **J2** refers to the joint defined
 on the second row of the **MEMBER JOINTS** table. The member and joint
 numbering does not follow **MemberID** and **JointID**, nor does it follow
