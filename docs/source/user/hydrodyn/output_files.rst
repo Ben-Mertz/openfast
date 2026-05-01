@@ -143,8 +143,34 @@ inertial-frame system when the structure is not displaced. **InpJointID**
 specifies the **JointID** for the output as given in the MEMBER JOINTS table 
 of the HydroDyn input file.
 
+Radiation Memory Effect Convolution Kernel
+------------------------------------------
+In the potential-flow solution based on frequency-to-time-domain
+transforms, HydroDyn computes the radiation kernel used by the
+convolution method for calculating the radiation memory effect through
+the cosine transform of the frequency-dependent hydrodynamic damping
+matrix from the radiation problem. The resulting time-domain radiation
+kernel (radiation impulse-response function), a time-dependent 
+matrix, is provided in this section. **n** and **t** give
+the time-step index and time, which are followed by the entries of the matrix 
+(**K11**, **K12**, etc.) of the radiation kernel associated with that
+time. Because the frequency-dependent hydrodynamic damping matrix is
+symmetric, so is the radiation kernel; thus, only the diagonal and
+upper-triangular portion of the matrix are provided. The radiation
+kernel should decay to zero after a short amount of time, which should
+aid in selecting an appropriate value of **RdtnTMax**. The dimensions of the 
+radiation kernel matrix depend on the number of potential-flow bodies 
+present (**NBody**) and **NBodyMod** in the HydroDyn primary input file. If 
+**NBodyMod** = 1 (full hydrodynamic coupling), the summary file will contain 
+data for a single 6\ **NBody**-by-6\ **NBody** matrix. If **NBodyMod** > 1 
+(no hydrodynamic coupling), the summary file will contain data for **NBody** 
+6-by-6 radiation kernal matrices.
+
+.. _hd-outall-option:
+
 **OutAll** option
------------------
+~~~~~~~~~~~~~~~~~
+
 If **OutAll** is set to TRUE, HydroDyn will output the total strip-theory
 forces and moments on each user-defined member and joint. These are
 included as additional columns in the output file independent of any
@@ -172,29 +198,6 @@ of reference, and the moments are computed about the instantaneous principal
 reference point (PRP), same as the output channels **HydroFxi**,
 **HydroFyi**, etc. As a reminder, the PRP is a body-fixed point located at
 the earth-fixed origin when the HydroDyn structure is undisplaced.
-
-Radiation Memory Effect Convolution Kernel
-------------------------------------------
-In the potential-flow solution based on frequency-to-time-domain
-transforms, HydroDyn computes the radiation kernel used by the
-convolution method for calculating the radiation memory effect through
-the cosine transform of the frequency-dependent hydrodynamic damping
-matrix from the radiation problem. The resulting time-domain radiation
-kernel (radiation impulse-response function), a time-dependent 
-matrix, is provided in this section. **n** and **t** give
-the time-step index and time, which are followed by the entries of the matrix 
-(**K11**, **K12**, etc.) of the radiation kernel associated with that
-time. Because the frequency-dependent hydrodynamic damping matrix is
-symmetric, so is the radiation kernel; thus, only the diagonal and
-upper-triangular portion of the matrix are provided. The radiation
-kernel should decay to zero after a short amount of time, which should
-aid in selecting an appropriate value of **RdtnTMax**. The dimensions of the 
-radiation kernel matrix depend on the number of potential-flow bodies 
-present (**NBody**) and **NBodyMod** in the HydroDyn primary input file. If 
-**NBodyMod** = 1 (full hydrodynamic coupling), the summary file will contain 
-data for a single 6\ **NBody**-by-6\ **NBody** matrix. If **NBodyMod** > 1 
-(no hydrodynamic coupling), the summary file will contain data for **NBody** 
-6-by-6 radiation kernal matrices.
 
 Results File
 ~~~~~~~~~~~~
