@@ -1777,7 +1777,7 @@ SUBROUTINE HydroDyn_CalcOutput( Time, u, p, x, xd, z, OtherState, y, m, ErrStat,
       if (Failed()) return
 
          ! Aggregate the sub-module outputs 
-      IF (size(p%Morison%OutParam) > 0) THEN
+      IF (p%Morison%NumOuts > 0 .or. p%Morison%OutAll) THEN
          J = p%NumOuts + 1
          DO I=1, size(p%Morison%OutParam)
             y%WriteOutput(J) = y%Morison%WriteOutput(I)

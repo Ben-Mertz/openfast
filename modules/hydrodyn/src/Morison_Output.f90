@@ -8031,7 +8031,9 @@ SUBROUTINE MrsnOut_Init( InitInp, y,  p, InitOut, ErrStat, ErrMsg )
    ! Open the output file, if necessary, and write the header
    !-------------------------------------------------------------------------------------------------      
    
-   IF ( ALLOCATED( p%OutParam ) .AND. size(p%OutParam) > 0 ) THEN ! Output has been requested so let's open an output file
+   IF ( .not. allocated(p%OutParam) ) return
+
+   IF ( size(p%OutParam) > 0 ) THEN ! Output has been requested so let's open an output file
       
       ALLOCATE( y%WriteOutput( size(p%OutParam) ),  STAT = ErrStat )
       IF ( ErrStat /= ErrID_None ) THEN
