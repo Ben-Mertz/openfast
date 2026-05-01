@@ -143,6 +143,36 @@ inertial-frame system when the structure is not displaced. **InpJointID**
 specifies the **JointID** for the output as given in the MEMBER JOINTS table 
 of the HydroDyn input file.
 
+**OutAll** option
+-----------------
+If **OutAll** is set to TRUE, HydroDyn will output the total strip-theory
+forces and moments on each user-defined member and joint. These are
+included as additional columns in the output file independent of any
+user-requested outputs. The forces and moments on the members (loads on
+the side wall) will be written first. For example, the 6 load components
+on the first member in the **MEMBERS** table (the first row of the table)
+are given by **M1TotFxi**, **M1TotFyi**, **M1TotFzi**, **M1TotMxi**,
+**M1TotMyi**, and **M1TotMzi**. After the member loads, the total lumped
+loads on each joint are printed next. For instance, the loads on the first
+joint in the **MEMBER JOINTS** table are printed with the column names
+**J1TotFxi**, **J1TotFyi**, **J1TotFzi**, **J1TotMxi**, **J1TotMyi**, and
+**J1TotMzi**. Note that for these outputs, the members and joints are
+simply numbered based on their order of apperance in the respective tables
+in the input file, so, as an example, **J2** refers to the joint defined
+on the second row of the **MEMBER JOINTS** table. The member and joint
+numbering does not follow **MemberID** and **JointID**, nor does it follow
+the numbering used with the user-requested member and joint outputs.
+
+The output forces and moments are the total strip-theory loads, including
+hydrodynamic, hydrostatic, marine growth, and ballast contributions. If a
+member has **PropPot** set to TRUE, the relevant load components will be
+omitted for that member and its connecting joints as appropriate. All
+force and moment components are resolved in the earth-fixed inertial frame
+of reference, and the moments are computed about the instantaneous principal
+reference point (PRP), same as the output channels **HydroFxi**,
+**HydroFyi**, etc. As a reminder, the PRP is a body-fixed point located at
+the earth-fixed origin when the HydroDyn structure is undisplaced.
+
 Radiation Memory Effect Convolution Kernel
 ------------------------------------------
 In the potential-flow solution based on frequency-to-time-domain

@@ -898,9 +898,11 @@ specified in the HYDRODYN section of the driver input file when running
 HydroDyn standalone, or by the OpenFAST program when running a coupled
 simulation. See :numref:`hd-summary-file` for summary file details.
 
-For this version, **OutAll** must be set to FALSE. In future versions,
-setting **OutAll** = TRUE will cause HydroDyn to auto-generate outputs
-for every joint and member in the input file.
+If **OutAll** is set to TRUE, HydroDyn will output the total strip-theory
+forces and moments on each user-defined member and joint. These additional
+output channels are inserted as additional columns in the output file
+independent of any user-requested outputs. See :ref:`hd-output-channels`
+for more information.
 
 If **OutSwtch** is set to 1, outputs are sent to a file with the name
 ``OutRootname.HD.out``. If **OutSwtch** is set to 2, outputs are
