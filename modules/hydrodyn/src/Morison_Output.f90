@@ -7936,6 +7936,11 @@ SUBROUTINE MrsnOut_MapOutputs( y, p, u, m )
       y%WriteOutput(I+1:I+6) = m%F_tot_End(:,im)
       I = I + 6_IntKi
    END DO
+   DO im = 1,p%NNodes
+      y%WriteOutput(I+1:I+3) = y%Mesh%Force(:,im)
+      y%WriteOutput(I+4:I+6) = y%Mesh%Moment(:,im)
+      I = I + 6_IntKi
+   END DO
 
 END SUBROUTINE MrsnOut_MapOutputs
 
@@ -8957,7 +8962,7 @@ SUBROUTINE SetOutParam(OutList, p, ErrStat, ErrMsg )
    ! If a selected output channel is not available in this module, set error flag.
    !-------------------------------------------------------------------------------------------------
    if (p%OutAll) then
-      ALLOCATE ( p%OutParam(1:(p%NumOuts + 6_IntKi*p%NMembers + 6_IntKi*p%NJoints)) , STAT=ErrStat2 )
+      ALLOCATE ( p%OutParam(1:(p%NumOuts + 6_IntKi*p%NMembers + 6_IntKi*p%NJoints + 6_IntKi*p%NNodes)) , STAT=ErrStat2 )
    else
       ALLOCATE ( p%OutParam(1:p%NumOuts) , STAT=ErrStat2 )
    endif
@@ -9035,6 +9040,25 @@ SUBROUTINE SetOutParam(OutList, p, ErrStat, ErrMsg )
          p%OutParam(k+5)%Name  = "J"//trim(num2lstr(i))//"TotMyi"
          p%OutParam(k+5)%Units = "(N-m)"
          p%OutParam(k+6)%Name  = "J"//trim(num2lstr(i))//"TotMzi"
+         p%OutParam(k+6)%Units = "(N-m)"
+         do j = 1,6
+            k = k + 1_IntKi
+            p%OutParam(k)%Indx  = -1_IntKi
+            p%OutParam(k)%SignM =  1_IntKi
+         end do
+      end do
+      do i = 1,p%NNodes
+         p%OutParam(k+1)%Name  = "N"//trim(num2lstr(i))//"TotFxi"
+         p%OutParam(k+1)%Units = "(N)"
+         p%OutParam(k+2)%Name  = "N"//trim(num2lstr(i))//"TotFyi"
+         p%OutParam(k+2)%Units = "(N)"
+         p%OutParam(k+3)%Name  = "N"//trim(num2lstr(i))//"TotFzi"
+         p%OutParam(k+3)%Units = "(N)"
+         p%OutParam(k+4)%Name  = "N"//trim(num2lstr(i))//"TotMxi"
+         p%OutParam(k+4)%Units = "(N-m)"
+         p%OutParam(k+5)%Name  = "N"//trim(num2lstr(i))//"TotMyi"
+         p%OutParam(k+5)%Units = "(N-m)"
+         p%OutParam(k+6)%Name  = "N"//trim(num2lstr(i))//"TotMzi"
          p%OutParam(k+6)%Units = "(N-m)"
          do j = 1,6
             k = k + 1_IntKi
