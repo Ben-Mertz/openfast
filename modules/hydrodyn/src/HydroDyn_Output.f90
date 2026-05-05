@@ -8887,9 +8887,9 @@ SUBROUTINE HDOUT_Init( HydroDyn_ProgDesc, OutRootName, InputFileData, y,  p, m, 
          p%OutDec       = 1             !TODO: Remove this once the parameter has been added to the HD input file GJH 7/8/2014
 
          
-         IF (ALLOCATED( p%Morison%OutParam ) .AND. p%Morison%NumOuts > 0) THEN
+         IF (ALLOCATED( p%Morison%OutParam ) .AND. (p%Morison%NumOuts > 0 .OR. p%Morison%OutAll)) THEN
             hasMorisonOuts = .TRUE.
-            p%NumTotalOuts = p%NumTotalOuts + p%Morison%NumOuts       
+            p%NumTotalOuts = p%NumTotalOuts + size(p%Morison%OutParam)
          END IF
       
             ! Allocate the aggregate arrays
@@ -8929,7 +8929,7 @@ SUBROUTINE HDOUT_Init( HydroDyn_ProgDesc, OutRootName, InputFileData, y,  p, m, 
          J = p%NumOuts + 1
                  
          IF ( hasMorisonOuts ) THEN
-            DO I=1, p%Morison%NumOuts
+            DO I=1, size(p%Morison%OutParam)
                InitOut%WriteOutputHdr(J) = InitOut%Morison%WriteOutputHdr(I)
                InitOut%WriteOutputUnt(J) = InitOut%Morison%WriteOutputUnt(I)
                J = J + 1
@@ -8982,7 +8982,7 @@ SUBROUTINE HDOut_OpenOutput( HydroDyn_ProgDesc, OutRootName,  p, InitOut, ErrSta
    !-------------------------------------------------------------------------------------------------      
    p%UnOutFile = -1
    IF ( (ALLOCATED( p%OutParam         ) .AND. p%NumOuts > 0         ) .OR. &
-        (ALLOCATED( p%Morison%OutParam ) .AND. p%Morison%NumOuts > 0 ) ) THEN           ! Output has been requested so let's open an output file            
+        (ALLOCATED( p%Morison%OutParam ) .AND. (p%Morison%NumOuts > 0 .OR. p%Morison%OutAll) ) ) THEN ! Output has been requested so let's open an output file
       
          ! Open the file for output
       OutFileName = TRIM(OutRootName)//'.out'
@@ -9013,9 +9013,9 @@ SUBROUTINE HDOut_OpenOutput( HydroDyn_ProgDesc, OutRootName,  p, InitOut, ErrSta
          WRITE(p%UnOutFile,Frmt,ADVANCE='no')   ( p%Delim, TRIM( InitOut%WriteOutputHdr(I)   ), I=1,p%NumOuts )
       END IF
       
-      IF (ALLOCATED( p%Morison%OutParam ) .AND. p%Morison%NumOuts > 0) THEN
-         Frmt = '('//TRIM(Int2LStr(p%Morison%NumOuts))//'(:,A,'//TRIM( p%OutSFmt )//'))'
-         WRITE(p%UnOutFile,Frmt,ADVANCE='no')   ( p%Delim, TRIM( InitOut%Morison%WriteOutputHdr(I) ), I=1,p%Morison%NumOuts )
+      IF (ALLOCATED( p%Morison%OutParam ) .AND. (p%Morison%NumOuts > 0 .OR. p%Morison%OutAll)) THEN
+         Frmt = '('//TRIM(Int2LStr(size(p%Morison%OutParam)))//'(:,A,'//TRIM( p%OutSFmt )//'))'
+         WRITE(p%UnOutFile,Frmt,ADVANCE='no')   ( p%Delim, TRIM( InitOut%Morison%WriteOutputHdr(I) ), I=1,size(p%Morison%OutParam) )
       END IF
       
       
@@ -9033,9 +9033,9 @@ SUBROUTINE HDOut_OpenOutput( HydroDyn_ProgDesc, OutRootName,  p, InitOut, ErrSta
          WRITE(p%UnOutFile,Frmt,ADVANCE='no')   ( p%Delim, TRIM( InitOut%WriteOutputUnt(I)   ), I=1,p%NumOuts )
       END IF
       
-      IF (ALLOCATED( p%Morison%OutParam ) .AND. p%Morison%NumOuts > 0) THEN
-         Frmt = '('//TRIM(Int2LStr(p%Morison%NumOuts))//'(:,A,'//TRIM( p%OutSFmt )//'))'
-         WRITE(p%UnOutFile,Frmt,ADVANCE='no')   ( p%Delim, TRIM( InitOut%Morison%WriteOutputUnt(I) ), I=1,p%Morison%NumOuts )
+      IF (ALLOCATED( p%Morison%OutParam ) .AND. (p%Morison%NumOuts > 0 .OR. p%Morison%OutAll)) THEN
+         Frmt = '('//TRIM(Int2LStr(size(p%Morison%OutParam)))//'(:,A,'//TRIM( p%OutSFmt )//'))'
+         WRITE(p%UnOutFile,Frmt,ADVANCE='no')   ( p%Delim, TRIM( InitOut%Morison%WriteOutputUnt(I) ), I=1,size(p%Morison%OutParam) )
       END IF
       
      
