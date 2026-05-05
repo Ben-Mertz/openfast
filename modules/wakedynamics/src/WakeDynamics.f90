@@ -996,7 +996,7 @@ subroutine WD_UpdateStates( t, n, u, p, x, xd, z, OtherState, m, errStat, errMsg
             xd%D_rotor_filt (    i) = (xd%D_rotor_filt (    i) + xd%D_rotor_filt (    i+1)) / 2.0_ReKi
             xd%YawErr_filt  (    i) = (xd%YawErr_filt  (    i) + xd%YawErr_filt  (    i+1)) / 2.0_ReKi
             xd%p_plane      (  :,i) = (xd%p_plane      (  :,i) + xd%p_plane      (  :,i+1)) / 2.0_ReKi
-            xd%xhat_plane   (  :,i) = (xd%xhat_plane   (  :,i) + xd%xhat_plane   (  :,i+1)) / 2.0_ReKi
+            xd%xhat_plane   (  :,i) = TwoNorm(xd%xhat_plane   (  :,i) + xd%xhat_plane   (  :,i+1))       ! renormalize
             xd%V_plane_filt (  :,i) = (xd%V_plane_filt (  :,i) + xd%V_plane_filt (  :,i+1)) / 2.0_ReKi
             xd%Vx_wake      (  :,i) = (xd%Vx_wake      (  :,i) + xd%Vx_wake      (  :,i+1)) / 2.0_ReKi
             xd%Vr_wake      (  :,i) = (xd%Vr_wake      (  :,i) + xd%Vr_wake      (  :,i+1)) / 2.0_ReKi
