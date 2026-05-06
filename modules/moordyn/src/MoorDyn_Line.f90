@@ -325,10 +325,6 @@ CONTAINS
       REAL(DbKi), ALLOCATABLE                :: LNodesZ(:)
       INTEGER(IntKi)                         :: N
 
-      REAL(DbKi)                             :: WCK1          ! Syrope working curve parameter 1
-      REAL(DbKi)                             :: WCK2          ! Syrope working curve parameter 2
-
-
       N = Line%N ! for convenience
 
        ! try to calculate initial line profile using catenary routine (from FAST v.7)
@@ -1219,8 +1215,6 @@ CONTAINS
       CHARACTER(ErrMsgLen)             :: ErrMsg2   
       CHARACTER(120)                   :: RoutineName = 'Line_GetStateDeriv'   
 
-      Real(DbKi)                       :: WCK1           ! coefficient for the Syrope working curve formula
-      Real(DbKi)                       :: WCK2           ! coefficient for the Syrope working curve formula
       Real(DbKi)                       :: dl_s           ! static stretch (both slow and fast components)
 
       ErrStat = ErrID_None
