@@ -747,12 +747,13 @@ CONTAINS
                       tempString6 = adjustl(tempString5(8:)) ! get the filepath of the SYROPE curves
                       
                       CALL MD_ReadSyropeWorkingCurves(tempString6, owcPath, wcFormula, wcK1, wcK2, ErrStat2, ErrMsg2)
-                      
-                      if (ErrStat2 /= ErrID_None ) then
-                          CALL SetErrStat( ErrID_Fatal, 'Failed to read SYROPE working curves for line type '//trim(Num2LStr(l))//'. Check error message for details.', ErrStat, ErrMsg, RoutineName )
-                          CALL CleanUp()
-                          RETURN
-                      end if
+                      IF (ErrStat2 >= AbortErrLev) THEN
+                         ErrMsg2 = 'Failed to read SYROPE working curves for line type '//trim(Num2LStr(l))//'.'//NewLine//TRIM(ErrMsg2)
+                      END IF
+                      CALL CheckError( ErrStat2, ErrMsg2 )
+                      IF (ErrStat >= AbortErrLev) RETURN
+                      ErrStat2 = ErrID_None
+                      ErrMsg2 = ''
 
                       if (wordy > 0) print *, "  Read Syrope working curve for Line type ", trim(Num2LStr(l))
 
