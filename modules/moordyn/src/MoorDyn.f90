@@ -1804,12 +1804,16 @@ CONTAINS
                   END IF
 
                   ! parse out entries: SyropeLineID  Tmax Tmean
-                  IF (ErrStat2 == 0) THEN
-                     READ(Line,*,IOSTAT=ErrStat2) TempIDnums(1:N), Tmax0, Tmean0
+                  ErrStat2 = 0
+                  READ(Line,*,IOSTAT=ErrStat2) TempIDnums(1:N), Tmax0, Tmean0
+                  IF (ErrStat2 /= 0) THEN
+                     CALL SetErrStat( ErrID_Fatal, ' Unable to parse Syrope line initial conditions '//trim(Num2LStr(l))//' on row '//trim(Num2LStr(i))//' in input file.', ErrStat, ErrMsg, RoutineName )
+                     CALL CleanUp()
+                     RETURN
                   END IF
 
                   DO il = 1, N
-                     if (TempIDnums(il) <= p%nLines) then      ! ensure line ID is in range
+                     if (TempIDnums(il) >= 1 .and. TempIDnums(il) <= p%nLines) then      ! ensure line ID is in range
                         DO j = 1, m%LineList(TempIDnums(il))%N
                            m%LineList(TempIDnums(il))%Tmax(j) = Tmax0
                            m%LineList(TempIDnums(il))%Tmean(j) = Tmean0
