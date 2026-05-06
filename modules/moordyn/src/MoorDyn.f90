@@ -1798,7 +1798,7 @@ CONTAINS
 
                   ! check for correct number of columns in current line
                   IF ( CountWords( Line ) /= N+2 ) THEN 
-                     CALL SetErrStat( ErrID_Fatal, ' Unable to parse line failure '//trim(Num2LStr(l))//' on row '//trim(Num2LStr(i))//' in input file. Row has wrong number of columns. Must be 5 columns.', ErrStat, ErrMsg, RoutineName )
+                     CALL SetErrStat( ErrID_Fatal, ' Unable to parse Syrope line initial conditions '//trim(Num2LStr(l))//' on row '//trim(Num2LStr(i))//' in input file. Row has wrong number of columns. Must be '//trim(Num2LStr(N+2))//' columns (<lineIDs>, Tmax, Tmean).', ErrStat, ErrMsg, RoutineName )
                      CALL CleanUp()
                      RETURN
                   END IF
