@@ -459,6 +459,7 @@ CONTAINS
                                              Line%stiffzs_(1:Line%nEApoints), &
                                              Line%Tmean(I), &
                                              Line%dl_1(I), ErrStat2, ErrMsg2 )
+            Line%dl_1(I) = Line%dl_1(I) * Line%l(I)
             IF (ErrStat2 /= ErrID_None) THEN
                CALL SetErrStat(ErrStat2, ErrMsg2, ErrStat, ErrMsg, '')
                RETURN
