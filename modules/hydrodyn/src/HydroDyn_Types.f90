@@ -68,9 +68,12 @@ IMPLICIT NONE
     REAL(ReKi) , DIMENSION(:), ALLOCATABLE  :: PtfmCOBxt      !<  [-]
     REAL(ReKi) , DIMENSION(:), ALLOCATABLE  :: PtfmCOByt      !<  [-]
     INTEGER(IntKi) , DIMENSION(:), ALLOCATABLE  :: NAddDOF      !< Number of additional generalized degrees of freedom [-]
+    INTEGER(IntKi) , DIMENSION(:), ALLOCATABLE  :: FKMod      !< Mesh-based nonlinear Froude-Krylov and hydrostatic model (switch) [-]
+    CHARACTER(1024) , DIMENSION(:), ALLOCATABLE  :: GeoFile      !< The name of the root potential flow body geometry file [-]
     TYPE(WAMIT_InitInputType)  :: WAMIT      !< Initialization data for WAMIT module [-]
     TYPE(WAMIT2_InitInputType)  :: WAMIT2      !< Initialization data for WAMIT2 module [-]
     TYPE(Morison_InitInputType)  :: Morison      !< Initialization data for Morison module [-]
+    TYPE(NonlinearFK_InitInputType)  :: NonlinearFK      !< Initialization data for the nonlinear FK module [-]
     LOGICAL  :: Echo = .false.      !< Echo the input files to a file with the same name as the input but with a .echo extension [T/F] [-]
     INTEGER(IntKi)  :: PotMod = 0_IntKi      !< 1 if using WAMIT model, 0 if no potential flow model, or 2 if FIT model [-]
     INTEGER(IntKi)  :: NUserOutputs = 0_IntKi      !< Number of Hydrodyn-level requested output channels [-]
@@ -152,6 +155,7 @@ IMPLICIT NONE
     TYPE(WAMIT2_ParameterType) , DIMENSION(:), ALLOCATABLE  :: WAMIT2      !< Parameter data for the WAMIT2 module [-]
     LOGICAL  :: WAMIT2used = .FALSE.      !< Indicates when WAMIT2 is used.  Shortcuts some calculations [-]
     TYPE(Morison_ParameterType)  :: Morison      !< Parameter data for the Morison module [-]
+    TYPE(NonlinearFK_ParameterType)  :: NonlinearFK      !< Parameter data for the nonlinear FK module [-]
     INTEGER(IntKi)  :: PotMod = 0_IntKi      !< 1 if using WAMIT model, 0 if no potential flow model, or 2 if FIT model [-]
     INTEGER(IntKi)  :: NBody = 0_IntKi      !< [>=1; only used when PotMod=1. If NBodyMod=1, the WAMIT data contains a vector of size 6*NBody x 1 and matrices of size 6*NBody x 6*NBody; if NBodyMod>1, there are NBody sets of WAMIT data each with a vector of size 6 x 1 and matrices of size 6 x 6] [-]
     INTEGER(IntKi)  :: NBodyMod = 0_IntKi      !< Body coupling model {1: include coupling terms between each body and NBody in HydroDyn equals NBODY in WAMIT, 2: neglect coupling terms between each body and NBODY=1 with XBODY=0 in WAMIT, 3: Neglect coupling terms between each body and NBODY=1 with XBODY=/0 in WAMIT} (switch) [only used when PotMod=1] [-]
@@ -220,6 +224,7 @@ IMPLICIT NONE
     TYPE(WAMIT2_MiscVarType) , DIMENSION(:), ALLOCATABLE  :: WAMIT2      !< misc var information from the WAMIT2 module [-]
     TYPE(Morison_MiscVarType)  :: Morison      !< misc var information from the Morison module [-]
     TYPE(WAMIT_InputType) , DIMENSION(:), ALLOCATABLE  :: u_WAMIT      !< WAMIT module inputs [-]
+    TYPE(NonlinearFK_MiscVarType)  :: NonlinearFK      !< misc var information from the nonlinear FK module [-]
   END TYPE HydroDyn_MiscVarType
 ! =======================
    integer(IntKi), public, parameter :: HydroDyn_x_WAMIT_SS_Rdtn_x       =   1 ! HydroDyn%WAMIT(DL%i1)%SS_Rdtn%x
@@ -432,6 +437,30 @@ subroutine HydroDyn_CopyInputFile(SrcInputFileData, DstInputFileData, CtrlCode, 
       end if
       DstInputFileData%NAddDOF = SrcInputFileData%NAddDOF
    end if
+   if (allocated(SrcInputFileData%FKMod)) then
+      LB(1:1) = lbound(SrcInputFileData%FKMod)
+      UB(1:1) = ubound(SrcInputFileData%FKMod)
+      if (.not. allocated(DstInputFileData%FKMod)) then
+         allocate(DstInputFileData%FKMod(LB(1):UB(1)), stat=ErrStat2)
+         if (ErrStat2 /= 0) then
+            call SetErrStat(ErrID_Fatal, 'Error allocating DstInputFileData%FKMod.', ErrStat, ErrMsg, RoutineName)
+            return
+         end if
+      end if
+      DstInputFileData%FKMod = SrcInputFileData%FKMod
+   end if
+   if (allocated(SrcInputFileData%GeoFile)) then
+      LB(1:1) = lbound(SrcInputFileData%GeoFile)
+      UB(1:1) = ubound(SrcInputFileData%GeoFile)
+      if (.not. allocated(DstInputFileData%GeoFile)) then
+         allocate(DstInputFileData%GeoFile(LB(1):UB(1)), stat=ErrStat2)
+         if (ErrStat2 /= 0) then
+            call SetErrStat(ErrID_Fatal, 'Error allocating DstInputFileData%GeoFile.', ErrStat, ErrMsg, RoutineName)
+            return
+         end if
+      end if
+      DstInputFileData%GeoFile = SrcInputFileData%GeoFile
+   end if
    call WAMIT_CopyInitInput(SrcInputFileData%WAMIT, DstInputFileData%WAMIT, CtrlCode, ErrStat2, ErrMsg2)
    call SetErrStat(ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName)
    if (ErrStat >= AbortErrLev) return
@@ -439,6 +468,9 @@ subroutine HydroDyn_CopyInputFile(SrcInputFileData, DstInputFileData, CtrlCode, 
    call SetErrStat(ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName)
    if (ErrStat >= AbortErrLev) return
    call Morison_CopyInitInput(SrcInputFileData%Morison, DstInputFileData%Morison, CtrlCode, ErrStat2, ErrMsg2)
+   call SetErrStat(ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName)
+   if (ErrStat >= AbortErrLev) return
+   call NonlinearFK_CopyInitInput(SrcInputFileData%NonlinearFK, DstInputFileData%NonlinearFK, CtrlCode, ErrStat2, ErrMsg2)
    call SetErrStat(ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName)
    if (ErrStat >= AbortErrLev) return
    DstInputFileData%Echo = SrcInputFileData%Echo
@@ -531,11 +563,19 @@ subroutine HydroDyn_DestroyInputFile(InputFileData, ErrStat, ErrMsg)
    if (allocated(InputFileData%NAddDOF)) then
       deallocate(InputFileData%NAddDOF)
    end if
+   if (allocated(InputFileData%FKMod)) then
+      deallocate(InputFileData%FKMod)
+   end if
+   if (allocated(InputFileData%GeoFile)) then
+      deallocate(InputFileData%GeoFile)
+   end if
    call WAMIT_DestroyInitInput(InputFileData%WAMIT, ErrStat2, ErrMsg2)
    call SetErrStat(ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName)
    call WAMIT2_DestroyInitInput(InputFileData%WAMIT2, ErrStat2, ErrMsg2)
    call SetErrStat(ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName)
    call Morison_DestroyInitInput(InputFileData%Morison, ErrStat2, ErrMsg2)
+   call SetErrStat(ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName)
+   call NonlinearFK_DestroyInitInput(InputFileData%NonlinearFK, ErrStat2, ErrMsg2)
    call SetErrStat(ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName)
    if (allocated(InputFileData%UserOutputs)) then
       deallocate(InputFileData%UserOutputs)
@@ -571,9 +611,12 @@ subroutine HydroDyn_PackInputFile(RF, Indata)
    call RegPackAlloc(RF, InData%PtfmCOBxt)
    call RegPackAlloc(RF, InData%PtfmCOByt)
    call RegPackAlloc(RF, InData%NAddDOF)
+   call RegPackAlloc(RF, InData%FKMod)
+   call RegPackAlloc(RF, InData%GeoFile)
    call WAMIT_PackInitInput(RF, InData%WAMIT) 
    call WAMIT2_PackInitInput(RF, InData%WAMIT2) 
    call Morison_PackInitInput(RF, InData%Morison) 
+   call NonlinearFK_PackInitInput(RF, InData%NonlinearFK) 
    call RegPack(RF, InData%Echo)
    call RegPack(RF, InData%PotMod)
    call RegPack(RF, InData%NUserOutputs)
@@ -621,9 +664,12 @@ subroutine HydroDyn_UnPackInputFile(RF, OutData)
    call RegUnpackAlloc(RF, OutData%PtfmCOBxt); if (RegCheckErr(RF, RoutineName)) return
    call RegUnpackAlloc(RF, OutData%PtfmCOByt); if (RegCheckErr(RF, RoutineName)) return
    call RegUnpackAlloc(RF, OutData%NAddDOF); if (RegCheckErr(RF, RoutineName)) return
+   call RegUnpackAlloc(RF, OutData%FKMod); if (RegCheckErr(RF, RoutineName)) return
+   call RegUnpackAlloc(RF, OutData%GeoFile); if (RegCheckErr(RF, RoutineName)) return
    call WAMIT_UnpackInitInput(RF, OutData%WAMIT) ! WAMIT 
    call WAMIT2_UnpackInitInput(RF, OutData%WAMIT2) ! WAMIT2 
    call Morison_UnpackInitInput(RF, OutData%Morison) ! Morison 
+   call NonlinearFK_UnpackInitInput(RF, OutData%NonlinearFK) ! NonlinearFK 
    call RegUnpack(RF, OutData%Echo); if (RegCheckErr(RF, RoutineName)) return
    call RegUnpack(RF, OutData%PotMod); if (RegCheckErr(RF, RoutineName)) return
    call RegUnpack(RF, OutData%NUserOutputs); if (RegCheckErr(RF, RoutineName)) return
@@ -1336,6 +1382,9 @@ subroutine HydroDyn_CopyParam(SrcParamData, DstParamData, CtrlCode, ErrStat, Err
    call Morison_CopyParam(SrcParamData%Morison, DstParamData%Morison, CtrlCode, ErrStat2, ErrMsg2)
    call SetErrStat(ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName)
    if (ErrStat >= AbortErrLev) return
+   call NonlinearFK_CopyParam(SrcParamData%NonlinearFK, DstParamData%NonlinearFK, CtrlCode, ErrStat2, ErrMsg2)
+   call SetErrStat(ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName)
+   if (ErrStat >= AbortErrLev) return
    DstParamData%PotMod = SrcParamData%PotMod
    DstParamData%NBody = SrcParamData%NBody
    DstParamData%NBodyMod = SrcParamData%NBodyMod
@@ -1478,6 +1527,8 @@ subroutine HydroDyn_DestroyParam(ParamData, ErrStat, ErrMsg)
    end if
    call Morison_DestroyParam(ParamData%Morison, ErrStat2, ErrMsg2)
    call SetErrStat(ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName)
+   call NonlinearFK_DestroyParam(ParamData%NonlinearFK, ErrStat2, ErrMsg2)
+   call SetErrStat(ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName)
    if (allocated(ParamData%NAddDOF)) then
       deallocate(ParamData%NAddDOF)
    end if
@@ -1538,6 +1589,7 @@ subroutine HydroDyn_PackParam(RF, Indata)
    end if
    call RegPack(RF, InData%WAMIT2used)
    call Morison_PackParam(RF, InData%Morison) 
+   call NonlinearFK_PackParam(RF, InData%NonlinearFK) 
    call RegPack(RF, InData%PotMod)
    call RegPack(RF, InData%NBody)
    call RegPack(RF, InData%NBodyMod)
@@ -1624,6 +1676,7 @@ subroutine HydroDyn_UnPackParam(RF, OutData)
    end if
    call RegUnpack(RF, OutData%WAMIT2used); if (RegCheckErr(RF, RoutineName)) return
    call Morison_UnpackParam(RF, OutData%Morison) ! Morison 
+   call NonlinearFK_UnpackParam(RF, OutData%NonlinearFK) ! NonlinearFK 
    call RegUnpack(RF, OutData%PotMod); if (RegCheckErr(RF, RoutineName)) return
    call RegUnpack(RF, OutData%NBody); if (RegCheckErr(RF, RoutineName)) return
    call RegUnpack(RF, OutData%NBodyMod); if (RegCheckErr(RF, RoutineName)) return
@@ -2101,6 +2154,9 @@ subroutine HydroDyn_CopyMisc(SrcMiscData, DstMiscData, CtrlCode, ErrStat, ErrMsg
          if (ErrStat >= AbortErrLev) return
       end do
    end if
+   call NonlinearFK_CopyMisc(SrcMiscData%NonlinearFK, DstMiscData%NonlinearFK, CtrlCode, ErrStat2, ErrMsg2)
+   call SetErrStat(ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName)
+   if (ErrStat >= AbortErrLev) return
 end subroutine
 
 subroutine HydroDyn_DestroyMisc(MiscData, ErrStat, ErrMsg)
@@ -2163,6 +2219,8 @@ subroutine HydroDyn_DestroyMisc(MiscData, ErrStat, ErrMsg)
       end do
       deallocate(MiscData%u_WAMIT)
    end if
+   call NonlinearFK_DestroyMisc(MiscData%NonlinearFK, ErrStat2, ErrMsg2)
+   call SetErrStat(ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName)
 end subroutine
 
 subroutine HydroDyn_PackMisc(RF, Indata)
@@ -2212,6 +2270,7 @@ subroutine HydroDyn_PackMisc(RF, Indata)
          call WAMIT_PackInput(RF, InData%u_WAMIT(i1)) 
       end do
    end if
+   call NonlinearFK_PackMisc(RF, InData%NonlinearFK) 
    if (RegCheckErr(RF, RoutineName)) return
 end subroutine
 
@@ -2276,6 +2335,7 @@ subroutine HydroDyn_UnPackMisc(RF, OutData)
          call WAMIT_UnpackInput(RF, OutData%u_WAMIT(i1)) ! u_WAMIT 
       end do
    end if
+   call NonlinearFK_UnpackMisc(RF, OutData%NonlinearFK) ! NonlinearFK 
 end subroutine
 
 subroutine HydroDyn_Input_ExtrapInterp(u, t, u_out, t_out, ErrStat, ErrMsg)
