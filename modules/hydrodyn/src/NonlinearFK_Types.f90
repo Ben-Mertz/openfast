@@ -51,6 +51,7 @@ IMPLICIT NONE
 ! =======================
 ! =========  BodyType  =======
   TYPE, PUBLIC :: BodyType
+    REAL(ReKi) , DIMENSION(1:3)  :: PtfmRefPt = 0.0_ReKi      !< Reference point/local origin of undisplaced body [m]
     REAL(ReKi)  :: volume = 0.0_ReKi      !< Volume of the body [-]
     INTEGER(IntKi)  :: n_nodes = 0_IntKi      !< Number of unique nodes of the body [-]
     INTEGER(IntKi)  :: n_tris = 0_IntKi      !< Number of triangles of the body [-]
@@ -64,7 +65,16 @@ IMPLICIT NONE
     INTEGER(IntKi) , DIMENSION(:), ALLOCATABLE  :: FKMod      !< Switch for nonlinear Froude-Krylov models [-]
     character(1024) , DIMENSION(:), ALLOCATABLE  :: GeoFile      !< Geometry file paths [-]
     TYPE(SeaSt_WaveFieldType) , POINTER :: WaveField => NULL()      !< Pointer to SeaState wavefield type [-]
+    REAL(ReKi) , DIMENSION(:), ALLOCATABLE  :: PtfmRefxt      !< The xt offset of the body reference point(s) from (0,0,0)  [1 to NBody; only used when PotMod=1] [(m)]
+    REAL(ReKi) , DIMENSION(:), ALLOCATABLE  :: PtfmRefyt      !< The yt offset of the body reference point(s) from (0,0,0)  [1 to NBody; only used when PotMod=1] [(m)]
+    REAL(ReKi) , DIMENSION(:), ALLOCATABLE  :: PtfmRefzt      !< The zt offset of the body reference point(s) from (0,0,0)  [1 to NBody; only used when PotMod=1] [(m)]
+    REAL(ReKi) , DIMENSION(:), ALLOCATABLE  :: PtfmRefztRot      !< The rotation about zt of the body reference frame(s) from xt/yt [radians]
   END TYPE NonlinearFK_InitInputType
+! =======================
+! =========  NonlinearFK_InitOutputType  =======
+  TYPE, PUBLIC :: NonlinearFK_InitOutputType
+    REAL(ReKi) , DIMENSION(:,:), ALLOCATABLE  :: buoyancy      !< Buoyancy force and moment on undisplaced bodies [N.Nm]
+  END TYPE NonlinearFK_InitOutputType
 ! =======================
 ! =========  NonlinearFK_ParameterType  =======
   TYPE, PUBLIC :: NonlinearFK_ParameterType
@@ -243,6 +253,7 @@ subroutine NonlinearFK_CopyBodyType(SrcBodyTypeData, DstBodyTypeData, CtrlCode, 
    character(*), parameter        :: RoutineName = 'NonlinearFK_CopyBodyType'
    ErrStat = ErrID_None
    ErrMsg  = ''
+   DstBodyTypeData%PtfmRefPt = SrcBodyTypeData%PtfmRefPt
    DstBodyTypeData%volume = SrcBodyTypeData%volume
    DstBodyTypeData%n_nodes = SrcBodyTypeData%n_nodes
    DstBodyTypeData%n_tris = SrcBodyTypeData%n_tris
@@ -292,6 +303,7 @@ subroutine NonlinearFK_PackBodyType(RF, Indata)
    type(BodyType), intent(in) :: InData
    character(*), parameter         :: RoutineName = 'NonlinearFK_PackBodyType'
    if (RF%ErrStat >= AbortErrLev) return
+   call RegPack(RF, InData%PtfmRefPt)
    call RegPack(RF, InData%volume)
    call RegPack(RF, InData%n_nodes)
    call RegPack(RF, InData%n_tris)
@@ -308,6 +320,7 @@ subroutine NonlinearFK_UnPackBodyType(RF, OutData)
    integer(IntKi)  :: stat
    logical         :: IsAllocAssoc
    if (RF%ErrStat /= ErrID_None) return
+   call RegUnpack(RF, OutData%PtfmRefPt); if (RegCheckErr(RF, RoutineName)) return
    call RegUnpack(RF, OutData%volume); if (RegCheckErr(RF, RoutineName)) return
    call RegUnpack(RF, OutData%n_nodes); if (RegCheckErr(RF, RoutineName)) return
    call RegUnpack(RF, OutData%n_tris); if (RegCheckErr(RF, RoutineName)) return
@@ -353,6 +366,54 @@ subroutine NonlinearFK_CopyInitInput(SrcInitInputData, DstInitInputData, CtrlCod
       DstInitInputData%GeoFile = SrcInitInputData%GeoFile
    end if
    DstInitInputData%WaveField => SrcInitInputData%WaveField
+   if (allocated(SrcInitInputData%PtfmRefxt)) then
+      LB(1:1) = lbound(SrcInitInputData%PtfmRefxt)
+      UB(1:1) = ubound(SrcInitInputData%PtfmRefxt)
+      if (.not. allocated(DstInitInputData%PtfmRefxt)) then
+         allocate(DstInitInputData%PtfmRefxt(LB(1):UB(1)), stat=ErrStat2)
+         if (ErrStat2 /= 0) then
+            call SetErrStat(ErrID_Fatal, 'Error allocating DstInitInputData%PtfmRefxt.', ErrStat, ErrMsg, RoutineName)
+            return
+         end if
+      end if
+      DstInitInputData%PtfmRefxt = SrcInitInputData%PtfmRefxt
+   end if
+   if (allocated(SrcInitInputData%PtfmRefyt)) then
+      LB(1:1) = lbound(SrcInitInputData%PtfmRefyt)
+      UB(1:1) = ubound(SrcInitInputData%PtfmRefyt)
+      if (.not. allocated(DstInitInputData%PtfmRefyt)) then
+         allocate(DstInitInputData%PtfmRefyt(LB(1):UB(1)), stat=ErrStat2)
+         if (ErrStat2 /= 0) then
+            call SetErrStat(ErrID_Fatal, 'Error allocating DstInitInputData%PtfmRefyt.', ErrStat, ErrMsg, RoutineName)
+            return
+         end if
+      end if
+      DstInitInputData%PtfmRefyt = SrcInitInputData%PtfmRefyt
+   end if
+   if (allocated(SrcInitInputData%PtfmRefzt)) then
+      LB(1:1) = lbound(SrcInitInputData%PtfmRefzt)
+      UB(1:1) = ubound(SrcInitInputData%PtfmRefzt)
+      if (.not. allocated(DstInitInputData%PtfmRefzt)) then
+         allocate(DstInitInputData%PtfmRefzt(LB(1):UB(1)), stat=ErrStat2)
+         if (ErrStat2 /= 0) then
+            call SetErrStat(ErrID_Fatal, 'Error allocating DstInitInputData%PtfmRefzt.', ErrStat, ErrMsg, RoutineName)
+            return
+         end if
+      end if
+      DstInitInputData%PtfmRefzt = SrcInitInputData%PtfmRefzt
+   end if
+   if (allocated(SrcInitInputData%PtfmRefztRot)) then
+      LB(1:1) = lbound(SrcInitInputData%PtfmRefztRot)
+      UB(1:1) = ubound(SrcInitInputData%PtfmRefztRot)
+      if (.not. allocated(DstInitInputData%PtfmRefztRot)) then
+         allocate(DstInitInputData%PtfmRefztRot(LB(1):UB(1)), stat=ErrStat2)
+         if (ErrStat2 /= 0) then
+            call SetErrStat(ErrID_Fatal, 'Error allocating DstInitInputData%PtfmRefztRot.', ErrStat, ErrMsg, RoutineName)
+            return
+         end if
+      end if
+      DstInitInputData%PtfmRefztRot = SrcInitInputData%PtfmRefztRot
+   end if
 end subroutine
 
 subroutine NonlinearFK_DestroyInitInput(InitInputData, ErrStat, ErrMsg)
@@ -371,6 +432,18 @@ subroutine NonlinearFK_DestroyInitInput(InitInputData, ErrStat, ErrMsg)
       deallocate(InitInputData%GeoFile)
    end if
    nullify(InitInputData%WaveField)
+   if (allocated(InitInputData%PtfmRefxt)) then
+      deallocate(InitInputData%PtfmRefxt)
+   end if
+   if (allocated(InitInputData%PtfmRefyt)) then
+      deallocate(InitInputData%PtfmRefyt)
+   end if
+   if (allocated(InitInputData%PtfmRefzt)) then
+      deallocate(InitInputData%PtfmRefzt)
+   end if
+   if (allocated(InitInputData%PtfmRefztRot)) then
+      deallocate(InitInputData%PtfmRefztRot)
+   end if
 end subroutine
 
 subroutine NonlinearFK_PackInitInput(RF, Indata)
@@ -389,6 +462,10 @@ subroutine NonlinearFK_PackInitInput(RF, Indata)
          call SeaSt_WaveField_PackSeaSt_WaveFieldType(RF, InData%WaveField) 
       end if
    end if
+   call RegPackAlloc(RF, InData%PtfmRefxt)
+   call RegPackAlloc(RF, InData%PtfmRefyt)
+   call RegPackAlloc(RF, InData%PtfmRefzt)
+   call RegPackAlloc(RF, InData%PtfmRefztRot)
    if (RegCheckErr(RF, RoutineName)) return
 end subroutine
 
@@ -423,6 +500,67 @@ subroutine NonlinearFK_UnPackInitInput(RF, OutData)
    else
       OutData%WaveField => null()
    end if
+   call RegUnpackAlloc(RF, OutData%PtfmRefxt); if (RegCheckErr(RF, RoutineName)) return
+   call RegUnpackAlloc(RF, OutData%PtfmRefyt); if (RegCheckErr(RF, RoutineName)) return
+   call RegUnpackAlloc(RF, OutData%PtfmRefzt); if (RegCheckErr(RF, RoutineName)) return
+   call RegUnpackAlloc(RF, OutData%PtfmRefztRot); if (RegCheckErr(RF, RoutineName)) return
+end subroutine
+
+subroutine NonlinearFK_CopyInitOutput(SrcInitOutputData, DstInitOutputData, CtrlCode, ErrStat, ErrMsg)
+   type(NonlinearFK_InitOutputType), intent(in) :: SrcInitOutputData
+   type(NonlinearFK_InitOutputType), intent(inout) :: DstInitOutputData
+   integer(IntKi),  intent(in   ) :: CtrlCode
+   integer(IntKi),  intent(  out) :: ErrStat
+   character(*),    intent(  out) :: ErrMsg
+   integer(B4Ki)                  :: LB(2), UB(2)
+   integer(IntKi)                 :: ErrStat2
+   character(*), parameter        :: RoutineName = 'NonlinearFK_CopyInitOutput'
+   ErrStat = ErrID_None
+   ErrMsg  = ''
+   if (allocated(SrcInitOutputData%buoyancy)) then
+      LB(1:2) = lbound(SrcInitOutputData%buoyancy)
+      UB(1:2) = ubound(SrcInitOutputData%buoyancy)
+      if (.not. allocated(DstInitOutputData%buoyancy)) then
+         allocate(DstInitOutputData%buoyancy(LB(1):UB(1),LB(2):UB(2)), stat=ErrStat2)
+         if (ErrStat2 /= 0) then
+            call SetErrStat(ErrID_Fatal, 'Error allocating DstInitOutputData%buoyancy.', ErrStat, ErrMsg, RoutineName)
+            return
+         end if
+      end if
+      DstInitOutputData%buoyancy = SrcInitOutputData%buoyancy
+   end if
+end subroutine
+
+subroutine NonlinearFK_DestroyInitOutput(InitOutputData, ErrStat, ErrMsg)
+   type(NonlinearFK_InitOutputType), intent(inout) :: InitOutputData
+   integer(IntKi),  intent(  out) :: ErrStat
+   character(*),    intent(  out) :: ErrMsg
+   character(*), parameter        :: RoutineName = 'NonlinearFK_DestroyInitOutput'
+   ErrStat = ErrID_None
+   ErrMsg  = ''
+   if (allocated(InitOutputData%buoyancy)) then
+      deallocate(InitOutputData%buoyancy)
+   end if
+end subroutine
+
+subroutine NonlinearFK_PackInitOutput(RF, Indata)
+   type(RegFile), intent(inout) :: RF
+   type(NonlinearFK_InitOutputType), intent(in) :: InData
+   character(*), parameter         :: RoutineName = 'NonlinearFK_PackInitOutput'
+   if (RF%ErrStat >= AbortErrLev) return
+   call RegPackAlloc(RF, InData%buoyancy)
+   if (RegCheckErr(RF, RoutineName)) return
+end subroutine
+
+subroutine NonlinearFK_UnPackInitOutput(RF, OutData)
+   type(RegFile), intent(inout)    :: RF
+   type(NonlinearFK_InitOutputType), intent(inout) :: OutData
+   character(*), parameter            :: RoutineName = 'NonlinearFK_UnPackInitOutput'
+   integer(B4Ki)   :: LB(2), UB(2)
+   integer(IntKi)  :: stat
+   logical         :: IsAllocAssoc
+   if (RF%ErrStat /= ErrID_None) return
+   call RegUnpackAlloc(RF, OutData%buoyancy); if (RegCheckErr(RF, RoutineName)) return
 end subroutine
 
 subroutine NonlinearFK_CopyParam(SrcParamData, DstParamData, CtrlCode, ErrStat, ErrMsg)

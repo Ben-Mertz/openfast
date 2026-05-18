@@ -27,10 +27,11 @@ module NonlinearFK
 
 contains
 
-subroutine NonlinearFK_Init(InitInp, p, m, ErrStat, ErrMsg)
+subroutine NonlinearFK_Init(InitInp, p, m, InitOut, ErrStat, ErrMsg)
     type(NonlinearFK_InitInputType), intent(in   ) :: InitInp
     type(NonlinearFK_ParameterType), intent(inout) :: p
     type(NonlinearFK_MiscVarType),   intent(inout) :: m
+    type(NonlinearFK_InitOutputType),intent(  out) :: InitOut
     integer(IntKi),                  intent(  out) :: ErrStat     !< Error status of the operation
     character(*),                    intent(  out) :: ErrMsg      !< Error message if ErrStat /= ErrID_None
 
@@ -49,23 +50,32 @@ subroutine NonlinearFK_Init(InitInp, p, m, ErrStat, ErrMsg)
     CALL AllocAry( p%FKMod, p%nBody, 'FKMod', ErrStat2, ErrMsg2); if (Failed()) return
     p%FKMod = InitInp%FKMod
 
-    allocate( p%Bodies(p%nBody) , stat=ErrStat2)
+    allocate( p%Bodies(p%nBody), stat=ErrStat2)
     if (ErrStat2 /= 0) then
         ErrStat = ErrID_Fatal
         ErrMsg  = trim(RoutineName)//": Failed to allocate memory for p%Bodies."
         return
     end if
-    allocate( m%Bodies(p%nBody) , stat=ErrStat2)
+    allocate( m%Bodies(p%nBody), stat=ErrStat2)
     if (ErrStat2 /= 0) then
         ErrStat = ErrID_Fatal
         ErrMsg  = trim(RoutineName)//": Failed to allocate memory for m%Bodies."
         return
     end if
+    allocate( InitOut%Buoyancy(6,p%nBody), stat=ErrStat2)
+    if (ErrStat2 /= 0) then
+        ErrStat = ErrID_Fatal
+        ErrMsg  = trim(RoutineName)//": Failed to allocate memory for InitOut%Buoyancy."
+        return
+    end if
+    InitOut%Buoyancy = 0.0_ReKi
 
     do i=1,p%nBody
         if (p%FKMod(i) /= FKMod_none) then
             call read_ascii_stl(InitInp%GeoFile(i), STLGeom, ErrStat2, ErrMsg2); if (Failed()) return
-            call Body_Init(STLGeom, p%Bodies(i), m%Bodies(i), ErrStat2, ErrMsg2); if (Failed()) return
+            call Body_Init(STLGeom, [InitInp%PtfmRefxt(i),InitInp%PtfmRefyt(i),InitInp%PtfmRefzt(i)], InitInp%PtfmRefztRot(i), &
+                           p%Bodies(i), m%Bodies(i), p%WaveField%RhoXg, p%WaveField%MSL2SWL, InitOut%Buoyancy(:,i), ErrStat2, ErrMsg2)
+                if (Failed()) return
         end if
     end do
 
@@ -180,37 +190,47 @@ subroutine read_ascii_stl(filename, STLGeom, ErrStat, ErrMsg)
 
 end subroutine read_ascii_stl
 
-subroutine Body_Init(STLGeom,body,m_body,ErrStat,ErrMsg)
+subroutine Body_Init(STLGeom,PtfmRefPt,PtfmRefztRot,body,m_body,RhoXg,MSL2SWL,Buoyancy,ErrStat,ErrMsg)
     type(STLGeomType),  intent(in   ) :: STLGeom
+    real(ReKi),         intent(in   ) :: PtfmRefPt(3)
+    real(ReKi),         intent(in   ) :: PtfmRefztRot
     type(BodyType),     intent(inout) :: body
     type(BodyMiscType), intent(inout) :: m_body
+    real(SiKi),         intent(in   ) :: RhoXg
+    real(ReKi),         intent(in   ) :: MSL2SWL
+    real(ReKi),         intent(  out) :: buoyancy(6)
     integer(IntKi),     intent(  out) :: ErrStat     !< Error status of the operation
     character(*),       intent(  out) :: ErrMsg      !< Error message if ErrStat /= ErrID_None
 
-    integer(IntKi) :: i, iQdrt
-    real(ReKi)     :: int_x(3),int_y(3),int_z(3),vol(3)
-    real(ReKi)     :: q_pos(3)
-    real(ReKi)     :: An(3)
-
     ! Local variables
-    integer(IntKi) :: iTri, iCorner, iUnique
-    integer(IntKi) :: current_idx
-    real(ReKi)     :: v_raw(3)
-    real(ReKi)     :: dist2
-    logical        :: found_match
-    
-    ! Tolerance for merging vertices (squared to avoid sqrt() calls)
-    ! 1.0d-8 is usually safe for CAD/STL output in meters.
-    real(ReKi), parameter :: tol = 1.0E-4_ReKi 
-    real(ReKi), parameter :: tol2 = tol * tol
-
+    integer(IntKi)          :: iTri, iCorner, iUnique
+    integer(IntKi)          :: current_idx
+    real(ReKi)              :: v_raw(3)
+    real(ReKi)              :: dist2
+    logical                 :: found_match
+    integer(IntKi)          :: i, j, iQdrt, n_sub
+    real(ReKi)              :: vol(3)
+    real(ReKi)              :: q_pos(3,nQdrt)
+    real(ReKi)              :: nds(3)
+    real(R8Ki)              :: R(3,3)
+    real(ReKi)              :: d(3)
+    real(ReKi)              :: RhoXgLocal
+    real(ReKi)              :: dF(3), rXnds(3), Force(3), Moment(3)
+    type(triangle3D)        :: sub_tris(2)
+    integer(IntKi)          :: ErrStat2
+    character(ErrMsgLen)    :: ErrMsg2
     character(*), parameter :: RoutineName = "Body_Init"
 
-    integer(IntKi) :: ErrStat2
+    ! Tolerance for merging vertices (squared to avoid sqrt() calls)
+    real(ReKi), parameter   :: tol = 1.0E-4_ReKi
+    real(ReKi), parameter   :: tol2 = tol * tol
     
     ! Initialize variables
     ErrStat = ErrID_None
     ErrMsg  = ""
+
+    RhoXgLocal     = real(RhoXg,ReKi)
+    body%PtfmRefPt = PtfmRefPt
 
     ! 1. Pre-allocate maximum possible sizes
     ! Worst case: every triangle is completely disconnected
@@ -284,6 +304,10 @@ subroutine Body_Init(STLGeom,body,m_body,ErrStat,ErrMsg)
         end block
     end if
 
+    ! 4. Rotate the nodes based on PtfmRefztRot
+    R = reshape([cos(PtfmRefztRot),sin(PtfmRefztRot),0.0_R8Ki,-sin(PtfmRefztRot),cos(PtfmRefztRot),0.0_R8Ki,0.0_R8Ki,0.0_R8Ki,1.0_R8Ki],[3,3])
+    body%Nodes = matmul(R,body%nodes)
+
     ! Allocate MiscVars for this body
     allocate(m_body%Nodes(3,body%n_nodes),stat=ErrStat2)
     if (ErrStat2 /= 0) then
@@ -301,35 +325,56 @@ subroutine Body_Init(STLGeom,body,m_body,ErrStat,ErrMsg)
     m_body%WaveElev = 0.0_ReKi
 
     ! Compute and check total volume
-    int_x = 0.0_ReKi
-    int_y = 0.0_ReKi
-    int_z = 0.0_ReKi
+    vol = 0.0_ReKi
     do i = 1,body%n_tris
         associate( v1 => body%Nodes(:,body%tris(1,i)), &
                    v2 => body%Nodes(:,body%tris(2,i)), &
                    v3 => body%Nodes(:,body%tris(3,i)) )
-            An = 0.5_ReKi * cross_product(v2-v1, v3-v2)
-            do iQdrt = 1,nQdrt
-                q_pos = Qdrt_L(1,iQdrt)*v1 + &
-                        Qdrt_L(2,iQdrt)*v2 + &
-                        Qdrt_L(3,iQdrt)*v3
-                int_x = int_x + q_pos(1) * Qdrt_W(iQdrt) * An
-                int_y = int_y + q_pos(2) * Qdrt_W(iQdrt) * An
-                int_z = int_z + q_pos(3) * Qdrt_W(iQdrt) * An
+            nds = 0.5_ReKi * cross_product(v2-v1, v3-v2)
+            q_pos = matmul( reshape([v1,v2,v3],[3,3]) , Qdrt_L )
+            vol = vol + matmul( q_pos, Qdrt_W) * nds
+        end associate
+    end do
+    body%volume = sum(vol)/3.0_ReKi
+    do i = 1,3
+       if (abs(vol(i)-body%volume)>body%volume*1.0E-6_ReKi) then
+          ErrStat = ErrID_Fatal
+          ErrMsg  = " Inconsistent volumes computed for nonlinear F-K body. Check mesh validity and gaps. "
+          return
+       end if
+    end do
+    if (body%volume<=0.0_ReKi) then
+        ErrStat = ErrID_Fatal
+        ErrMsg  = " Nonlinear F-K body has negative volume. Check normal direction of stl file. "
+        return
+    end if
+
+    ! Compute buoyancy on undisplaced structure (moment is about global origin)
+    d    = PtfmRefPt
+    d(3) = d(3) - MSL2SWL
+    m_body%Nodes(1,:) = body%Nodes(1,:) + d(1)
+    m_body%Nodes(2,:) = body%Nodes(2,:) + d(2)
+    m_body%Nodes(3,:) = body%Nodes(3,:) + d(3)
+    Force  = 0.0_ReKi
+    Moment = 0.0_ReKi
+    do i = 1,body%n_tris
+        associate( v1 => m_body%Nodes(:,body%tris(1,i)), &
+                   v2 => m_body%Nodes(:,body%tris(2,i)), &
+                   v3 => m_body%Nodes(:,body%tris(3,i))  )
+            nds = 0.5_ReKi * cross_product(v2-v1, v3-v2)
+            call Clip_Triangle(reshape([v1,v2,v3],[3,3]), [0.0_ReKi,0.0_ReKi,0.0_ReKi], nds, sub_tris, n_sub)
+            do j=1,n_sub
+                q_pos = matmul( sub_tris(j)%v , Qdrt_L )
+                do iQdrt = 1,nQdrt
+                    dF = -RhoXgLocal * q_pos(3,iQdrt) * Qdrt_W(iQdrt) * (-sub_tris(j)%nds)
+                    Force  = Force  + dF
+                    Moment = Moment + cross_product(q_pos(:,iQdrt), dF)
+                end do
             end do
         end associate
     end do
-    vol(1) = int_x(1)
-    vol(2) = int_y(2)
-    vol(3) = int_z(3)
-    body%volume = sum(vol)/3.0_ReKi
-    ! print *,body%volume, vol
-    ! To-Do: check that vol(1), vol(2), and vol(3) are close. Print to summary file.
-
-    if (body%volume<=0.0_ReKi) then
-        ErrStat = ErrID_Fatal 
-        ErrMsg  = " Nonlinear F-K body has negative volume. Check normal direction of stl file. "
-    end if
+    buoyancy(1:3) = Force
+    buoyancy(4:6) = Moment
 
 end subroutine Body_Init
 
@@ -350,11 +395,12 @@ subroutine computeBodyFK(bodyIdx,Time,p,m,Position,Orientation,Force,Moment,ErrS
     real(ReKi)              :: d(3)
     real(R8Ki)              :: R(3,3)
     real(ReKi)              :: q_pos(3,nQdrt)
-    real(ReKi)              :: nds_orig(3)
+    real(ReKi)              :: nds(3)
     real(ReKi)              :: dF(3), rXnds(3)
     type(triangle3D)        :: sub_tris(2)
     integer(IntKi)          :: nodeInWater
     real(SiKi)              :: FDynP
+    real(ReKi)              :: RhoXgLocal
     integer(IntKi)          :: ErrStat2     !< Error status of the operation
     character(ErrMsgLen)    :: ErrMsg2      !< Error message if ErrStat /= ErrID_None
     character(*), parameter :: RoutineName = "computeBodyFK"
@@ -367,6 +413,7 @@ subroutine computeBodyFK(bodyIdx,Time,p,m,Position,Orientation,Force,Moment,ErrS
 
     if (p%FKMod(bodyIdx) /= FKMod_full) return
 
+    RhoXgLocal = real(p%WaveField%RhoXg,ReKi)
     associate( body=>p%Bodies(bodyIdx), m_body=>m%Bodies(bodyIdx) )
 
         d    = Position
@@ -381,7 +428,7 @@ subroutine computeBodyFK(bodyIdx,Time,p,m,Position,Orientation,Force,Moment,ErrS
 
         if (p%WaveField%WaveStMod /= 0_IntKi) then
             do i = 1,body%n_nodes
-                m_body%WaveElev(i) = WaveField_GetNodeTotalWaveElev( p%WaveField, m%WaveField_m, Time, m_body%Nodes(:,i), ErrStat2, ErrMsg2 )
+                m_body%WaveElev(i) = real( WaveField_GetNodeTotalWaveElev( p%WaveField, m%WaveField_m, Time, m_body%Nodes(:,i), ErrStat2, ErrMsg2 ), ReKi)
             end do
             if (Failed()) return
         ! else
@@ -395,13 +442,13 @@ subroutine computeBodyFK(bodyIdx,Time,p,m,Position,Orientation,Force,Moment,ErrS
                        zeta1 => m_body%WaveElev(body%tris(1,i)), &
                        zeta2 => m_body%WaveElev(body%tris(2,i)), &
                        zeta3 => m_body%WaveElev(body%tris(3,i))  )
-                nds_orig = 0.5_ReKi * cross_product(v2-v1, v3-v2)
-                call Clip_Triangle(reshape([v1,v2,v3],[3,3]), [zeta1,zeta2,zeta3], nds_orig, sub_tris, n_sub)
+                nds = 0.5_ReKi * cross_product(v2-v1, v3-v2)
+                call Clip_Triangle(reshape([v1,v2,v3],[3,3]), [zeta1,zeta2,zeta3], nds, sub_tris, n_sub)
                 do j=1,n_sub
                     q_pos = matmul( sub_tris(j)%v , Qdrt_L )
                     do iQdrt = 1,nQdrt
                         call WaveField_GetDynP( p%WaveField, m%WaveField_m, Time, q_pos(:,iQdrt), .false., nodeInWater, FDynP, ErrStat, ErrMsg )
-                        dF = ( FDynP - p%WaveField%RhoXg * q_pos(3,iQdrt) ) * Qdrt_W(iQdrt) * (-sub_tris(j)%nds)
+                        dF = ( real(FDynP,ReKi) - RhoXgLocal * q_pos(3,iQdrt) ) * Qdrt_W(iQdrt) * (-sub_tris(j)%nds)
                         Force  = Force  + dF
                         Moment = Moment + cross_product(q_pos(:,iQdrt)-d, dF)
                     end do
@@ -444,7 +491,6 @@ subroutine NonlinearFK_CalcOutput(Time, u_Mesh, p, m, Force, Moment, ErrStat, Er
         Position = u_Mesh%position(:,i) + u_Mesh%TranslationDisp(:,i)
         Orientation = u_Mesh%Orientation(:,:,i)
         call computeBodyFK(i,Time,p,m,Position,Orientation,Force(:,i),Moment(:,i),ErrStat2,ErrMsg2)
-        ! print *,Force(:,i),Moment(:,i)
         if (Failed()) return
     end do
 

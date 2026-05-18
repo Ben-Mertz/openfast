@@ -61,9 +61,9 @@ IMPLICIT NONE
     LOGICAL  :: HasWAMIT = .false.      !< .TRUE. if using WAMIT model, .FALSE. otherwise [-]
     LOGICAL  :: HasAddDOF = .false.      !< .TRUE. if additional generalized DOF are present, .FALSE. otherwise [-]
     REAL(ReKi) , DIMENSION(:), ALLOCATABLE  :: WAMITULEN      !<  [-]
-    REAL(ReKi) , DIMENSION(:), ALLOCATABLE  :: PtfmRefxt      !< The xt offset of the body reference point(s) from (0,0,0)  [1 to NBody; only used when PotMod=1; must be 0.0 if NBodyMod=2 ] [(m)]
-    REAL(ReKi) , DIMENSION(:), ALLOCATABLE  :: PtfmRefyt      !< The yt offset of the body reference point(s) from (0,0,0)  [1 to NBody; only used when PotMod=1; must be 0.0 if NBodyMod=2 ] [(m)]
-    REAL(ReKi) , DIMENSION(:), ALLOCATABLE  :: PtfmRefzt      !< The zt offset of the body reference point(s) from (0,0,0)  [1 to NBody; only used when PotMod=1; must be 0.0 if NBodyMod=2 ] [(m)]
+    REAL(ReKi) , DIMENSION(:), ALLOCATABLE  :: PtfmRefxt      !< The xt offset of the body reference point(s) from (0,0,0)  [1 to NBody; only used when PotMod=1] [(m)]
+    REAL(ReKi) , DIMENSION(:), ALLOCATABLE  :: PtfmRefyt      !< The yt offset of the body reference point(s) from (0,0,0)  [1 to NBody; only used when PotMod=1] [(m)]
+    REAL(ReKi) , DIMENSION(:), ALLOCATABLE  :: PtfmRefzt      !< The zt offset of the body reference point(s) from (0,0,0)  [1 to NBody; only used when PotMod=1] [(m)]
     REAL(R8Ki) , DIMENSION(:), ALLOCATABLE  :: PtfmRefztRot      !< The rotation about zt of the body reference frame(s) from xt/yt [radians]
     REAL(ReKi) , DIMENSION(:), ALLOCATABLE  :: PtfmCOBxt      !<  [-]
     REAL(ReKi) , DIMENSION(:), ALLOCATABLE  :: PtfmCOByt      !<  [-]
@@ -110,6 +110,7 @@ IMPLICIT NONE
   TYPE, PUBLIC :: HydroDyn_InitOutputType
     TYPE(ModVarsType)  :: Vars      !< Module Variables [-]
     TYPE(Morison_InitOutputType)  :: Morison      !< Initialization output from the Morison module [-]
+    TYPE(NonlinearFK_InitOutputType)  :: NonlinearFK      !< Initialization output from the Nonlinear F-K module [-]
     CHARACTER(ChanLen) , DIMENSION(:), ALLOCATABLE  :: WriteOutputHdr      !< The is the list of all HD-related output channel header strings (includes all sub-module channels) [-]
     CHARACTER(ChanLen) , DIMENSION(:), ALLOCATABLE  :: WriteOutputUnt      !< The is the list of all HD-related output channel unit strings (includes all sub-module channels) [-]
     TYPE(ProgDesc)  :: Ver      !< Version of HydroDyn [-]
@@ -812,6 +813,9 @@ subroutine HydroDyn_CopyInitOutput(SrcInitOutputData, DstInitOutputData, CtrlCod
    call Morison_CopyInitOutput(SrcInitOutputData%Morison, DstInitOutputData%Morison, CtrlCode, ErrStat2, ErrMsg2)
    call SetErrStat(ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName)
    if (ErrStat >= AbortErrLev) return
+   call NonlinearFK_CopyInitOutput(SrcInitOutputData%NonlinearFK, DstInitOutputData%NonlinearFK, CtrlCode, ErrStat2, ErrMsg2)
+   call SetErrStat(ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName)
+   if (ErrStat >= AbortErrLev) return
    if (allocated(SrcInitOutputData%WriteOutputHdr)) then
       LB(1:1) = lbound(SrcInitOutputData%WriteOutputHdr)
       UB(1:1) = ubound(SrcInitOutputData%WriteOutputHdr)
@@ -854,6 +858,8 @@ subroutine HydroDyn_DestroyInitOutput(InitOutputData, ErrStat, ErrMsg)
    call SetErrStat(ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName)
    call Morison_DestroyInitOutput(InitOutputData%Morison, ErrStat2, ErrMsg2)
    call SetErrStat(ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName)
+   call NonlinearFK_DestroyInitOutput(InitOutputData%NonlinearFK, ErrStat2, ErrMsg2)
+   call SetErrStat(ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName)
    if (allocated(InitOutputData%WriteOutputHdr)) then
       deallocate(InitOutputData%WriteOutputHdr)
    end if
@@ -871,6 +877,7 @@ subroutine HydroDyn_PackInitOutput(RF, Indata)
    if (RF%ErrStat >= AbortErrLev) return
    call NWTC_Library_PackModVarsType(RF, InData%Vars) 
    call Morison_PackInitOutput(RF, InData%Morison) 
+   call NonlinearFK_PackInitOutput(RF, InData%NonlinearFK) 
    call RegPackAlloc(RF, InData%WriteOutputHdr)
    call RegPackAlloc(RF, InData%WriteOutputUnt)
    call NWTC_Library_PackProgDesc(RF, InData%Ver) 
@@ -887,6 +894,7 @@ subroutine HydroDyn_UnPackInitOutput(RF, OutData)
    if (RF%ErrStat /= ErrID_None) return
    call NWTC_Library_UnpackModVarsType(RF, OutData%Vars) ! Vars 
    call Morison_UnpackInitOutput(RF, OutData%Morison) ! Morison 
+   call NonlinearFK_UnpackInitOutput(RF, OutData%NonlinearFK) ! NonlinearFK 
    call RegUnpackAlloc(RF, OutData%WriteOutputHdr); if (RegCheckErr(RF, RoutineName)) return
    call RegUnpackAlloc(RF, OutData%WriteOutputUnt); if (RegCheckErr(RF, RoutineName)) return
    call NWTC_Library_UnpackProgDesc(RF, OutData%Ver) ! Ver 

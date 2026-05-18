@@ -421,24 +421,6 @@ SUBROUTINE HydroDyn_Init( InitInp, u, p, x, xd, z, OtherState, y, m, Interval, I
             call AllocAry( m%F_PtfmAdd, p%NDOF, "m%F_PtfmAdd", ErrStat2, ErrMsg2 ); call SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
             call AllocAry( m%F_Waves  , p%NDOF, "m%F_Waves"  , ErrStat2, ErrMsg2 ); call SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
                
-               ! Generate Summary file information for WAMIT module
-                   ! Compute the load contribution from hydrostatics:
-            IF ( InputFileData%UnSum > 0 ) THEN
-                do iBody = 1, InputFileData%NBody
-                    WRITE( InputFileData%UnSum, '(A18,I5)')          'WAMIT Model - Body',iBody
-                    WRITE( InputFileData%UnSum, '(A18)')             '------------------'
-                    WRITE( InputFileData%UnSum, '(A42,2X,ES15.6)') 'Displaced volume (m^3)                 :', InputFileData%PtfmVol0(iBody)
-                    WRITE( InputFileData%UnSum, '(A42,2X,ES15.6)') 'X-offset of the center of buoyancy (m) :', InputFileData%PtfmCOBxt(iBody)
-                    WRITE( InputFileData%UnSum, '(A42,2X,ES15.6)') 'Y-offset of the center of buoyancy (m) :', InputFileData%PtfmCOByt(iBody)
-                    WRITE( InputFileData%UnSum,  '(/)' ) 
-                    WRITE( InputFileData%UnSum, '(A81)' ) 'Buoyancy loads from members modelled with WAMIT, summed about ( 0.0, 0.0, 0.0 )'
-                    WRITE( InputFileData%UnSum, '(18x,6(2X,A20))' ) ' BuoyFxi ', ' BuoyFyi ', ' BuoyFzi ', ' BuoyMxi ', ' BuoyMyi ', ' BuoyMzi '
-                    WRITE( InputFileData%UnSum, '(18x,6(2X,A20))' ) '   (N)   ', '   (N)   ', '   (N)   ', '  (N-m)  ', '  (N-m)  ', '  (N-m)  '
-                    WRITE( InputFileData%UnSum, '(A18,6(2X,ES20.6))') '  External:       ',0.0,0.0,p%WaveField%RhoXg*InputFileData%PtfmVol0(iBody),p%WaveField%RhoXg*InputFileData%PtfmVol0(iBody)*InputFileData%PtfmCOByt(iBody), -p%WaveField%RhoXg*InputFileData%PtfmVol0(iBody)*InputFileData%PtfmCOBxt(iBody), 0.0   ! and the moment about Y due to the COB being offset from the WAMIT reference point
-                end do
-            END IF
-
-
                !-----------------------------------------
                ! Initialize the WAMIT2 Calculations
                !-----------------------------------------
@@ -539,21 +521,61 @@ SUBROUTINE HydroDyn_Init( InitInp, u, p, x, xd, z, OtherState, y, m, Interval, I
             ENDIF
 
             ! Nonlinear FK bodies
-            CALL AllocAry( InputFileData%NonlinearFK%FKMod, InputFileData%nBody, 'FKMod', ErrStat2, ErrMsg2)
-               CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
+            call AllocAry( InputFileData%NonlinearFK%FKMod       , InputFileData%nBody, 'FKMod'       , ErrStat2, ErrMsg2 ); CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
+            call AllocAry( InputFileData%NonlinearFK%GeoFile     , InputFileData%nBody, 'GeoFile'     , ErrStat2, ErrMsg2 ); CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
+            call AllocAry( InputFileData%NonlinearFK%PtfmRefxt   , InputFileData%NBody, "PtfmRefxt"   , ErrStat2, ErrMsg2 ); call SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
+            call AllocAry( InputFileData%NonlinearFK%PtfmRefyt   , InputFileData%NBody, "PtfmRefyt"   , ErrStat2, ErrMsg2 ); call SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
+            call AllocAry( InputFileData%NonlinearFK%PtfmRefzt   , InputFileData%NBody, "PtfmRefzt"   , ErrStat2, ErrMsg2 ); call SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
+            call AllocAry( InputFileData%NonlinearFK%PtfmRefztRot, InputFileData%NBody, "PtfmRefztRot", ErrStat2, ErrMsg2 ); call SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
+            InputFileData%NonlinearFK%nBody = InputFileData%nBody
             InputFileData%NonlinearFK%FKMod = InputFileData%FKMod
-            CALL AllocAry( InputFileData%NonlinearFK%GeoFile, InputFileData%nBody, 'GeoFile', ErrStat2, ErrMsg2)
-               CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
             do i = 1, p%nBody
                InputFileData%NonlinearFK%GeoFile(i) = InputFileData%GeoFile(i)
             end do
-            InputFileData%NonlinearFK%nBody = InputFileData%nBody
-            CALL NonlinearFK_Init(InputFileData%NonlinearFK, p%NonlinearFK, m%NonlinearFK, ErrStat2, ErrMsg2)
+            InputFileData%NonlinearFK%PtfmRefxt = InputFileData%PtfmRefxt
+            InputFileData%NonlinearFK%PtfmRefyt = InputFileData%PtfmRefyt
+            InputFileData%NonlinearFK%PtfmRefzt = InputFileData%PtfmRefzt
+            InputFileData%NonlinearFK%PtfmRefztRot = InputFileData%PtfmRefztRot
+            CALL NonlinearFK_Init(InputFileData%NonlinearFK, p%NonlinearFK, m%NonlinearFK, InitOut%NonlinearFK, ErrStat2, ErrMsg2)
                CALL SetErrStat(ErrStat2,ErrMsg2,ErrStat,ErrMsg,RoutineName)
                IF ( ErrStat >= AbortErrLev ) THEN
                   CALL CleanUp()
                   RETURN
                END IF
+
+            ! Generate Summary file information for WAMIT module
+            ! Compute the load contribution from hydrostatics:
+            IF ( InputFileData%UnSum > 0 ) THEN
+                do iBody = 1, InputFileData%NBody
+                    WRITE( InputFileData%UnSum, '(A18,I5)')          'WAMIT Model - Body',iBody
+                    WRITE( InputFileData%UnSum, '(A18)')             '------------------'
+                    select case (InputFileData%FKMod(iBody))
+                    case (FKMod_none)
+                       WRITE( InputFileData%UnSum, '(A64)') 'No mesh-based Froude-Krylov and hydrostatic load calculation. '
+                       WRITE( InputFileData%UnSum,  '(/)' )
+                       WRITE( InputFileData%UnSum, '(A42,2X,ES15.6)') 'Displaced volume (m^3)                 :', InputFileData%PtfmVol0(iBody)
+                       WRITE( InputFileData%UnSum, '(A42,2X,ES15.6)') 'X-offset of the center of buoyancy (m) :', InputFileData%PtfmCOBxt(iBody)
+                       WRITE( InputFileData%UnSum, '(A42,2X,ES15.6)') 'Y-offset of the center of buoyancy (m) :', InputFileData%PtfmCOByt(iBody)
+                       WRITE( InputFileData%UnSum,  '(/)' )
+                       WRITE( InputFileData%UnSum, '(A81)' ) 'Buoyancy loads from members modelled with WAMIT, summed about ( 0.0, 0.0, 0.0 )'
+                       WRITE( InputFileData%UnSum, '(18x,6(2X,A20))' ) ' BuoyFxi ', ' BuoyFyi ', ' BuoyFzi ', ' BuoyMxi ', ' BuoyMyi ', ' BuoyMzi '
+                       WRITE( InputFileData%UnSum, '(18x,6(2X,A20))' ) '   (N)   ', '   (N)   ', '   (N)   ', '  (N-m)  ', '  (N-m)  ', '  (N-m)  '
+                       WRITE( InputFileData%UnSum, '(A18,6(2X,ES20.6))') '  External:       ',0.0,0.0,p%WaveField%RhoXg*InputFileData%PtfmVol0(iBody),p%WaveField%RhoXg*InputFileData%PtfmVol0(iBody)*InputFileData%PtfmCOByt(iBody), -p%WaveField%RhoXg*InputFileData%PtfmVol0(iBody)*InputFileData%PtfmCOBxt(iBody), 0.0   ! and the moment about Y due to the COB being offset from the WAMIT reference point
+                    case (FKMod_full)
+                       WRITE( InputFileData%UnSum, '(A64)') 'Mesh-based Froude-Krylov and hydrostatic load calculation.    '
+                       WRITE( InputFileData%UnSum,  '(/)' )
+                       WRITE( InputFileData%UnSum, '(A42,2X,I15)')    'Number of unique mesh vertices         :', p%NonlinearFK%Bodies(iBody)%n_nodes
+                       WRITE( InputFileData%UnSum, '(A42,2X,I15)')    'Number of mesh trianglar faces         :', p%NonlinearFK%Bodies(iBody)%n_tris
+                       WRITE( InputFileData%UnSum, '(A42,2X,ES15.6)') 'Total volume of closed body (m^3)      :', p%NonlinearFK%Bodies(iBody)%volume
+                       WRITE( InputFileData%UnSum,  '(/)' )
+                       WRITE( InputFileData%UnSum, '(A81)' ) 'Buoyancy loads computed from mesh, summed about ( 0.0, 0.0, 0.0 )'
+                       WRITE( InputFileData%UnSum, '(18x,6(2X,A20))' ) ' BuoyFxi ', ' BuoyFyi ', ' BuoyFzi ', ' BuoyMxi ', ' BuoyMyi ', ' BuoyMzi '
+                       WRITE( InputFileData%UnSum, '(18x,6(2X,A20))' ) '   (N)   ', '   (N)   ', '   (N)   ', '  (N-m)  ', '  (N-m)  ', '  (N-m)  '
+                       WRITE( InputFileData%UnSum, '(A18,6(2X,ES20.6))') '  External:       ',InitOut%NonlinearFK%Buoyancy(:,iBody)
+                    end select
+                end do
+            END IF
+
 #ifdef USE_FIT 
          ELSE IF ( InputFileData%PotMod == 2  ) THEN  ! FIT 
             ! Set up the Initialization data for FIT
