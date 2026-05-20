@@ -252,8 +252,11 @@ SUBROUTINE HydroDyn_ParseInput( InputFileName, OutRootName, FileInfo_In, InputFi
       if (Failed())  return;
 
       ! FKMod - Mesh-based nonlinear Froude-Krylov and hydrostatic model (switch)
-   call ParseAry( FileInfo_In, CurLine, 'FKMod', InputFileData%FKMod, InputFileData%NBody, ErrStat2, ErrMsg2, UnEc )
+   call ParseAry( FileInfo_In, CurLine, 'FKMod', InputFileData%FKMod(1:InputFileData%nWAMITObj), InputFileData%nWAMITObj, ErrStat2, ErrMsg2, UnEc )
       if (Failed())  return;
+   if (InputFileData%NBodyMod==1) then
+      InputFileData%FKMod(2:InputFileData%NBody) = InputFileData%FKMod(1)
+   end if
 
       ! GeoFile - Root name of Potential flow body geometry file
    call ParseAry( FileInfo_In, CurLine, 'GeoFile', InputFileData%GeoFile, InputFileData%NBody, ErrStat2, ErrMsg2, UnEc )
@@ -1571,10 +1574,6 @@ SUBROUTINE HydroDynInput_ProcessInitData( InitInp, Interval, InputFileData, ErrS
          END IF
          IF ( InputFileData%FKMod(i) == FKMod_full .and. InputFileData%hasAddDOF ) THEN
             CALL SetErrStat( ErrID_Fatal,'FKMod = '//trim(num2lstr(FKMod_full))//' is incompatible with NAddDOF>0.',ErrStat,ErrMsg,RoutineName)
-            RETURN
-         END IF
-         IF ( InputFileData%NBodyMod == 1 .and. (InputFileData%FKMod(i)/=InputFileData%FKMod(1)) ) THEN
-            CALL SetErrStat( ErrID_Fatal,'When NBodyMod = 1, FKMod should be the same for all bodies.',ErrStat,ErrMsg,RoutineName)
             RETURN
          END IF
       end do
