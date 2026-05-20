@@ -1803,6 +1803,8 @@ SUBROUTINE HydroDyn_CalcOutput( Time, u, p, x, xd, z, OtherState, y, m, ErrStat,
          end if         !  p%WAMIT2used
 
          ! Mesh-based nonlinear Froude-Krylov and hydrostatic load integration for potential-flow bodies
+         NLFKForce  = 0.0_ReKi ! Redundant initialization; can delete later
+         NLFKMoment = 0.0_ReKi
          if (calcNonlinearFKLdsLocal) then
             call NonlinearFK_CalcOutput( Time, u%WamitMesh, p%NonlinearFK, m%NonlinearFK, NLFKForce, NLFKMoment, ErrStat2, ErrMsg2 )
             if (Failed()) return
@@ -1845,7 +1847,7 @@ SUBROUTINE HydroDyn_CalcOutput( Time, u, p, x, xd, z, OtherState, y, m, ErrStat,
       if (Failed()) return
 
          ! Map calculated results into the first p%NumOuts values of the y%WriteOutput Array
-      CALL HDOut_MapOutputs( p, y, m%WAMIT, m%WAMIT2, m%F_PtfmAdd, m%F_Waves, m%F_Hydro, u%PRPMesh, PtfmRefY, q, qdot, qdotdot, ErrStat2, ErrMsg2 )
+      CALL HDOut_MapOutputs( p, y, m%WAMIT, m%WAMIT2, m%F_PtfmAdd, m%F_Waves, m%F_Hydro, u%PRPMesh, PtfmRefY, q, qdot, qdotdot, NLFKForce, NLFKMoment, ErrStat2, ErrMsg2 )
       if (Failed()) return
 
          ! Aggregate the sub-module outputs 
