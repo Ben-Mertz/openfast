@@ -215,6 +215,7 @@ subroutine Body_Init(STLGeom,PtfmRefPt,PtfmRefztRot,body,m_body,RhoXg,MSL2SWL,Bu
     real(R8Ki)              :: R(3,3)
     real(ReKi)              :: d(3)
     real(ReKi)              :: RhoXgLocal
+    real(R8Ki)              :: PtfmRefztRotLocal
     real(ReKi)              :: dF(3), rXnds(3), Force(3), Moment(3)
     type(triangle3D)        :: sub_tris(2)
     integer(IntKi)          :: ErrStat2
@@ -229,7 +230,9 @@ subroutine Body_Init(STLGeom,PtfmRefPt,PtfmRefztRot,body,m_body,RhoXg,MSL2SWL,Bu
     ErrStat = ErrID_None
     ErrMsg  = ""
 
-    RhoXgLocal     = real(RhoXg,ReKi)
+    RhoXgLocal        = real(RhoXg,ReKi)
+    PtfmRefztRotLocal = real(PtfmRefztRot,R8Ki)
+
     body%PtfmRefPt = PtfmRefPt
 
     ! 1. Pre-allocate maximum possible sizes
@@ -305,7 +308,7 @@ subroutine Body_Init(STLGeom,PtfmRefPt,PtfmRefztRot,body,m_body,RhoXg,MSL2SWL,Bu
     end if
 
     ! 4. Rotate the nodes based on PtfmRefztRot
-    R = reshape([cos(PtfmRefztRot),sin(PtfmRefztRot),0.0_R8Ki,-sin(PtfmRefztRot),cos(PtfmRefztRot),0.0_R8Ki,0.0_R8Ki,0.0_R8Ki,1.0_R8Ki],[3,3])
+    R = reshape([cos(PtfmRefztRotLocal),sin(PtfmRefztRotLocal),0.0_R8Ki,-sin(PtfmRefztRotLocal),cos(PtfmRefztRotLocal),0.0_R8Ki,0.0_R8Ki,0.0_R8Ki,1.0_R8Ki],[3,3])
     body%Nodes = matmul(R,body%nodes)
 
     ! Allocate MiscVars for this body
