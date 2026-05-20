@@ -326,6 +326,7 @@ IMPLICIT NONE
     REAL(DbKi) , DIMENSION(:), ALLOCATABLE  :: yd_rms_old      !< node old cf vel rms [m/s]
     REAL(DbKi) , DIMENSION(:), ALLOCATABLE  :: ydd_rms_old      !< node old cf accel rms [m/s^2]
     REAL(DbKi) , DIMENSION(:,:), ALLOCATABLE  :: rdd_old      !< node accelerations previous iteration [m/s^2]
+    LOGICAL  :: store_rdd = .FALSE.      !< flag to store node accelerations (for VIV or output) [-]
   END TYPE MD_Line
 ! =======================
 ! =========  MD_ExtLd  =======
@@ -444,6 +445,7 @@ IMPLICIT NONE
     REAL(DbKi)  :: cv = 0.0_R8Ki      !< saturated damping coefficient [(-)]
     INTEGER(IntKi)  :: inertialF = 0      !< Indicates MoorDyn returning inertial moments for coupled 6DOF objects. 0: no, 1: yes, 2: yes with ramp to inertialF_rampT [-]
     REAL(R8Ki)  :: inertialF_rampT = 30      !< Ramp time for inertial forces [-]
+    REAL(R8Ki)  :: waveKin_rampT = 0      !< Ramp time for water kinematics [-]
     INTEGER(IntKi)  :: OutSwitch = 1      !< Switch to disable outputs when running with full OF. 0: no MD main outfile, 1: write MD main outfile [(-)]
     INTEGER(IntKi)  :: disableOutTime = 0      !< Disables the printing of the fairtens and timestep in init to the console, useful for the MATLAB wrapper [(-)]
     INTEGER(IntKi)  :: nxWave = 0_IntKi      !< number of x wave grid points [-]
@@ -2211,6 +2213,7 @@ subroutine MD_CopyLine(SrcLineData, DstLineData, CtrlCode, ErrStat, ErrMsg)
       end if
       DstLineData%rdd_old = SrcLineData%rdd_old
    end if
+   DstLineData%store_rdd = SrcLineData%store_rdd
 end subroutine
 
 subroutine MD_DestroyLine(LineData, ErrStat, ErrMsg)
@@ -2406,6 +2409,7 @@ subroutine MD_PackLine(RF, Indata)
    call RegPackAlloc(RF, InData%yd_rms_old)
    call RegPackAlloc(RF, InData%ydd_rms_old)
    call RegPackAlloc(RF, InData%rdd_old)
+   call RegPack(RF, InData%store_rdd)
    if (RegCheckErr(RF, RoutineName)) return
 end subroutine
 
@@ -2494,6 +2498,7 @@ subroutine MD_UnPackLine(RF, OutData)
    call RegUnpackAlloc(RF, OutData%yd_rms_old); if (RegCheckErr(RF, RoutineName)) return
    call RegUnpackAlloc(RF, OutData%ydd_rms_old); if (RegCheckErr(RF, RoutineName)) return
    call RegUnpackAlloc(RF, OutData%rdd_old); if (RegCheckErr(RF, RoutineName)) return
+   call RegUnpack(RF, OutData%store_rdd); if (RegCheckErr(RF, RoutineName)) return
 end subroutine
 
 subroutine MD_CopyExtLd(SrcExtLdData, DstExtLdData, CtrlCode, ErrStat, ErrMsg)
@@ -3117,6 +3122,7 @@ subroutine MD_CopyParam(SrcParamData, DstParamData, CtrlCode, ErrStat, ErrMsg)
    DstParamData%cv = SrcParamData%cv
    DstParamData%inertialF = SrcParamData%inertialF
    DstParamData%inertialF_rampT = SrcParamData%inertialF_rampT
+   DstParamData%waveKin_rampT = SrcParamData%waveKin_rampT
    DstParamData%OutSwitch = SrcParamData%OutSwitch
    DstParamData%disableOutTime = SrcParamData%disableOutTime
    DstParamData%nxWave = SrcParamData%nxWave
@@ -3468,6 +3474,7 @@ subroutine MD_PackParam(RF, Indata)
    call RegPack(RF, InData%cv)
    call RegPack(RF, InData%inertialF)
    call RegPack(RF, InData%inertialF_rampT)
+   call RegPack(RF, InData%waveKin_rampT)
    call RegPack(RF, InData%OutSwitch)
    call RegPack(RF, InData%disableOutTime)
    call RegPack(RF, InData%nxWave)
@@ -3591,6 +3598,7 @@ subroutine MD_UnPackParam(RF, OutData)
    call RegUnpack(RF, OutData%cv); if (RegCheckErr(RF, RoutineName)) return
    call RegUnpack(RF, OutData%inertialF); if (RegCheckErr(RF, RoutineName)) return
    call RegUnpack(RF, OutData%inertialF_rampT); if (RegCheckErr(RF, RoutineName)) return
+   call RegUnpack(RF, OutData%waveKin_rampT); if (RegCheckErr(RF, RoutineName)) return
    call RegUnpack(RF, OutData%OutSwitch); if (RegCheckErr(RF, RoutineName)) return
    call RegUnpack(RF, OutData%disableOutTime); if (RegCheckErr(RF, RoutineName)) return
    call RegUnpack(RF, OutData%nxWave); if (RegCheckErr(RF, RoutineName)) return
