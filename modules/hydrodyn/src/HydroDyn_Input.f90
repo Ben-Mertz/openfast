@@ -1572,7 +1572,7 @@ SUBROUTINE HydroDynInput_ProcessInitData( InitInp, Interval, InputFileData, ErrS
             CALL SetErrStat( ErrID_Fatal,'FKMod must be '//trim(num2lstr(FKMod_none))//' or '//trim(num2lstr(FKMod_full))//' for all WAMIT bodies.',ErrStat,ErrMsg,RoutineName)
             RETURN
          END IF
-         IF ( InputFileData%FKMod(i) == FKMod_full .and. InputFileData%ExctnMod == 2 ) THEN
+         IF ( InputFileData%FKMod(i) == FKMod_full .and. InputFileData%Wamit%ExctnMod == 2 ) THEN
             CALL SetErrStat( ErrID_Fatal,'FKMod = '//trim(num2lstr(FKMod_full))//' is incompatible with state-space wave excitation model (ExctnMod=2). Need ExctnMod = 0 or 1.',ErrStat,ErrMsg,RoutineName)
             RETURN
          END IF
