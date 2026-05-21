@@ -475,10 +475,14 @@ wetted surface. This can be enabled by setting **FKMod** = 1. Setting
 second-order (if enabled) wave excitation via frequency-to-time-domain
 transformation and use the linear hydrostatic stiffness matrix for
 computing hydrostatic loads. **FKMod** = 1 requires **PotMod** = 1 and
-**ExctnMod** = 1. State-space wave excitation with **ExctnMod** = 2 is
-incompatible with nonlinear Froude-Krylov and hydrostatic loads. Currently,
-**FKMod** = 1 is also incompatible with additional generalized degrees
-of freedom and requires **NAddDOF** = 0.
+**ExctnMod** = 0 or 1. State-space wave excitation with **ExctnMod** = 2 is
+incompatible with nonlinear Froude-Krylov and hydrostatic loads. Setting
+**ExctnMod** = 0 with **FKMod** = 1 effectively removes the scattering
+part of the wave excitation, leaving only the nonlinear Froude-Krylov
+wave excitation. Setting **ExctnMod** = 1 allows linear scattering wave
+excitation to be included along side the nonlinear Froude-Krylov
+contribution. Currently, **FKMod** = 1 is also incompatible with additional
+generalized degrees of freedom and requires **NAddDOF** = 0.
 
 With **FKMod** = 1, HydroDyn requires the *.3sc* file instead of the
 *.3* file. The former contains only the scattering part of the linear
