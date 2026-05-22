@@ -450,7 +450,7 @@ subroutine computeBodyFK(bodyIdx,Time,p,m,Position,Orientation,Force,Moment,ErrS
                 do j=1,n_sub
                     q_pos = matmul( sub_tris(j)%v , Qdrt_L )
                     do iQdrt = 1,nQdrt
-                        call WaveField_GetDynP( p%WaveField, m%WaveField_m, Time, q_pos(:,iQdrt), .false., nodeInWater, FDynP, ErrStat, ErrMsg )
+                        call WaveField_GetDynP( p%WaveField, m%WaveField_m, Time, q_pos(:,iQdrt), .false., nodeInWater, FDynP, ErrStat2, ErrMsg2 )
                         dF = ( real(FDynP,ReKi) - RhoXgLocal * q_pos(3,iQdrt) ) * Qdrt_W(iQdrt) * (-sub_tris(j)%nds)
                         Force  = Force  + dF
                         Moment = Moment + cross_product(q_pos(:,iQdrt)-d, dF)
