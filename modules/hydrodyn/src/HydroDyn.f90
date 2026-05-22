@@ -2104,13 +2104,22 @@ SUBROUTINE HD_JacobianPInput(Vars, t, u, p, x, xd, z, OtherState, y, m, ErrStat,
          ! If variable is extended input, skip
          if (MV_HasFlagsAll(Vars%u(i), VF_ExtLin)) cycle
 
-         ! Calculate Morison hydrostatic loads when perturbing displacement/orientation inputs
+         ! Calculate Morison hydrostatic loads and nonlinear FK and hydrostatic loads when perturbing displacement/orientation inputs
          select case (Vars%u(i)%Field)
          case (FieldTransDisp, FieldOrientation)
-            calcMorisonHstLds = .true.
-            calcNonlinearFKLds = .true.
+            select case (Vars%u(i)%DL%Num)
+            case (HydroDyn_u_Morison_Mesh)
+               calcMorisonHstLds  = .true.
+               calcNonlinearFKLds = .false.
+            case (HydroDyn_u_WAMITMesh)
+               calcMorisonHstLds  = .false.
+               calcNonlinearFKLds = .true.
+            case default ! PRPMesh
+               calcMorisonHstLds  = .true.
+               calcNonlinearFKLds = .true.
+            end select
          case default
-            calcMorisonHstLds = .false.
+            calcMorisonHstLds  = .false.
             calcNonlinearFKLds = .false.
          end select
 
