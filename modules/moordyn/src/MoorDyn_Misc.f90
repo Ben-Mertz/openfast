@@ -1014,7 +1014,7 @@ CONTAINS
 
       ! local 
       CHARACTER(120)             :: RoutineName = 'getWaterKin'   
-   
+
       ErrStat = ErrID_None
       ErrMsg  = ""
 
@@ -1080,9 +1080,6 @@ CONTAINS
       ! SeaState wave kinematics
       case (3)
 
-         ! disable wavekin 3 during IC_gen, otherwise will never find steady state (because of waves)
-         if (m%IC_gen) return
-
          ! SeaState throws warning when queried location is out of bounds from the SeaState grid, so no need to handle here
 
          ! Pack all MD inputs to WaveGrid input data types (double to single)
@@ -1102,6 +1099,14 @@ CONTAINS
       case default
          call SetErrStat(ErrID_Fatal, "Invalid value of p%WaterKin", ErrStat, ErrMsg, RoutineName)
       end select
+
+      ! Apply ramp time
+      IF (t < p%waveKin_rampT) THEN 
+         U = U * t / p%waveKin_rampT
+         Ud = Ud * t / p%waveKin_rampT
+         zeta = zeta * t / p%waveKin_rampT
+         PDyn = PDyn * t / p%waveKin_rampT
+      END IF
 
    END SUBROUTINE getWaterKin
 
