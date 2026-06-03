@@ -1935,8 +1935,8 @@ class InputReader_OpenFAST(object):
         
         # Get multiple potential files
         if self.fst_vt['HydroDyn']['NBodyMod'] == 1:
-            self.fst_vt['HydroDyn']['PotFile']   = os.path.normpath(os.path.join(os.path.split(hd_file)[0],quoted_read(f.readline().split()[0])))
-            self.fst_vt['HydroDyn']['WAMITULEN'] = float_read(f.readline().split()[0])
+            self.fst_vt['HydroDyn']['PotFile']   = [os.path.normpath(os.path.join(os.path.split(hd_file)[0],quoted_read(f.readline().split()[0])))]
+            self.fst_vt['HydroDyn']['WAMITULEN'] = [float_read(f.readline().split()[0])]
         else:
             pot_strings = read_array(f,self.fst_vt['HydroDyn']['NBody'],str) #re.split(',| ',f.readline().strip())
             pot_strings = [os.path.normpath(os.path.join(os.path.split(hd_file)[0],ps)) for ps in pot_strings]  # make relative to hd_file
