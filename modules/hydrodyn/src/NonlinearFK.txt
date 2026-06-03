@@ -1,7 +1,7 @@
 ###################################################################################################################################
-# Registry for WAMIT in the FAST Modularization Framework
-# This Registry file is used to create MODULE WAMIT  which contains all of the user-defined types needed in WAMIT.
-# It also contains copy, destroy, pack,  and unpack routines associated with each defined data types.
+# Registry for NonlinearFK in the FAST Modularization Framework
+# This Registry file is used to create MODULE NonlinearFK which contains all of the user-defined types needed in NonlinearFK.
+# It also contains copy, destroy, pack, and unpack routines associated with each defined data types.
 # See NWTC Programmer's Handbook for further information on the format/contents of this file.
 #
 # Entries are of the form
@@ -24,7 +24,7 @@ typedef   NonlinearFK/NonlinearFK                  Triangle3D                 Re
 typedef   NonlinearFK/NonlinearFK                  Triangle3D                 ReKi                  nds                         {3}             -        -         "Normal directional area" -
 typedef   NonlinearFK/NonlinearFK                  STLGeomType                IntKi                 n_tris                       -              -        -         "Number of triangles in the STL file" -
 typedef   NonlinearFK/NonlinearFK                  STLGeomType                Triangle3D            tris                        {:}             -        -         "All triangles in the STL file" -
-typedef   NonlinearFK/NOnlinearFK                  BodyType                   ReKi                  PtfmRefPt                   {3}             -        -         "Reference point/local origin of undisplaced body" m
+typedef   NonlinearFK/NonlinearFK                  BodyType                   ReKi                  PtfmRefPt                   {3}             -        -         "Reference point/local origin of undisplaced body" m
 typedef   NonlinearFK/NonlinearFK                  BodyType                   ReKi                  volume                       -              -        -         "Volume of the body" -
 typedef   NonlinearFK/NonlinearFK                  BodyType                   IntKi                 n_nodes                      -              -        -         "Number of unique nodes of the body" -
 typedef   NonlinearFK/NonlinearFK                  BodyType                   IntKi                 n_tris                       -              -        -         "Number of triangles of the body" -

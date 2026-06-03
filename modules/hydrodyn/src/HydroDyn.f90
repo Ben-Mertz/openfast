@@ -565,7 +565,7 @@ SUBROUTINE HydroDyn_Init( InitInp, u, p, x, xd, z, OtherState, y, m, Interval, I
                        WRITE( InputFileData%UnSum, '(A64)') 'Mesh-based Froude-Krylov and hydrostatic load calculation.    '
                        WRITE( InputFileData%UnSum,  '(/)' )
                        WRITE( InputFileData%UnSum, '(A42,2X,I15)')    'Number of unique mesh vertices         :', p%NonlinearFK%Bodies(iBody)%n_nodes
-                       WRITE( InputFileData%UnSum, '(A42,2X,I15)')    'Number of mesh trianglar faces         :', p%NonlinearFK%Bodies(iBody)%n_tris
+                       WRITE( InputFileData%UnSum, '(A42,2X,I15)')    'Number of mesh triangular faces        :', p%NonlinearFK%Bodies(iBody)%n_tris
                        WRITE( InputFileData%UnSum, '(A42,2X,ES15.6)') 'Total volume of closed body (m^3)      :', p%NonlinearFK%Bodies(iBody)%volume
                        WRITE( InputFileData%UnSum,  '(/)' )
                        WRITE( InputFileData%UnSum, '(A81)' ) 'Buoyancy loads computed from mesh, summed about ( 0.0, 0.0, 0.0 )'

@@ -545,7 +545,7 @@ structure below the still water level. If **WaveStMod** > 0, HydroDyn will
 integrate the pressure on the part of the structure below the instantaneous
 incident wave free surface. The hydrodynamic pressure of the incident wave is
 computed according to the wave stretching model selected, and the hydrostatic
-pressure above the still water level is negetive. See **Note** below. The 
+pressure above the still water level is negative. See **Note** below. The
 instantaneous displaced position of the body is always used to obtain the 
 correct hydrostatic restoring force and moment. Note that when **FKMod** = 1,
 the **ExctnDisp** and **ExctnCutOff** settings only affect the scattering
