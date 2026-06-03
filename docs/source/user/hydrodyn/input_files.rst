@@ -370,9 +370,10 @@ file. In this case, HydroDyn will use the provided WAMIT output as is.
 The **PotFile** input should contain the path and root name (without
 extensions) for the WAMIT output files enclosed in quotation marks. These
 files consist of the *.1*, *.3* (if **FKMod** = 0), *.3sc* (if **FKMod** = 1),
-*.hst*, and second-order files. See nonlinear Froude-Krylov and hydrostatic
-load model below for the **FKMod** input. The *.hst* file contains the hydrostatic
-restoring (stiffness) matrix. The *.1* file contains the frequency-dependent
+*.hst* (if **FKMod** = 0), and second-order files (if **FKMod** = 0).
+See nonlinear Froude-Krylov and hydrostatic load model below for the
+**FKMod** input. The *.hst* file contains the hydrostatic restoring 
+(stiffness) matrix. The *.1* file contains the frequency-dependent
 hydrodynamic added-mass and damping matrix from the wave radiation problem.
 The *.3* file contains the frequency- and direction-dependent total first-order
 wave-excitation vector from the linear wave diffraction problem. When mesh-based
@@ -512,8 +513,10 @@ placeholder entry, such as *"unused"*, should be included, so the total
 number of quoted strings are always **NBody**.
 
 The STL file for each body must describe a closed surface without gap with
-the normal vector of each face pointing outward away from the body. HydroDyn
-will check the validity of the mesh by computing the total volume. If an
+the normal vector of each face pointing outward away from the body. These
+requirements apply both above and below the waterline. In other words, 
+the STL file must include a "deck" above the waterline that closes the volume.
+HydroDyn will check the validity of the mesh by computing the total volume. If an
 invalid mesh or flipped normal is detected (leading to inconsistent or
 negative volume), HydroDyn will error out. In this case, the user should double
 check the mesh normal direction and ensure the surface is closed without gaps.
@@ -541,8 +544,17 @@ input file, HydroDyn will always integrate the pressure on the part of the
 structure below the still water level. If **WaveStMod** > 0, HydroDyn will
 integrate the pressure on the part of the structure below the instantaneous
 incident wave free surface. The hydrodynamic pressure of the incident wave is
-computed according to the wave stretching model selected. The instantaneous
-displaced position of the body is always used.
+computed according to the wave stretching model selected, and the hydrostatic
+pressure above the still water level is negetive. See **Note** below. The 
+instantaneous displaced position of the body is always used to obtain the 
+correct hydrostatic restoring force and moment. Note that when **FKMod** = 1,
+the **ExctnDisp** and **ExctnCutOff** settings only affect the scattering
+part of the wave excitation based on the *.3sc* file. Similarly, **PtfmYMod**,
+**PtfmRefY**, and **PtfmYCutOff** will only affect the scattering part of the
+wave excitation and the wave radiation load calculation, with the Froude-Krylov
+wave excitation and hydrostatic load calculation superseded by the body-exact
+pressure integration. These inputs can still be set freely by the user as
+appropriate.
 
 **Note:** While OpenFAST allows the user to select any of the available
 **WaveStMod** options with the nonlinear Froude-Krylov and hydrostatic load
