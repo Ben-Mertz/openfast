@@ -3,17 +3,24 @@
 Introduction
 ============
 
-AeroDyn is a time-domain wind turbine aerodynamics module that is coupled in the OpenFAST multi-physics engineering tool to enable aero-elastic simulation of horizontal-axis turbines. 
-AeroDyn can also be driven as a standalone code to compute wind turbine aerodynamic response uncoupled from OpenFAST. 
-When coupled to OpenFAST, AeroDyn can also be linearized as part of the linearization of the full coupled solution (linearization is not available in standalone mode). 
-AeroDyn was originally developed for modeling wind turbine aerodynamics. 
+AeroDyn is a time-domain wind turbine aerodynamics module that is coupled in the
+OpenFAST multi-physics engineering tool to enable aero-elastic simulation of
+horizontal-axis turbines.  AeroDyn can also be driven as a standalone code to
+compute wind turbine aerodynamic response uncoupled from OpenFAST.  When coupled
+to OpenFAST, AeroDyn can also be linearized as part of the linearization of the
+full coupled solution (linearization is not available in standalone mode).
+AeroDyn was originally developed for modeling wind turbine aerodynamics.
 However, the module equally applies to the hydrodynamics of marine hydrokinetic
-(MHK) turbines (the terms “wind turbine”, “tower”, “aerodynamics” etc.  in this document imply “MHK turbine”, “MHK support structure”, “hydrodynamics” etc. for MHK turbines). 
-Additional physics important for MHK turbines, not applicable to wind turbines, computed by AeroDyn include a cavitation check. 
-This documentation pertains version of AeroDyn in the OpenFAST github repository.  
-The AeroDyn version released of OpenFAST 1.0.0 is most closely related to AeroDyn version 15 in the legacy version numbering. 
-AeroDyn version 15 was a complete overhaul from earlier version of AeroDyn. 
-AeroDyn version 15 and newer follows the requirements of the FAST modularization framework. 
+(MHK) turbines (the terms “wind turbine”, “tower”, “aerodynamics” etc.  in this
+document imply “MHK turbine”, “MHK support structure”, “hydrodynamics” etc. for
+MHK turbines).  Additional physics important for MHK turbines, not applicable to
+wind turbines, computed by AeroDyn include a cavitation check, buoyant forces
+and moments on the blades, tower, hub, and nacelle, and added mass and inertia
+forces and moments on the blades and tower. This documentation pertains to the version
+of AeroDyn in the OpenFAST github repository. The AeroDyn version released with OpenFAST
+1.0.0 is most closely related to AeroDyn version 15 in the legacy version numbering.
+AeroDyn version 15 was a complete overhaul from earlier versions of AeroDyn.
+AeroDyn version 15 and newer follow the requirements of the FAST modularization framework. 
 
 AeroDyn calculates aerodynamic loads on both the blades and tower.
 Aerodynamic calculations within AeroDyn are based on the principles of
@@ -60,12 +67,15 @@ and returns them back to OpenFAST as part of the aero-elastic calculation.
 In standalone mode, the inputs to AeroDyn are prescribed by a simple
 driver code, without aero-elastic coupling.
 
-AeroDyn consists of four submodels: (1) rotor wake/induction, (2) blade
+AeroDyn consists of seven submodels: (1) rotor wake/induction, (2) blade
 airfoil aerodynamics, (3) tower influence on the fluid local to the
-blade nodes, and (4) tower drag. Nacelle, hub, and tail-vane fluid
-influence and loading, aeroacoustics, and wake and array effects between
-multiple turbines in a wind plant, are not yet available in AeroDyn v15
-and newer.
+blade nodes, (4) tower and nacelle drag, (5) aeroacoustics, (6) buoyancy
+on the blades, hub, nacelle, and tower (for MHK turbines), and (7) added
+mass and fluid inertia on the blades and tower (for MHK turbines). Nacelle, hub,
+and tail-vane fluid influence and loading (with the exception
+of nacelle drag and nacelle and hub buoyant loads) and wake and array
+effects between multiple turbines in a wind plant are not yet available
+in AeroDyn. Aeroacoustics are not available for MHK turbines.
 
 For operating wind and MHK turbine rotors, AeroDyn calculates the
 influence of the wake via induction factors based on the quasi-steady
@@ -170,17 +180,23 @@ structural motion, depending on features enabled). The tower drag load
 calculation is quasi-steady and independent from the tower influence on
 flow models.
 
+Similarly, the aerodynamics drag loads on the nacelle is calculated using the 
+nacelle geometry, drag coefficients, and the local relative fluid 
+velocity between the freestream (undisturbed) flow and nacelle. The 
+nacelle drag load calculation is quasi-steady and independent from the 
+rotors influence on flow models.
+
 The primary AeroDyn input file defines modeling options, environmental
 conditions (except freestream flow), airfoils, tower nodal
-discretization and properties, as well as output file specifications.
-Airfoil data properties are read from dedicated inputs files (one for
-each airfoil) and include coefficients of lift force, drag force, and
-optional pitching moment and minimum pressure versus AoA, as well as UA
-model parameters. (Minimum pressure coefficients versus AoA are also
-included in the airfoil input files in case that a cavitation check is
-requested.) Blade nodal discretization, geometry, twist, chord, and
-airfoil identifier are likewise read from separate input files (one for
-each blade).
+discretization and properties, tower, hub, and nacelle properties,
+as well as output file specifications. Airfoil data properties are read from
+dedicated inputs files (one for each airfoil) and include coefficients of 
+lift force, drag force, and optional pitching moment and minimum pressure 
+versus AoA, as well as UA model parameters. (Minimum pressure coefficients 
+versus AoA are also included in the airfoil input files in case that a 
+cavitation check is requested.) Blade nodal discretization, geometry, twist, 
+chord, airfoil identifier, and buoyancy properties are likewise read from
+separate input files (one for each blade).
 
 :numref:`ad_input` describes the AeroDyn input files. 
 :numref:`ad_output` discusses the
@@ -190,3 +206,6 @@ file, and the results file.
 using AeroDyn. 
 Example input files are included in :numref:`ad_input_files`. A summary of
 available output channels are found :numref:`ad_output_channels`. 
+
+
+

@@ -126,9 +126,9 @@ contains
 
       call getIceInput(iceInput, 'includeLc', inParams%includeLc, iceLog)
       if (inParams%includeLc) then
-         call logMessage(iceLog, ' Including crack lenght modification term, Lc')
+         call logMessage(iceLog, ' Including crack length modification term, Lc')
       else
-         call logMessage(iceLog, ' NOT including crack lenght modification term, Lc')
+         call logMessage(iceLog, ' NOT including crack length modification term, Lc')
       endif
 
 !  The Croasdale method precalculates a time series of loads based
@@ -275,14 +275,14 @@ contains
 !  Loop on all legs
       do nL = 1, myIceParams%numLegs
 
-   !  Number of whole periods required not known (since period lenght is random)
+   !  Number of whole periods required not known (since period length is random)
    !  So iterate until we have enough points in the time series
          n = 1
          seriesLoop: do while (n < nSteps+1)      
    !  Period is time from no load up to peak, down, then dwell at minimum (normal distribution)
             CALL RndNorm( period, meanPeriod, inParams%periodCOV*meanPeriod )
    !  Period has to be limited to +/- 50% of the mean period
-            period = min(1.5*meanPeriod, max(0.5*meanPeriod, period))
+            period = min(1.5_ReKi*meanPeriod, max(0.5_ReKi*meanPeriod, period))
 
    !  sub period is the fraction of a period: time for load to go up then down (uniform distribution)
             CALL RanLux ( tau )

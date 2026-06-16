@@ -23,7 +23,6 @@ MODULE NWTC_IO
    USE SysSubs
    USE NWTC_Library_Types  ! ProgDesc and other types with copy and other routines for those types
    USE IEEE_ARITHMETIC
-   USE VersionInfo
 
    IMPLICIT  NONE
 
@@ -59,10 +58,11 @@ MODULE NWTC_IO
 
    LOGICAL                       :: Beep     = .TRUE.                            !< Flag that specifies whether or not to beep for error messages and program terminations.
 
-   CHARACTER(20)                 :: ProgName = ' '                               !< The name of the calling program. DO NOT USE THIS IN NEW PROGRAMS (Modules)
+   CHARACTER(25)                 :: ProgName = ' '                               !< The name of the calling program. DO NOT USE THIS IN NEW PROGRAMS (Modules)
    CHARACTER(99)                 :: ProgVer  = ' '                               !< The version (including date) of the calling program. DO NOT USE THIS IN NEW PROGRAMS
    CHARACTER(1), PARAMETER       :: Tab      = CHAR( 9 )                         !< The tab character.
    CHARACTER(*), PARAMETER       :: CommChars = '!#%'                            !< Comment characters that mark the end of useful input
+   INTEGER(IntKi), PARAMETER     :: NWTC_SizeOfNumWord = 256                     !< maximum length of the words containing numeric input (for ParseVar routines)
 
 
       ! Parameters for writing to echo files (in this module only)
@@ -82,6 +82,11 @@ MODULE NWTC_IO
 
 !=======================================================================
 
+   INTERFACE InitFileInfo
+      MODULE PROCEDURE InitFileInfo_FromNullCString
+      MODULE PROCEDURE InitFileInfo_FromStringArray
+   END INTERFACE
+
       !> \copydoc nwtc_io::allcary1
    INTERFACE AllocAry
       MODULE PROCEDURE AllCAry1
@@ -98,23 +103,16 @@ MODULE NWTC_IO
       MODULE PROCEDURE AllLAry2
       MODULE PROCEDURE AllLAry3
    !   MODULE PROCEDURE AllLAry4                               Not yet coded.
-
       MODULE PROCEDURE AllR4Ary1       ! 1-dimensional array of SiKi reals
-      MODULE PROCEDURE AllR8Ary1       ! 1-dimensional array of R8Ki reals
-      MODULE PROCEDURE AllR16Ary1      ! 1-dimensional array of QuKi reals
       MODULE PROCEDURE AllR4Ary2       ! 2-dimensional array of SiKi reals
-      MODULE PROCEDURE AllR8Ary2       ! 2-dimensional array of R8Ki reals
-      MODULE PROCEDURE AllR16Ary2      ! 2-dimensional array of QuKi reals
-
       MODULE PROCEDURE AllR4Ary3       ! 3-dimensional array of SiKi reals
-      MODULE PROCEDURE AllR8Ary3       ! 3-dimensional array of R8Ki reals
-      MODULE PROCEDURE AllR16Ary3      ! 3-dimensional array of QuKi reals
       MODULE PROCEDURE AllR4Ary4       ! 4-dimensional array of SiKi reals
-      MODULE PROCEDURE AllR8Ary4       ! 4-dimensional array of R8Ki reals
-      MODULE PROCEDURE AllR16Ary4      ! 4-dimensional array of QuKi reals
       MODULE PROCEDURE AllR4Ary5       ! 5-dimensional array of SiKi reals
+      MODULE PROCEDURE AllR8Ary1       ! 1-dimensional array of R8Ki reals      
+      MODULE PROCEDURE AllR8Ary2       ! 2-dimensional array of R8Ki reals
+      MODULE PROCEDURE AllR8Ary3       ! 3-dimensional array of R8Ki reals
+      MODULE PROCEDURE AllR8Ary4       ! 4-dimensional array of R8Ki reals
       MODULE PROCEDURE AllR8Ary5       ! 5-dimensional array of R8Ki reals
-      MODULE PROCEDURE AllR16Ary5      ! 5-dimensional array of QuKi reals
    END INTERFACE
 
       !> \copydoc nwtc_io::allipary1
@@ -122,44 +120,44 @@ MODULE NWTC_IO
       MODULE PROCEDURE AllIPAry1
       MODULE PROCEDURE AllIPAry2
       MODULE PROCEDURE AllFPAry1
+      MODULE PROCEDURE AllDPAry1  
       MODULE PROCEDURE AllRPAry2
       MODULE PROCEDURE AllR4PAry3
       MODULE PROCEDURE AllR8PAry3
-      MODULE PROCEDURE AllR16PAry3
 !      MODULE PROCEDURE AllRPAry4   !not yet coded
    END INTERFACE
 
       !> \copydoc nwtc_io::parsechvar
    INTERFACE ParseVar                                                         ! Parses a character variable name and value from a string.
       MODULE PROCEDURE ParseChVar                                             ! Parses a character string from a string.
-      MODULE PROCEDURE ParseDbVar                                             ! Parses a double-precision REAL from a string.
       MODULE PROCEDURE ParseInVar                                             ! Parses an INTEGER from a string.
       MODULE PROCEDURE ParseLoVar                                             ! Parses an LOGICAL from a string.
       MODULE PROCEDURE ParseSiVar                                             ! Parses a single-precision REAL from a string.
+      MODULE PROCEDURE ParseR8Var                                             ! Parses a double-precision REAL from a string.
    END INTERFACE
 
       !> \copydoc nwtc_io::parsechvarwdefault
-   INTERFACE ParseVarWDefault                                                 ! Parses a boolean variable name and value from a string, potentially sets to a default value if "Default" is parsed.
+   INTERFACE ParseVarWDefault                                                 ! Parses a character variable name and value from a string, potentially sets to a default value if "Default" is parsed.
       MODULE PROCEDURE ParseChVarWDefault                                     ! Parses a character string from a string, potentially sets to a default value if "Default" is parsed.
-      MODULE PROCEDURE ParseDbVarWDefault                                     ! Parses a double-precision REAL from a string, potentially sets to a default value if "Default" is parsed.
       MODULE PROCEDURE ParseInVarWDefault                                     ! Parses an INTEGER from a string, potentially sets to a default value if "Default" is parsed.
       MODULE PROCEDURE ParseLoVarWDefault                                     ! Parses an LOGICAL from a string, potentially sets to a default value if "Default" is parsed.
       MODULE PROCEDURE ParseSiVarWDefault                                     ! Parses a single-precision REAL from a string, potentially sets to a default value if "Default" is parsed.
+      MODULE PROCEDURE ParseR8VarWDefault                                     ! Parses a double-precision REAL from a string, potentially sets to a default value if "Default" is parsed.
    END INTERFACE
 
       !> \copydoc nwtc_io::parsedbary
    INTERFACE ParseAry                                                         ! Parse an array of numbers from a string.
-      MODULE PROCEDURE ParseDbAry                                             ! Parse an array of double-precision REAL values.
       MODULE PROCEDURE ParseInAry                                             ! Parse an array of whole numbers.
       MODULE PROCEDURE ParseLoAry                                             ! Parse an array of LOGICAL values.
       MODULE PROCEDURE ParseSiAry                                             ! Parse an array of single-precision REAL values.
+      MODULE PROCEDURE ParseR8Ary                                             ! Parse an array of double-precision REAL values.
+      MODULE PROCEDURE ParseChAry
    END INTERFACE
 
       !> \copydoc nwtc_io::checkr4var
    INTERFACE CheckRealVar
       MODULE PROCEDURE CheckR4Var     ! 4-byte real
       MODULE PROCEDURE CheckR8Var     ! 8-byte real
-      MODULE PROCEDURE CheckR16Var    ! 16-byte real
    END INTERFACE
    
       !> \copydoc nwtc_io::readcvar
@@ -169,7 +167,6 @@ MODULE NWTC_IO
       MODULE PROCEDURE ReadLVar
       MODULE PROCEDURE ReadR4Var     ! 4-byte real
       MODULE PROCEDURE ReadR8Var     ! 8-byte real
-      MODULE PROCEDURE ReadR16Var    ! 16-byte real
    END INTERFACE
 
       !> \copydoc nwtc_io::readivarwdefault
@@ -179,7 +176,7 @@ MODULE NWTC_IO
       MODULE PROCEDURE ReadLVarWDefault      ! Logical
       MODULE PROCEDURE ReadR4VarWDefault     ! 4-byte real
       MODULE PROCEDURE ReadR8VarWDefault     ! 8-byte real
-      MODULE PROCEDURE ReadR16VarWDefault    ! 16-byte real
+      MODULE PROCEDURE ReadIAryWDefault
    END INTERFACE
    
       !> \copydoc nwtc_io::readcary
@@ -187,13 +184,20 @@ MODULE NWTC_IO
       MODULE PROCEDURE ReadCAry
       MODULE PROCEDURE ReadCAryFromStr
       MODULE PROCEDURE ReadIAry
+      MODULE PROCEDURE ReadIAryFromStr
       MODULE PROCEDURE ReadLAry
       MODULE PROCEDURE ReadR4Ary  ! read array of 4-byte reals
       MODULE PROCEDURE ReadR4AryFromStr
       MODULE PROCEDURE ReadR8Ary  ! read array of 8-byte reals
       MODULE PROCEDURE ReadR8AryFromStr
-      MODULE PROCEDURE ReadR16Ary ! read array of 16-byte reals
-      MODULE PROCEDURE ReadR16AryFromStr
+   END INTERFACE
+
+      !> \copydoc nwtc_io::readr4arywdefault
+   INTERFACE ReadAryWDefault
+      MODULE PROCEDURE ReadR4AryWDefault
+      MODULE PROCEDURE ReadR8AryWDefault
+!      MODULE PROCEDURE ReadR4AryWDefaultFromStr    ! Not coded yet
+!      MODULE PROCEDURE ReadR8AryWDefaultFromStr    ! Not coded yet
    END INTERFACE
 
       !> \copydoc nwtc_io::readcarylines   
@@ -201,7 +205,6 @@ MODULE NWTC_IO
       MODULE PROCEDURE ReadCAryLines
       MODULE PROCEDURE ReadR4AryLines
       MODULE PROCEDURE ReadR8AryLines
-      MODULE PROCEDURE ReadR16AryLines
 !     MODULE PROCEDURE ReadIAryLines         ! Not coded yet
 !     MODULE PROCEDURE ReadLAryLines         ! Not coded yet
    END INTERFACE
@@ -209,9 +212,9 @@ MODULE NWTC_IO
       !> \copydoc nwtc_io::int2lstr
    INTERFACE Num2LStr
       MODULE PROCEDURE Int2LStr        ! default integers
+      MODULE PROCEDURE B8Ki2LStr       ! 8 byte integers
       MODULE PROCEDURE R2LStr4         ! 4-byte  reals
       MODULE PROCEDURE R2LStr8         ! 8-byte  reals
-      MODULE PROCEDURE R2LStr16        ! 16-byte reals
    END INTERFACE
 
       !> \copydoc nwtc_io::dispnvd0
@@ -227,8 +230,6 @@ MODULE NWTC_IO
       MODULE PROCEDURE WrMatrix2R4     ! Two dimension matrix of SiKi
       MODULE PROCEDURE WrMatrix1R8     ! Single dimension matrix (Ary) of R8Ki
       MODULE PROCEDURE WrMatrix2R8     ! Two dimension matrix of R8Ki
-      MODULE PROCEDURE WrMatrix1R16    ! Single dimension matrix (Ary) of QuKi
-      MODULE PROCEDURE WrMatrix2R16    ! Two dimension matrix of QuKi
    END INTERFACE
 
       !> \copydoc nwtc_io::wrpartialmatrix1r8
@@ -242,9 +243,7 @@ MODULE NWTC_IO
       MODULE PROCEDURE WrIAryFileNR
       MODULE PROCEDURE WrR4AryFileNR
       MODULE PROCEDURE WrR8AryFileNR
-      MODULE PROCEDURE WrR16AryFileNR
    END INTERFACE
-   
 
 CONTAINS
 
@@ -297,20 +296,16 @@ CONTAINS
 !! If the array is already allocated on entry to this routine, an error will be generated. \n
 !! Use AllocAry (nwtc_io::allocary) instead of directly calling a specific routine in the generic interface.   
    SUBROUTINE AllCAry1 ( Ary, AryDim1, Descr, ErrStat, ErrMsg )
+   ! This routine allocates a 1-D CHARACTER array.
 
-      ! This routine allocates a 1-D CHARACTER array.
-
-      ! Argument declarations.
-
+   ! Argument declarations.
    CHARACTER(*), ALLOCATABLE         :: Ary    (:)                                 !< Array to be allocated
    INTEGER,      INTENT(IN)          :: AryDim1                                    !< The size of the first dimension of the array.
    CHARACTER(*), INTENT(IN)          :: Descr                                      !< Brief array description (for error message).
    INTEGER,      INTENT(OUT)         :: ErrStat                                    !< Error status
    CHARACTER(*), INTENT(OUT)         :: ErrMsg                                     !< Error message corresponding to ErrStat
-
    
    ALLOCATE ( Ary(AryDim1) , STAT=ErrStat )
-
 
    IF ( ErrStat /= 0 ) THEN
       ErrStat = ErrID_Fatal
@@ -322,6 +317,7 @@ CONTAINS
    ELSE
       ErrStat = ErrID_None
       ErrMsg  = ''
+      Ary = ''
    END IF
 
    RETURN
@@ -329,20 +325,15 @@ CONTAINS
 !=======================================================================
 !> \copydoc nwtc_io::allcary1
    SUBROUTINE AllCAry2 ( Ary, AryDim1, AryDim2, Descr, ErrStat, ErrMsg )
+   ! This routine allocates a 2-D CHARACTER array.
 
-      ! This routine allocates a 2-D CHARACTER array.
-
-
-      ! Argument declarations.
-
+   ! Argument declarations.
    CHARACTER(*), ALLOCATABLE         :: Ary    (:,:)                               !  Array to be allocated
    INTEGER,      INTENT(IN)          :: AryDim1                                    !  The size of the first dimension of the array.
    INTEGER,      INTENT(IN)          :: AryDim2                                    !< The size of the second dimension of the array.
    INTEGER,      INTENT(OUT)         :: ErrStat                                    !  Error status
    CHARACTER(*), INTENT(OUT)         :: ErrMsg                                     !  Error message corresponding to ErrStat
    CHARACTER(*), INTENT(IN)          :: Descr                                      !  Brief array description.
-
-
 
    ALLOCATE ( Ary(AryDim1,AryDim2) , STAT=ErrStat )
 
@@ -356,21 +347,17 @@ CONTAINS
    ELSE
       ErrStat = ErrID_None
       ErrMsg  = ''
+      Ary = ''
    END IF
-
 
    RETURN
    END SUBROUTINE AllCAry2
 !=======================================================================
 !> \copydoc nwtc_io::allcary1
    SUBROUTINE AllCAry3 (  Ary, AryDim1, AryDim2, AryDim3, Descr, ErrStat, ErrMsg )
+   ! This routine allocates a 3-D CHARACTER array.
 
-
-      ! This routine allocates a 3-D CHARACTER array.
-
-
-      ! Argument declarations.
-
+   ! Argument declarations.
    CHARACTER(*), ALLOCATABLE         :: Ary    (:,:,:)                             !  Array to be allocated
    INTEGER,      INTENT(IN)          :: AryDim1                                    !  The size of the first dimension of the array.
    INTEGER,      INTENT(IN)          :: AryDim2                                    !< The size of the second dimension of the array.
@@ -378,7 +365,6 @@ CONTAINS
    CHARACTER(*), INTENT(IN)          :: Descr                                      !  Brief array description.
    INTEGER,      INTENT(OUT)         :: ErrStat                                    !  Error status
    CHARACTER(*), INTENT(OUT)         :: ErrMsg                                     !  Error message corresponding to ErrStat
-
 
    ALLOCATE ( Ary(AryDim1,AryDim2,AryDim3) , STAT=ErrStat )
 
@@ -392,27 +378,22 @@ CONTAINS
    ELSE
       ErrStat = ErrID_None
       ErrMsg  = ''
+      Ary = ''
    END IF
-
-
 
    RETURN
    END SUBROUTINE AllCAry3
 !=======================================================================
 !> \copydoc nwtc_io::allcary1
    SUBROUTINE AllI1BAry1 ( Ary, AryDim1, Descr, ErrStat, ErrMsg )
+   ! This routine allocates a 1-D INTEGER B1Ki array.
 
-      ! This routine allocates a 1-D INTEGER B1Ki array.
-
-
-      ! Argument declarations.
-
+   ! Argument declarations.
    INTEGER(B1Ki),  ALLOCATABLE :: Ary    (:)                                 ! Array to be allocated
    INTEGER(IntKi), INTENT(IN)  :: AryDim1                                    ! The size of the array
    CHARACTER(*),   INTENT(IN)  :: Descr                                      ! Brief array description
    INTEGER(IntKi), INTENT(OUT) :: ErrStat                                    ! Error status
    CHARACTER(*),   INTENT(OUT) :: ErrMsg                                     ! Error message corresponding to ErrStat
-
 
    ALLOCATE ( Ary(AryDim1) , STAT=ErrStat )
 
@@ -426,6 +407,7 @@ CONTAINS
    ELSE
       ErrStat = ErrID_None
       ErrMsg = ' '
+      Ary = 0_B1Ki
    END IF
 
    RETURN
@@ -433,19 +415,14 @@ CONTAINS
 !=======================================================================
 !> \copydoc nwtc_io::allcary1
    SUBROUTINE AllI2BAry1 ( Ary, AryDim1, Descr, ErrStat, ErrMsg )
+   ! This routine allocates a 1-D INTEGER B2Ki array.
 
-
-      ! This routine allocates a 1-D INTEGER B2Ki array.
-
-
-      ! Argument declarations.
-
+   ! Argument declarations.
    INTEGER(B2Ki),  ALLOCATABLE :: Ary    (:)                                 ! Array to be allocated
    INTEGER(IntKi), INTENT(IN)  :: AryDim1                                     ! The size of the array
    CHARACTER(*),   INTENT(IN)  :: Descr                                      ! Brief array description
    INTEGER(IntKi), INTENT(OUT) :: ErrStat                                    ! Error status
    CHARACTER(*),   INTENT(OUT) :: ErrMsg                                     ! Error message corresponding to ErrStat
-
 
    ALLOCATE ( Ary(AryDim1) , STAT=ErrStat )
 
@@ -459,6 +436,7 @@ CONTAINS
    ELSE
       ErrStat = ErrID_None
       ErrMsg = ' '
+      Ary = 0_B2Ki
    END IF
 
    RETURN
@@ -466,19 +444,14 @@ CONTAINS
 !=======================================================================
 !> \copydoc nwtc_io::allcary1
    SUBROUTINE AllI4BAry1 ( Ary, AryDim1, Descr, ErrStat, ErrMsg )
+   ! This routine allocates a 1-D INTEGER B1Ki array.
 
-
-      ! This routine allocates a 1-D INTEGER B1Ki array.
-
-
-      ! Argument declarations.
-
+   ! Argument declarations.
    INTEGER(B4Ki),  ALLOCATABLE :: Ary    (:)                                 !  Array to be allocated
    INTEGER(IntKi), INTENT(IN)  :: AryDim1                                     !  The size of the array
    CHARACTER(*),   INTENT(IN)  :: Descr                                      !  Brief array description
    INTEGER(IntKi), INTENT(OUT) :: ErrStat                                    !  Error status
    CHARACTER(*),   INTENT(OUT) :: ErrMsg                                     !  Error message corresponding to ErrStat
-
 
    ALLOCATE ( Ary(AryDim1) , STAT=ErrStat )
 
@@ -492,6 +465,7 @@ CONTAINS
    ELSE
       ErrStat = ErrID_None
       ErrMsg = ' '
+      Ary = 0_B4Ki
    END IF
 
    RETURN
@@ -499,20 +473,15 @@ CONTAINS
 !=======================================================================
 !> \copydoc nwtc_io::allcary1
    SUBROUTINE AllIAry2 (  Ary, AryDim1, AryDim2, Descr, ErrStat, ErrMsg )
+   ! This routine allocates a 2-D INTEGER array.
 
-
-      ! This routine allocates a 2-D INTEGER array.
-
-
-      ! Argument declarations.
-
+   ! Argument declarations.
    INTEGER(IntKi), ALLOCATABLE       :: Ary    (:,:)                               ! Array to be allocated
    INTEGER,      INTENT(IN)          :: AryDim1                                    ! The size of the first dimension of the array.
    INTEGER,      INTENT(IN)          :: AryDim2                                    !< The size of the second dimension of the array.
    CHARACTER(*), INTENT(IN)          :: Descr                                      ! Brief array description.
    INTEGER,      INTENT(OUT)         :: ErrStat                                    ! Error status
    CHARACTER(*), INTENT(OUT)         :: ErrMsg                                     ! Error message corresponding to ErrStat
-
 
    ALLOCATE ( Ary(AryDim1,AryDim2) , STAT=ErrStat )
 
@@ -526,6 +495,7 @@ CONTAINS
    ELSE
       ErrStat = ErrID_None
       ErrMsg  = ''
+      Ary = 0_IntKi
    END IF
 
    RETURN
@@ -533,13 +503,9 @@ CONTAINS
 !=======================================================================
 !> \copydoc nwtc_io::allcary1
    SUBROUTINE AllIAry3 (  Ary, AryDim1, AryDim2, AryDim3, Descr, ErrStat, ErrMsg )
+   ! This routine allocates a 3-D INTEGER array.
 
-
-      ! This routine allocates a 3-D INTEGER array.
-
-
-      ! Argument declarations.
-
+   ! Argument declarations.
    INTEGER(IntKi),  ALLOCATABLE      :: Ary    (:,:,:)                             !  Array to be allocated
    INTEGER,      INTENT(IN)          :: AryDim1                                    !  The size of the first dimension of the array.
    INTEGER,      INTENT(IN)          :: AryDim2                                    !< The size of the second dimension of the array.
@@ -547,8 +513,6 @@ CONTAINS
    CHARACTER(*), INTENT(IN)          :: Descr                                      !  Brief array description.
    INTEGER,      INTENT(OUT)         :: ErrStat                                    !  Error status; if present, program does not abort on error
    CHARACTER(*), INTENT(OUT)         :: ErrMsg                                     !  Error message corresponding to ErrStat
-
-
 
    ALLOCATE ( Ary(AryDim1,AryDim2,AryDim3) , STAT=ErrStat )
 
@@ -562,8 +526,8 @@ CONTAINS
    ELSE
       ErrStat = ErrID_None
       ErrMsg  = ''
+      Ary = 0_IntKi
    END IF
-   
 
    RETURN
    END SUBROUTINE AllIAry3
@@ -574,17 +538,14 @@ CONTAINS
 !! will be deallocated first. \n
 !! Use AllocPAry (nwtc_io::allocpary) instead of directly calling a specific routine in the generic interface.   
    SUBROUTINE AllIPAry1 ( Ary, AryDim1, Descr, ErrStat, ErrMsg )
+   ! This routine allocates a 1-D INTEGER array.
 
-      ! This routine allocates a 1-D INTEGER array.
-
-      ! Argument declarations.
-
+   ! Argument declarations.
    INTEGER,      POINTER             :: Ary    (:)                                 !< Array to be allocated
    INTEGER,      INTENT(IN)          :: AryDim1                                    !< The size of the first dimension of the array.
    INTEGER,      INTENT(OUT)         :: ErrStat                                    !< Error status
    CHARACTER(*), INTENT(OUT)         :: ErrMsg                                     !< Error message corresponding to ErrStat
    CHARACTER(*), INTENT(IN)          :: Descr                                      !< Brief array description.
-
 
    IF ( ASSOCIATED(Ary) ) THEN
       DEALLOCATE(Ary)
@@ -600,29 +561,23 @@ CONTAINS
    ELSE
       ErrStat = ErrID_None
       ErrMsg  = ''
+      Ary = 0
    END IF
-   
-   Ary = 0
 
    RETURN
    END SUBROUTINE AllIPAry1 
 !=======================================================================
 !> \copydoc nwtc_io::allipary1
    SUBROUTINE AllIPAry2 (  Ary, AryDim1, AryDim2, Descr, ErrStat, ErrMsg )
+   ! This routine allocates a 2-D INTEGER array.
 
-
-      ! This routine allocates a 2-D INTEGER array.
-
-      ! Argument declarations.
-
+   ! Argument declarations.
    INTEGER,      POINTER             :: Ary    (:,:)                               !  Array to be allocated
    INTEGER,      INTENT(IN)          :: AryDim1                                    !  The size of the first dimension of the array.
    INTEGER,      INTENT(IN)          :: AryDim2                                    !< The size of the second dimension of the array.
    INTEGER,      INTENT(OUT)         :: ErrStat                                    !  Error status
    CHARACTER(*), INTENT(OUT)         :: ErrMsg                                     !  Error message corresponding to ErrStat
    CHARACTER(*), INTENT(IN)          :: Descr                                      !  Brief array description.
-
-
 
    IF ( ASSOCIATED(Ary) ) THEN
       DEALLOCATE(Ary)
@@ -637,24 +592,22 @@ CONTAINS
    ELSE
       ErrStat = ErrID_None
       ErrMsg  = ''
+      Ary = 0
    END IF
    
-   Ary = 0
    RETURN
    END SUBROUTINE AllIPAry2 
 !=======================================================================
 !> \copydoc nwtc_io::allipary1
    SUBROUTINE AllFPAry1 (  Ary, AryDim1, Descr, ErrStat, ErrMsg )
+   ! This routine allocates a 1-D REAL array.
 
-      ! This routine allocates a 1-D REAL array.
-      ! Argument declarations.
-
+   ! Argument declarations.
    REAL(C_FLOAT), POINTER            :: Ary    (:)                                 !  Array to be allocated
    INTEGER,      INTENT(IN)          :: AryDim1                                    !  The size of the first dimension of the array.
    INTEGER,      INTENT(OUT)         :: ErrStat                                    !< Error status
    CHARACTER(*), INTENT(OUT)         :: ErrMsg                                     !  Error message corresponding to ErrStat
    CHARACTER(*), INTENT(IN)          :: Descr                                      !  Brief array description.
-
 
    IF ( ASSOCIATED(Ary) ) THEN
       DEALLOCATE(Ary)
@@ -670,25 +623,54 @@ CONTAINS
    ELSE
       ErrStat = ErrID_None
       ErrMsg  = ''
+      Ary = 0
    END IF
    
-   Ary = 0
    RETURN
    END SUBROUTINE AllFPAry1
 !=======================================================================
 !> \copydoc nwtc_io::allipary1
+   SUBROUTINE AllDPAry1 (  Ary, AryDim1, Descr, ErrStat, ErrMsg )
+   ! This routine allocates a 1-D REAL array.
+
+   ! Argument declarations.
+   REAL(C_DOUBLE), POINTER           :: Ary    (:)                                 !  Array to be allocated
+   INTEGER,      INTENT(IN)          :: AryDim1                                    !  The size of the first dimension of the array.
+   INTEGER,      INTENT(OUT)         :: ErrStat                                    !< Error status
+   CHARACTER(*), INTENT(OUT)         :: ErrMsg                                     !  Error message corresponding to ErrStat
+   CHARACTER(*), INTENT(IN)          :: Descr                                      !  Brief array description.
+
+   IF ( ASSOCIATED(Ary) ) THEN
+      DEALLOCATE(Ary)
+      !ErrStat = ErrID_Warn
+      !ErrMsg = " AllRPAry2: Ary already allocated."
+   END IF
+
+   ALLOCATE ( Ary(AryDim1) , STAT=ErrStat )
+   IF ( ErrStat /= 0 ) THEN
+      ErrStat = ErrID_Fatal
+      ErrMsg = 'Error allocating '//TRIM(Num2LStr(AryDim1*BYTES_IN_REAL))//&
+                  ' bytes of memory for the '//TRIM( Descr )//' array.'
+   ELSE
+      ErrStat = ErrID_None
+      ErrMsg  = ''
+      Ary = 0
+   END IF
+   
+   RETURN
+   END SUBROUTINE AllDPAry1
+!=======================================================================
+!> \copydoc nwtc_io::allipary1
    SUBROUTINE AllRPAry2 (  Ary, AryDim1, AryDim2, Descr, ErrStat, ErrMsg )
+   ! This routine allocates a 2-D REAL array.
 
-      ! This routine allocates a 2-D REAL array.
-      ! Argument declarations.
-
+   ! Argument declarations.
    REAL(ReKi),   POINTER             :: Ary    (:,:)                               !  Array to be allocated
    INTEGER,      INTENT(IN)          :: AryDim1                                    !  The size of the first dimension of the array.
    INTEGER,      INTENT(IN)          :: AryDim2                                    !< The size of the second dimension of the array.
    INTEGER,      INTENT(OUT)         :: ErrStat                                    !  Error status
    CHARACTER(*), INTENT(OUT)         :: ErrMsg                                     !  Error message corresponding to ErrStat
    CHARACTER(*), INTENT(IN)          :: Descr                                      !  Brief array description.
-
 
    IF ( ASSOCIATED(Ary) ) THEN
       DEALLOCATE(Ary)
@@ -704,20 +686,17 @@ CONTAINS
    ELSE
       ErrStat = ErrID_None
       ErrMsg  = ''
+      Ary = 0
    END IF
    
-   Ary = 0
    RETURN
    END SUBROUTINE AllRPAry2 
 !=======================================================================
 !> \copydoc nwtc_io::allipary1
    SUBROUTINE AllR4PAry3 (  Ary, AryDim1, AryDim2, AryDim3, Descr, ErrStat, ErrMsg ) 
+   ! This routine allocates a 3-D REAL array.
 
-
-      ! This routine allocates a 3-D REAL array.
-
-      ! Argument declarations.
-
+   ! Argument declarations.
    REAL(SiKi),   POINTER             :: Ary    (:,:,:)                             !  Array to be allocated
    INTEGER,      INTENT(IN)          :: AryDim1                                    !  The size of the first dimension of the array.
    INTEGER,      INTENT(IN)          :: AryDim2                                    !< The size of the second dimension of the array.
@@ -726,7 +705,6 @@ CONTAINS
    CHARACTER(*), INTENT(OUT)         :: ErrMsg                                     !  Error message corresponding to ErrStat
    CHARACTER(*), INTENT(IN)          :: Descr                                      !  Brief array description.
 
-
    IF ( ASSOCIATED(Ary) ) THEN
       DEALLOCATE(Ary)
       !ErrStat = ErrID_Warn
@@ -736,25 +714,22 @@ CONTAINS
    ALLOCATE ( Ary(AryDim1,AryDim2,AryDim3) , STAT=ErrStat )
    IF ( ErrStat /= 0 ) THEN
       ErrStat = ErrID_Fatal
-      ErrMsg = 'Error allocating '//TRIM(Num2LStr(AryDim1*AryDim2*AryDim3*BYTES_IN_REAL))//&
+      ErrMsg = 'Error allocating '//TRIM(Num2LStr(AryDim1*AryDim2*AryDim3*BYTES_IN_R4Ki))//&
                   ' bytes of memory for the '//TRIM( Descr )//' array.'
    ELSE
       ErrStat = ErrID_None
       ErrMsg  = ''
+      Ary = 0
    END IF
    
-   Ary = 0
    RETURN
   END SUBROUTINE AllR4PAry3
 !=======================================================================
 !> \copydoc nwtc_io::allipary1
    SUBROUTINE AllR8PAry3 (  Ary, AryDim1, AryDim2, AryDim3, Descr, ErrStat, ErrMsg ) 
+   ! This routine allocates a 3-D REAL array.
 
-
-      ! This routine allocates a 3-D REAL array.
-
-      ! Argument declarations.
-
+   ! Argument declarations.
    REAL(R8Ki),   POINTER             :: Ary    (:,:,:)                             !  Array to be allocated
    INTEGER,      INTENT(IN)          :: AryDim1                                    !  The size of the first dimension of the array.
    INTEGER,      INTENT(IN)          :: AryDim2                                    !< The size of the second dimension of the array.
@@ -763,7 +738,6 @@ CONTAINS
    CHARACTER(*), INTENT(OUT)         :: ErrMsg                                     !  Error message corresponding to ErrStat
    CHARACTER(*), INTENT(IN)          :: Descr                                      !  Brief array description.
 
-
    IF ( ASSOCIATED(Ary) ) THEN
       DEALLOCATE(Ary)
       !ErrStat = ErrID_Warn
@@ -773,70 +747,27 @@ CONTAINS
    ALLOCATE ( Ary(AryDim1,AryDim2,AryDim3) , STAT=ErrStat )
    IF ( ErrStat /= 0 ) THEN
       ErrStat = ErrID_Fatal
-      ErrMsg = 'Error allocating '//TRIM(Num2LStr(AryDim1*AryDim2*AryDim3*BYTES_IN_REAL))//&
+      ErrMsg = 'Error allocating '//TRIM(Num2LStr(AryDim1*AryDim2*AryDim3*BYTES_IN_R8Ki))//&
                   ' bytes of memory for the '//TRIM( Descr )//' array.'
    ELSE
       ErrStat = ErrID_None
       ErrMsg  = ''
+      Ary = 0
    END IF
    
-   Ary = 0
    RETURN
    END SUBROUTINE AllR8PAry3
 !=======================================================================
-!> \copydoc nwtc_io::allipary1
-   SUBROUTINE AllR16PAry3 (  Ary, AryDim1, AryDim2, AryDim3, Descr, ErrStat, ErrMsg ) 
-
-
-      ! This routine allocates a 3-D REAL array.
-
-      ! Argument declarations.
-
-   REAL(QuKi),   POINTER             :: Ary    (:,:,:)                             !  Array to be allocated
-   INTEGER,      INTENT(IN)          :: AryDim1                                    !  The size of the first dimension of the array.
-   INTEGER,      INTENT(IN)          :: AryDim2                                    !< The size of the second dimension of the array.
-   INTEGER,      INTENT(IN)          :: AryDim3                                    !< The size of the third dimension of the array.
-   INTEGER,      INTENT(OUT)         :: ErrStat                                    !  Error status
-   CHARACTER(*), INTENT(OUT)         :: ErrMsg                                     !  Error message corresponding to ErrStat
-   CHARACTER(*), INTENT(IN)          :: Descr                                      !  Brief array description.
-
-
-   IF ( ASSOCIATED(Ary) ) THEN
-      DEALLOCATE(Ary)
-      !ErrStat = ErrID_Warn
-      !ErrMsg = " AllRPAry3: Ary already allocated."
-   END IF
-
-   ALLOCATE ( Ary(AryDim1,AryDim2,AryDim3) , STAT=ErrStat )
-   IF ( ErrStat /= 0 ) THEN
-      ErrStat = ErrID_Fatal
-      ErrMsg = 'Error allocating '//TRIM(Num2LStr(AryDim1*AryDim2*AryDim3*BYTES_IN_REAL))//&
-                  ' bytes of memory for the '//TRIM( Descr )//' array.'
-   ELSE
-      ErrStat = ErrID_None
-      ErrMsg  = ''
-   END IF
-   
-   Ary = 0
-   RETURN
-   END SUBROUTINE AllR16PAry3
-!=======================================================================
 !> \copydoc nwtc_io::allcary1
    SUBROUTINE AllLAry1 ( Ary, AryDim1, Descr, ErrStat, ErrMsg )
+   ! This routine allocates a 1-D LOGICAL array.
 
-
-      ! This routine allocates a 1-D LOGICAL array.
-
-
-      ! Argument declarations.
-
+   ! Argument declarations.
    LOGICAL,      ALLOCATABLE         :: Ary    (:)                                 !  Array to be allocated
    INTEGER,      INTENT(IN)          :: AryDim1                                    !  The size of the array.
    CHARACTER(*), INTENT(IN)          :: Descr                                      !  Brief array description.
    INTEGER,      INTENT(OUT)         :: ErrStat                                    !  Error status; if present, program does not abort on error
    CHARACTER(*), INTENT(OUT)         :: ErrMsg                                     !  Error message corresponding to ErrStat
-
-
 
    ALLOCATE ( Ary(AryDim1) , STAT=ErrStat )
 
@@ -851,29 +782,23 @@ CONTAINS
    ELSE
       ErrStat = ErrID_None
       ErrMsg  = ''
+      Ary = .FALSE.
    END IF
-
 
    RETURN
    END SUBROUTINE AllLAry1
 !=======================================================================
 !> \copydoc nwtc_io::allcary1
    SUBROUTINE AllLAry2 (  Ary, AryDim1, AryDim2, Descr, ErrStat, ErrMsg )
+   ! This routine allocates a 2-D LOGICAL array.
 
-
-      ! This routine allocates a 2-D LOGICAL array.
-
-
-      ! Argument declarations.
-
+   ! Argument declarations.
    LOGICAL,      ALLOCATABLE         :: Ary    (:,:)                               !  Array to be allocated
    INTEGER,      INTENT(IN)          :: AryDim1                                    !  The size of the first dimension of the array.
    INTEGER,      INTENT(IN)          :: AryDim2                                    !< The size of the second dimension of the array.
    CHARACTER(*), INTENT(IN)          :: Descr                                      !  Brief array description.
    INTEGER,      INTENT(OUT)         :: ErrStat                                    !  Error status; if present, program does not abort on error
    CHARACTER(*), INTENT(OUT)         :: ErrMsg                                     !  Error message corresponding to ErrStat
-
-
 
    ALLOCATE ( Ary(AryDim1,AryDim2) , STAT=ErrStat )
 
@@ -888,8 +813,8 @@ CONTAINS
    ELSE
       ErrStat = ErrID_None
       ErrMsg  = ''
+      Ary = .FALSE.
    END IF
-
 
    RETURN
    END SUBROUTINE AllLAry2
@@ -897,17 +822,14 @@ CONTAINS
 !> \copydoc nwtc_io::allcary1
    SUBROUTINE AllLAry3 (  Ary, AryDim1, AryDim2, AryDim3, Descr, ErrStat, ErrMsg )
 
-      ! Argument declarations.
+   ! Argument declarations.
    LOGICAL,      ALLOCATABLE         :: Ary    (:,:,:)                             !  Array to be allocated
    INTEGER,      INTENT(IN)          :: AryDim1                                    !  The size of the first dimension of the array.
    INTEGER,      INTENT(IN)          :: AryDim2                                    !< The size of the second dimension of the array.
    INTEGER,      INTENT(IN)          :: AryDim3                                    !< The size of the third dimension of the array.
-
    CHARACTER(*), INTENT(IN)          :: Descr                                      !  Brief array description.
    INTEGER,      INTENT(OUT)         :: ErrStat                                    !  Error status; if present, program does not abort on error
    CHARACTER(*), INTENT(OUT)         :: ErrMsg                                     !  Error message corresponding to ErrStat
-
-
 
    ALLOCATE ( Ary(AryDim1,AryDim2,AryDim3) , STAT=ErrStat )
 
@@ -922,8 +844,8 @@ CONTAINS
    ELSE
       ErrStat = ErrID_None
       ErrMsg  = ''
+      Ary = .FALSE.
    END IF
-
 
    RETURN
    END SUBROUTINE AllLAry3
@@ -931,15 +853,12 @@ CONTAINS
 !> \copydoc nwtc_io::allcary1
    SUBROUTINE AllR4Ary1 ( Ary, AryDim1, Descr, ErrStat, ErrMsg )
 
-      ! Argument declarations.
-
+   ! Argument declarations.
    REAL(SiKi),      ALLOCATABLE      :: Ary    (:)                                 !  Array to be allocated
    INTEGER,      INTENT(IN)          :: AryDim1                                    !  The size of the array.
-
    CHARACTER(*), INTENT(IN)          :: Descr                                      !  Brief array description.
    INTEGER,      INTENT(OUT)         :: ErrStat                                    !  Error status
    CHARACTER(*), INTENT(OUT)         :: ErrMsg                                     !  Error message corresponding to ErrStat
-
 
    ALLOCATE ( Ary(AryDim1) , STAT=ErrStat )
 
@@ -948,32 +867,27 @@ CONTAINS
       IF ( ALLOCATED(Ary) ) THEN ! or Sttus=151 on IVF
          ErrMsg = 'Error allocating memory for the '//TRIM( Descr )//' array; array was already allocated.'
       ELSE
-         ErrMsg = 'Error allocating '//TRIM(Num2LStr(AryDim1*BYTES_IN_SiKi))//' bytes of memory for the '//TRIM( Descr )//' array.'
+         ErrMsg = 'Error allocating '//TRIM(Num2LStr(AryDim1*BYTES_IN_R4Ki))//' bytes of memory for the '//TRIM( Descr )//' array.'
       END IF
    ELSE
       ErrStat = ErrID_None
       ErrMsg  = ''
+      Ary = 0.0_SiKi
    END IF
-
+ 
    RETURN
    END SUBROUTINE AllR4Ary1
 !=======================================================================
 !> \copydoc nwtc_io::allcary1
    SUBROUTINE AllR8Ary1 ( Ary, AryDim1, Descr, ErrStat, ErrMsg )
+   ! This routine allocates a 1-D 8-byte REAL array.
 
-
-      ! This routine allocates a 1-D 8-byte REAL array.
-
-
-      ! Argument declarations.
-
+   ! Argument declarations.
    REAL(R8Ki),      ALLOCATABLE      :: Ary    (:)                                 !  Array to be allocated
    INTEGER,      INTENT(IN)          :: AryDim1                                    !  The size of the array.
-                                                                                     
    CHARACTER(*), INTENT(IN)          :: Descr                                      !  Brief array description.
    INTEGER,      INTENT(OUT)         :: ErrStat                                    !  Error status
    CHARACTER(*), INTENT(OUT)         :: ErrMsg                                     !  Error message corresponding to ErrStat
-
    
    ALLOCATE ( Ary(AryDim1) , STAT=ErrStat )
 
@@ -987,102 +901,54 @@ CONTAINS
    ELSE
       ErrStat = ErrID_None
       ErrMsg  = ''
+      Ary = 0.0_R8Ki
    END IF
-
+ 
    RETURN
    END SUBROUTINE AllR8Ary1
 !=======================================================================
 !> \copydoc nwtc_io::allcary1
-   SUBROUTINE AllR16Ary1 ( Ary, AryDim1, Descr, ErrStat, ErrMsg )
-
-
-      ! This routine allocates a 1-D 16-byte REAL array.
-
-
-      ! Argument declarations.
-
-   REAL(QuKi),      ALLOCATABLE      :: Ary    (:)                                 !  Array to be allocated
-   INTEGER,      INTENT(IN)          :: AryDim1                                    !  The size of the array.
-                                                                                     
-   CHARACTER(*), INTENT(IN)          :: Descr                                      !  Brief array description.
-   INTEGER,      INTENT(OUT)         :: ErrStat                                    !  Error status
-   CHARACTER(*), INTENT(OUT)         :: ErrMsg                                     !  Error message corresponding to ErrStat
-
-
-   ALLOCATE ( Ary(AryDim1) , STAT=ErrStat )
-
-   IF ( ErrStat /= 0 ) THEN
-      ErrStat = ErrID_Fatal
-      IF ( ALLOCATED(Ary) ) THEN ! or Sttus=151 on IVF
-         ErrMsg = 'Error allocating memory for the '//TRIM( Descr )//' array; array was already allocated.'
-      ELSE
-         ErrMsg = 'Error allocating '//TRIM(Num2LStr(AryDim1*BYTES_IN_QuKi))//' bytes of memory for the '//TRIM( Descr )//' array.'
-      END IF
-   ELSE
-      ErrStat = ErrID_None
-      ErrMsg  = ''
-   END IF
-
-
-   RETURN
-   END SUBROUTINE AllR16Ary1
-!=======================================================================
-!> \copydoc nwtc_io::allcary1
    SUBROUTINE AllR4Ary2 (  Ary, AryDim1, AryDim2, Descr, ErrStat, ErrMsg )
+   ! This routine allocates a 2-D 4-Byte REAL array.
 
-
-      ! This routine allocates a 2-D 4-Byte REAL array.
-
-
-      ! Argument declarations.
-
+   ! Argument declarations.
    REAL(SiKi), ALLOCATABLE           :: Ary    (:,:)                               !  Array to be allocated
-                                                                                     
    INTEGER,      INTENT(IN)          :: AryDim1                                    !  The size of the first dimension of the array.
    INTEGER,      INTENT(IN)          :: AryDim2                                    !< The size of the second dimension of the array.
    CHARACTER(*), INTENT(IN)          :: Descr                                      !  Brief array description.
    INTEGER,      INTENT(OUT)         :: ErrStat                                    !  Error status
    CHARACTER(*), INTENT(OUT)         :: ErrMsg                                     !  Error message corresponding to ErrStat
 
-
    ALLOCATE ( Ary(AryDim1,AryDim2) , STAT=ErrStat )
-
    
    IF ( ErrStat /= 0 ) THEN
       ErrStat = ErrID_Fatal
       IF ( ALLOCATED(Ary) ) THEN
          ErrMsg = 'Error allocating memory for the '//TRIM( Descr )//' array; array was already allocated.'
       ELSE
-         ErrMsg = 'Error allocating '//TRIM(Num2LStr(AryDim1*AryDim2*BYTES_IN_SiKi))//&
+         ErrMsg = 'Error allocating '//TRIM(Num2LStr(AryDim1*AryDim2*BYTES_IN_R4Ki))//&
                   ' bytes of memory for the '//TRIM( Descr )//' array.'
       END IF
    ELSE
       ErrStat = ErrID_None
       ErrMsg  = ''
+      Ary = 0.0_SiKi
    END IF
-
 
    RETURN
    END SUBROUTINE AllR4Ary2
 !=======================================================================
 !> \copydoc nwtc_io::allcary1
    SUBROUTINE AllR8Ary2 (  Ary, AryDim1, AryDim2, Descr, ErrStat, ErrMsg )
+   ! This routine allocates a 2-D 8-Byte REAL array.
 
-
-      ! This routine allocates a 2-D 8-Byte REAL array.
-
-
-      ! Argument declarations.
-
+   ! Argument declarations.
    REAL(R8Ki), ALLOCATABLE           :: Ary    (:,:)                               !  Array to be allocated
-                                                                                     
    INTEGER,      INTENT(IN)          :: AryDim1                                    !  The size of the first dimension of the array.
    INTEGER,      INTENT(IN)          :: AryDim2                                    !< The size of the second dimension of the array.
    CHARACTER(*), INTENT(IN)          :: Descr                                      !  Brief array description.
    INTEGER,      INTENT(OUT)         :: ErrStat                                    !  Error status
    CHARACTER(*), INTENT(OUT)         :: ErrMsg                                     !  Error message corresponding to ErrStat
-
-
 
    ALLOCATE ( Ary(AryDim1,AryDim2) , STAT=ErrStat )
 
@@ -1097,67 +963,24 @@ CONTAINS
    ELSE
       ErrStat = ErrID_None
       ErrMsg  = ''
+      Ary = 0.0_R8Ki
    END IF
-
 
    RETURN
    END SUBROUTINE AllR8Ary2
 !=======================================================================
 !> \copydoc nwtc_io::allcary1
-   SUBROUTINE AllR16Ary2 (  Ary, AryDim1, AryDim2, Descr, ErrStat, ErrMsg )
-
-
-      ! This routine allocates a 2-D 4-Byte REAL array.
-
-
-      ! Argument declarations.
-
-   REAL(QuKi), ALLOCATABLE           :: Ary    (:,:)                               !  Array to be allocated
-                                                                                     
-   INTEGER,      INTENT(IN)          :: AryDim1                                    !  The size of the first dimension of the array.
-   INTEGER,      INTENT(IN)          :: AryDim2                                    !< The size of the second dimension of the array.
-   CHARACTER(*), INTENT(IN)          :: Descr                                      !  Brief array description.
-   INTEGER,      INTENT(OUT)         :: ErrStat                                    !  Error status
-   CHARACTER(*), INTENT(OUT)         :: ErrMsg                                     !  Error message corresponding to ErrStat
-
-
-
-   ALLOCATE ( Ary(AryDim1,AryDim2) , STAT=ErrStat )
-
-   IF ( ErrStat /= 0 ) THEN
-      ErrStat = ErrID_Fatal
-      IF ( ALLOCATED(Ary) ) THEN ! or Sttus=151 on IVF
-         ErrMsg = 'Error allocating memory for the '//TRIM( Descr )//' array; array was already allocated.'
-      ELSE
-         ErrMsg = 'Error allocating '//TRIM(Num2LStr(AryDim1*AryDim2*BYTES_IN_QuKi))//&
-                  ' bytes of memory for the '//TRIM( Descr )//' array.'
-      END IF
-   ELSE
-      ErrStat = ErrID_None
-      ErrMsg  = ''
-   END IF
-
-   RETURN
-   END SUBROUTINE AllR16Ary2
-!=======================================================================
-!> \copydoc nwtc_io::allcary1
    SUBROUTINE AllR4Ary3 (  Ary, AryDim1, AryDim2, AryDim3, Descr, ErrStat, ErrMsg )
+   ! This routine allocates a 3-D 4-byte REAL array.
 
-
-      ! This routine allocates a 3-D 4-byte REAL array.
-
-
-      ! Argument declarations.
-
+   ! Argument declarations.
    REAL(SiKi), ALLOCATABLE           :: Ary    (:,:,:)                             !  Array to be allocated
-                                                                                     
    INTEGER,      INTENT(IN)          :: AryDim1                                    !  The size of the first dimension of the array.
    INTEGER,      INTENT(IN)          :: AryDim2                                    !< The size of the second dimension of the array.
    INTEGER,      INTENT(IN)          :: AryDim3                                    !< The size of the third dimension of the array.
    CHARACTER(*), INTENT(IN)          :: Descr                                      !  Brief array description.
    INTEGER,      INTENT(OUT)         :: ErrStat                                    !  Error status; if present, program does not abort on error
    CHARACTER(*), INTENT(OUT)         :: ErrMsg                                     !  Error message corresponding to ErrStat
-
 
    ALLOCATE ( Ary(AryDim1,AryDim2,AryDim3) , STAT=ErrStat )
 
@@ -1166,12 +989,13 @@ CONTAINS
       IF ( ALLOCATED(Ary) ) THEN ! or Sttus=151 on IVF
          ErrMsg = 'Error allocating memory for the '//TRIM( Descr )//' array; array was already allocated.'
       ELSE
-         ErrMsg = 'Error allocating '//TRIM(Num2LStr(AryDim1*AryDim2*AryDim3*BYTES_IN_REAL))//&
+         ErrMsg = 'Error allocating '//TRIM(Num2LStr(AryDim1*AryDim2*AryDim3*BYTES_IN_R4Ki))//&
                   ' bytes of memory for the '//TRIM( Descr )//' array.'
       END IF
    ELSE
       ErrStat = ErrID_None
       ErrMsg  = ''
+      Ary = 0.0_SiKi
    END IF
 
    RETURN
@@ -1179,22 +1003,16 @@ CONTAINS
 !=======================================================================
 !> \copydoc nwtc_io::allcary1
    SUBROUTINE AllR8Ary3 (  Ary, AryDim1, AryDim2, AryDim3, Descr, ErrStat, ErrMsg )
+   ! This routine allocates a 3-D 8-byte REAL array.
 
-
-      ! This routine allocates a 3-D 8-byte REAL array.
-
-
-      ! Argument declarations.
-
+   ! Argument declarations.
    REAL(R8Ki), ALLOCATABLE           :: Ary    (:,:,:)                             !  Array to be allocated
-                                                                                     
    INTEGER,      INTENT(IN)          :: AryDim1                                    !  The size of the first dimension of the array.
    INTEGER,      INTENT(IN)          :: AryDim2                                    !< The size of the second dimension of the array.
    INTEGER,      INTENT(IN)          :: AryDim3                                    !< The size of the third dimension of the array.
    CHARACTER(*), INTENT(IN)          :: Descr                                      !  Brief array description.
    INTEGER,      INTENT(OUT)         :: ErrStat                                    !  Error status; if present, program does not abort on error
    CHARACTER(*), INTENT(OUT)         :: ErrMsg                                     !  Error message corresponding to ErrStat
-
 
    ALLOCATE ( Ary(AryDim1,AryDim2,AryDim3) , STAT=ErrStat )
 
@@ -1203,65 +1021,24 @@ CONTAINS
       IF ( ALLOCATED(Ary) ) THEN ! or Sttus=151 on IVF
          ErrMsg = 'Error allocating memory for the '//TRIM( Descr )//' array; array was already allocated.'
       ELSE
-         ErrMsg = 'Error allocating '//TRIM(Num2LStr(AryDim1*AryDim2*AryDim3*BYTES_IN_REAL))//&
+         ErrMsg = 'Error allocating '//TRIM(Num2LStr(AryDim1*AryDim2*AryDim3*BYTES_IN_R8Ki))//&
                   ' bytes of memory for the '//TRIM( Descr )//' array.'
       END IF
    ELSE
       ErrStat = ErrID_None
       ErrMsg  = ''
+      Ary = 0.0_R8Ki
    END IF
 
    RETURN
    END SUBROUTINE AllR8Ary3
 !=======================================================================
 !> \copydoc nwtc_io::allcary1
-   SUBROUTINE AllR16Ary3 (  Ary, AryDim1, AryDim2, AryDim3, Descr, ErrStat, ErrMsg )
-
-
-      ! This routine allocates a 3-D 16-byte REAL array.
-
-
-      ! Argument declarations.
-
-   REAL(QuKi), ALLOCATABLE           :: Ary    (:,:,:)                             !  Array to be allocated
-                                                                                     
-   INTEGER,      INTENT(IN)          :: AryDim1                                    !  The size of the first dimension of the array.
-   INTEGER,      INTENT(IN)          :: AryDim2                                    !< The size of the second dimension of the array.
-   INTEGER,      INTENT(IN)          :: AryDim3                                    !< The size of the third dimension of the array.
-   CHARACTER(*), INTENT(IN)          :: Descr                                      !  Brief array description.
-   INTEGER,      INTENT(OUT)         :: ErrStat                                    !  Error status; if present, program does not abort on error
-   CHARACTER(*), INTENT(OUT)         :: ErrMsg                                     !  Error message corresponding to ErrStat
-
-
-   ALLOCATE ( Ary(AryDim1,AryDim2,AryDim3) , STAT=ErrStat )
-
-   IF ( ErrStat /= 0 ) THEN
-      ErrStat = ErrID_Fatal
-      IF ( ALLOCATED(Ary) ) THEN ! or Sttus=151 on IVF
-         ErrMsg = 'Error allocating memory for the '//TRIM( Descr )//' array; array was already allocated.'
-      ELSE
-         ErrMsg = 'Error allocating '//TRIM(Num2LStr(AryDim1*AryDim2*AryDim3*BYTES_IN_REAL))//&
-                  ' bytes of memory for the '//TRIM( Descr )//' array.'
-      END IF
-   ELSE
-      ErrStat = ErrID_None
-      ErrMsg  = ''
-   END IF
-
-   RETURN
-   END SUBROUTINE AllR16Ary3
-!=======================================================================
-!> \copydoc nwtc_io::allcary1
    SUBROUTINE AllR4Ary4 (  Ary, AryDim1, AryDim2, AryDim3, AryDim4, Descr, ErrStat, ErrMsg )
+   ! This routine allocates a 4-D 4-byte REAL array.
 
-
-      ! This routine allocates a 4-D 4-byte REAL array.
-
-
-      ! Argument declarations.
-
+   ! Argument declarations.
    REAL(SiKi),      ALLOCATABLE      :: Ary    (:,:,:,:)                           !  Array to be allocated
-                                                                                     
    INTEGER,      INTENT(IN)          :: AryDim1                                    !  The size of the first dimension of the array.
    INTEGER,      INTENT(IN)          :: AryDim2                                    !< The size of the second dimension of the array.
    INTEGER,      INTENT(IN)          :: AryDim3                                    !< The size of the third dimension of the array.
@@ -1270,7 +1047,6 @@ CONTAINS
    INTEGER,      INTENT(OUT)         :: ErrStat                                    !  Error status; if present, program does not abort on error
    CHARACTER(*), INTENT(OUT)         :: ErrMsg                                     !  Error message corresponding to ErrStat
 
-
    ALLOCATE ( Ary(AryDim1,AryDim2,AryDim3,AryDim4) , STAT=ErrStat )
 
    IF ( ErrStat /= 0 ) THEN
@@ -1278,12 +1054,13 @@ CONTAINS
       IF ( ALLOCATED(Ary) ) THEN ! or Sttus=151 on IVF
          ErrMsg = 'Error allocating memory for the '//TRIM( Descr )//' array; array was already allocated.'
       ELSE
-         ErrMsg = 'Error allocating '//TRIM(Num2LStr(AryDim1*AryDim2*AryDim3*AryDim4*BYTES_IN_REAL))//&
+         ErrMsg = 'Error allocating '//TRIM(Num2LStr(AryDim1*AryDim2*AryDim3*AryDim4*BYTES_IN_R4Ki))//&
                   ' bytes of memory for the '//TRIM( Descr )//' array.'
       END IF
    ELSE
       ErrStat = ErrID_None
       ErrMsg  = ''
+      Ary = 0.0_SiKi
    END IF
 
    RETURN
@@ -1291,15 +1068,10 @@ CONTAINS
 !=======================================================================
 !> \copydoc nwtc_io::allcary1
    SUBROUTINE AllR8Ary4 (  Ary, AryDim1, AryDim2, AryDim3, AryDim4, Descr, ErrStat, ErrMsg )
+   ! This routine allocates a 4-D 8-byte REAL array.
 
-
-      ! This routine allocates a 4-D 8-byte REAL array.
-
-
-      ! Argument declarations.
-
+   ! Argument declarations.
    REAL(R8Ki),      ALLOCATABLE      :: Ary    (:,:,:,:)                           !  Array to be allocated
-                                                                                     
    INTEGER,      INTENT(IN)          :: AryDim1                                    !  The size of the first dimension of the array.
    INTEGER,      INTENT(IN)          :: AryDim2                                    !< The size of the second dimension of the array.
    INTEGER,      INTENT(IN)          :: AryDim3                                    !< The size of the third dimension of the array.
@@ -1308,7 +1080,6 @@ CONTAINS
    INTEGER,      INTENT(OUT)         :: ErrStat                                    !  Error status; if present, program does not abort on error
    CHARACTER(*), INTENT(OUT)         :: ErrMsg                                     !  Error message corresponding to ErrStat
 
-
    ALLOCATE ( Ary(AryDim1,AryDim2,AryDim3,AryDim4) , STAT=ErrStat )
 
    IF ( ErrStat /= 0 ) THEN
@@ -1316,66 +1087,24 @@ CONTAINS
       IF ( ALLOCATED(Ary) ) THEN ! or Sttus=151 on IVF
          ErrMsg = 'Error allocating memory for the '//TRIM( Descr )//' array; array was already allocated.'
       ELSE
-         ErrMsg = 'Error allocating '//TRIM(Num2LStr(AryDim1*AryDim2*AryDim3*AryDim4*BYTES_IN_REAL))//&
+         ErrMsg = 'Error allocating '//TRIM(Num2LStr(AryDim1*AryDim2*AryDim3*AryDim4*BYTES_IN_R8Ki))//&
                   ' bytes of memory for the '//TRIM( Descr )//' array.'
       END IF
    ELSE
       ErrStat = ErrID_None
       ErrMsg  = ''
+      Ary = 0.0_R8Ki
    END IF
 
    RETURN
    END SUBROUTINE AllR8Ary4
 !=======================================================================
 !> \copydoc nwtc_io::allcary1
-   SUBROUTINE AllR16Ary4 (  Ary, AryDim1, AryDim2, AryDim3, AryDim4, Descr, ErrStat, ErrMsg )
-
-
-      ! This routine allocates a 4-D 16-byte REAL array.
-
-
-      ! Argument declarations.
-
-   REAL(QuKi),      ALLOCATABLE      :: Ary    (:,:,:,:)                           !  Array to be allocated
-                                                                                     
-   INTEGER,      INTENT(IN)          :: AryDim1                                    !  The size of the first dimension of the array.
-   INTEGER,      INTENT(IN)          :: AryDim2                                    !< The size of the second dimension of the array.
-   INTEGER,      INTENT(IN)          :: AryDim3                                    !< The size of the third dimension of the array.
-   INTEGER,      INTENT(IN)          :: AryDim4                                    !< The size of the fourth dimension of the array.
-   CHARACTER(*), INTENT(IN)          :: Descr                                      !  Brief array description.
-   INTEGER,      INTENT(OUT)         :: ErrStat                                    !  Error status; if present, program does not abort on error
-   CHARACTER(*), INTENT(OUT)         :: ErrMsg                                     !  Error message corresponding to ErrStat
-
-
-   ALLOCATE ( Ary(AryDim1,AryDim2,AryDim3,AryDim4) , STAT=ErrStat )
-
-   IF ( ErrStat /= 0 ) THEN
-      ErrStat = ErrID_Fatal
-      IF ( ALLOCATED(Ary) ) THEN ! or Sttus=151 on IVF
-         ErrMsg = 'Error allocating memory for the '//TRIM( Descr )//' array; array was already allocated.'
-      ELSE
-         ErrMsg = 'Error allocating '//TRIM(Num2LStr(AryDim1*AryDim2*AryDim3*AryDim4*BYTES_IN_REAL))//&
-                  ' bytes of memory for the '//TRIM( Descr )//' array.'
-      END IF
-   ELSE
-      ErrStat = ErrID_None
-      ErrMsg  = ''
-   END IF
-
-   RETURN
-   END SUBROUTINE AllR16Ary4
-!=======================================================================
-!> \copydoc nwtc_io::allcary1
    SUBROUTINE AllR4Ary5 (  Ary, AryDim1, AryDim2, AryDim3, AryDim4, AryDim5, Descr, ErrStat, ErrMsg )
+   ! This routine allocates a 5-D 4-byte REAL array.
 
-
-      ! This routine allocates a 5-D 4-byte REAL array.
-
-
-      ! Argument declarations.
-
+   ! Argument declarations.
    REAL(SiKi),      ALLOCATABLE      :: Ary    (:,:,:,:,:)                         !  Array to be allocated
-                                                                                     
    INTEGER,      INTENT(IN)          :: AryDim1                                    !  The size of the first dimension of the array.
    INTEGER,      INTENT(IN)          :: AryDim2                                    !< The size of the second dimension of the array.
    INTEGER,      INTENT(IN)          :: AryDim3                                    !< The size of the third dimension of the array.
@@ -1385,7 +1114,6 @@ CONTAINS
    INTEGER,      INTENT(OUT)         :: ErrStat                                    !  Error status; if present, program does not abort on error
    CHARACTER(*), INTENT(OUT)         :: ErrMsg                                     !  Error message corresponding to ErrStat
 
-
    ALLOCATE ( Ary(AryDim1,AryDim2,AryDim3,AryDim4,AryDim5) , STAT=ErrStat )
 
    IF ( ErrStat /= 0 ) THEN
@@ -1393,30 +1121,24 @@ CONTAINS
       IF ( ALLOCATED(Ary) ) THEN ! or Sttus=151 on IVF
          ErrMsg = 'Error allocating memory for the '//TRIM( Descr )//' array; array was already allocated.'
       ELSE
-         ErrMsg = 'Error allocating '//TRIM(Num2LStr(AryDim1*AryDim2*AryDim3*AryDim4*AryDim5*BYTES_IN_REAL))//&
+         ErrMsg = 'Error allocating '//TRIM(Num2LStr(AryDim1*AryDim2*AryDim3*AryDim4*AryDim5*BYTES_IN_R4Ki))//&
                   ' bytes of memory for the '//TRIM( Descr )//' array.'
       END IF
    ELSE
       ErrStat = ErrID_None
       ErrMsg  = ''
+      Ary = 0.0_SiKi
    END IF
-
-
 
    RETURN
    END SUBROUTINE AllR4Ary5
 !=======================================================================
 !> \copydoc nwtc_io::allcary1
    SUBROUTINE AllR8Ary5 (  Ary, AryDim1, AryDim2, AryDim3, AryDim4, AryDim5, Descr, ErrStat, ErrMsg )
+   ! This routine allocates a 5-D 8-byte REAL array.
 
-
-      ! This routine allocates a 5-D 8-byte REAL array.
-
-
-      ! Argument declarations.
-
+   ! Argument declarations.
    REAL(R8Ki),      ALLOCATABLE      :: Ary    (:,:,:,:,:)                         !  Array to be allocated
-                                                                                     
    INTEGER,      INTENT(IN)          :: AryDim1                                    !  The size of the first dimension of the array.
    INTEGER,      INTENT(IN)          :: AryDim2                                    !< The size of the second dimension of the array.
    INTEGER,      INTENT(IN)          :: AryDim3                                    !< The size of the third dimension of the array.
@@ -1426,7 +1148,6 @@ CONTAINS
    INTEGER,      INTENT(OUT)         :: ErrStat                                    !  Error status; if present, program does not abort on error
    CHARACTER(*), INTENT(OUT)         :: ErrMsg                                     !  Error message corresponding to ErrStat
 
-
    ALLOCATE ( Ary(AryDim1,AryDim2,AryDim3,AryDim4,AryDim5) , STAT=ErrStat )
 
    IF ( ErrStat /= 0 ) THEN
@@ -1434,234 +1155,17 @@ CONTAINS
       IF ( ALLOCATED(Ary) ) THEN ! or Sttus=151 on IVF
          ErrMsg = 'Error allocating memory for the '//TRIM( Descr )//' array; array was already allocated.'
       ELSE
-         ErrMsg = 'Error allocating '//TRIM(Num2LStr(AryDim1*AryDim2*AryDim3*AryDim4*AryDim5*BYTES_IN_REAL))//&
+         ErrMsg = 'Error allocating '//TRIM(Num2LStr(AryDim1*AryDim2*AryDim3*AryDim4*AryDim5*BYTES_IN_R8Ki))//&
                   ' bytes of memory for the '//TRIM( Descr )//' array.'
       END IF
    ELSE
       ErrStat = ErrID_None
       ErrMsg  = ''
+      Ary = 0.0_R8Ki
    END IF
-
-
 
    RETURN
    END SUBROUTINE AllR8Ary5
-!=======================================================================
-!> \copydoc nwtc_io::allcary1
-   SUBROUTINE AllR16Ary5 (  Ary, AryDim1, AryDim2, AryDim3, AryDim4, AryDim5, Descr, ErrStat, ErrMsg )
-
-
-      ! This routine allocates a 5-D 16-byte REAL array.
-
-
-      ! Argument declarations.
-
-   REAL(QuKi),      ALLOCATABLE      :: Ary    (:,:,:,:,:)                         !  Array to be allocated
-                                                                                     
-   INTEGER,      INTENT(IN)          :: AryDim1                                    !  The size of the first dimension of the array.
-   INTEGER,      INTENT(IN)          :: AryDim2                                    !< The size of the second dimension of the array.
-   INTEGER,      INTENT(IN)          :: AryDim3                                    !< The size of the third dimension of the array.
-   INTEGER,      INTENT(IN)          :: AryDim4                                    !< The size of the fourth dimension of the array.
-   INTEGER,      INTENT(IN)          :: AryDim5                                    !< The size of the fourth dimension of the array.
-   CHARACTER(*), INTENT(IN)          :: Descr                                      !  Brief array description.
-   INTEGER,      INTENT(OUT)         :: ErrStat                                    !  Error status; if present, program does not abort on error
-   CHARACTER(*), INTENT(OUT)         :: ErrMsg                                     !  Error message corresponding to ErrStat
-
-
-   ALLOCATE ( Ary(AryDim1,AryDim2,AryDim3,AryDim4,AryDim5) , STAT=ErrStat )
-
-   IF ( ErrStat /= 0 ) THEN
-      ErrStat = ErrID_Fatal
-      IF ( ALLOCATED(Ary) ) THEN ! or Sttus=151 on IVF
-         ErrMsg = 'Error allocating memory for the '//TRIM( Descr )//' array; array was already allocated.'
-      ELSE
-         ErrMsg = 'Error allocating '//TRIM(Num2LStr(AryDim1*AryDim2*AryDim3*AryDim4*AryDim5*BYTES_IN_REAL))//&
-                  ' bytes of memory for the '//TRIM( Descr )//' array.'
-      END IF
-   ELSE
-      ErrStat = ErrID_None
-      ErrMsg  = ''
-   END IF
-
-
-
-   RETURN
-   END SUBROUTINE AllR16Ary5
-!=======================================================================
-!> This subroutine checks for command-line arguments.
-   SUBROUTINE CheckArgs ( Arg1, ErrStat, Arg2, Flag, InputArgArray )
-
-      ! Argument declarations:
-   CHARACTER(*), INTENT(INOUT)           :: Arg1               !< The first non-flag argument; generally, the name of the input file.
-   INTEGER,      INTENT(  OUT), OPTIONAL :: ErrStat            !< An optional argument for catching errors; if present, program does not abort on error.
-   CHARACTER(*), INTENT(  OUT), OPTIONAL :: Arg2               !< An optional 2nd non-flag argument.
-   CHARACTER(*), INTENT(  OUT), OPTIONAL :: Flag               !< An optional flag argument; the first argument starting with a switch character. 
-   CHARACTER(*), INTENT(IN   ), DIMENSION(:), OPTIONAL :: InputArgArray  !< An optional argument containing the arguments to parse; primarily used for unit testing.
-
-      ! Local declarations:
-   INTEGER                                    :: I, J          ! Iterator variables
-   CHARACTER(1024)                            :: Arg, FlagIter
-   CHARACTER(1024), DIMENSION(:), ALLOCATABLE :: ArgArray, TempArray, Flags
-   LOGICAL :: FirstArgumentSet, SecondArgumentSet
-
-   FirstArgumentSet = .FALSE.
-   SecondArgumentSet = .FALSE.
-                                        
-   IF ( PRESENT(Arg2) ) Arg2 = ""
-   IF ( PRESENT(Flag) ) Flag = ""
-   
-      ! Save all arguments in a single argument array; this is primarily used to enable unit testing
-   IF ( PRESENT(InputArgArray) ) THEN
-      ALLOCATE( ArgArray( SIZE(InputArgArray) ) )
-      ArgArray = InputArgArray
-   ELSE
-      ALLOCATE( ArgArray( COMMAND_ARGUMENT_COUNT() ) )
-      DO I = 1, SIZE(ArgArray)
-         CALL GET_COMMAND_LINE_ARG( I, ArgArray(I) )
-      END DO
-   END IF
-
-      ! Early return if no arguments and no default input file given
-   IF ( SIZE(ArgArray) == 0 .AND. LEN( TRIM(Arg1) ) == 0 ) THEN
-      CALL INVALID_SYNTAX( 'no command-line arguments given.' )
-      CALL CLEANUP()
-      RETURN
-   END IF
-
-      ! Split arguments into flags and non-flags
-   ALLOCATE( Flags(0) )
-   DO I = 1, SIZE(ArgArray)
-      Arg = TRIM(ArgArray(I))
-      IF ( IsFlag(Arg) ) THEN
-            ! This is how we can dynamically resize an array in Fortran...
-            ! Dont do this where performance matters.
-         ALLOCATE( TempArray( SIZE(Flags) + 1 ) )
-         DO J = 1, SIZE(Flags)
-            TempArray(J) = Flags(J)
-         END DO
-         TempArray(SIZE(Flags) + 1) = TRIM(Arg)
-         DEALLOCATE(Flags)
-         CALL MOVE_ALLOC(TempArray, Flags)
-      ELSE IF ( .NOT. FirstArgumentSet ) THEN
-         Arg1 = TRIM(Arg)
-         FirstArgumentSet = .TRUE.
-      ELSE IF ( .NOT. SecondArgumentSet ) THEN
-         Arg2 = TRIM(Arg)
-         SecondArgumentSet = .True.
-      ELSE
-         CALL INVALID_SYNTAX( 'too many command-line arguments given.' )
-         CALL CLEANUP()
-         RETURN
-      END IF
-   END DO
-
-   DO I = 1, SIZE(Flags)
-
-      FlagIter = Flags(I)(2:) ! This results in the flag without the switch character
-      CALL Conv2UC( FlagIter )
-      IF ( PRESENT(Flag) ) Flag = FlagIter
-
-      SELECT CASE ( TRIM(FlagIter) )
-
-      CASE ('H')
-         CALL DispCopyrightLicense( ProgName )
-         CALL DispCompileRuntimeInfo
-         CALL NWTC_DisplaySyntax( Arg1, ProgName )
-         IF ( PRESENT( ErrStat ) ) ErrStat = ErrID_None
-         CALL CLEANUP()
-         RETURN
-
-      CASE ('V', 'VERSION')
-         CALL DispCopyrightLicense( ProgName )
-         CALL DispCompileRuntimeInfo
-         IF ( PRESENT( ErrStat ) ) ErrStat = ErrID_None
-         CALL CLEANUP()
-         RETURN
-
-      CASE ('RESTART')
-         IF ( FirstArgumentSet .AND. .NOT. SecondArgumentSet ) THEN
-            Arg2 = Arg1
-            Arg1 = ""
-         END IF
-         IF ( .NOT. FirstArgumentSet .AND. .NOT. SecondArgumentSet ) THEN
-            CALL INVALID_SYNTAX( 'the restart capability requires at least one argument: <input_file (OPTIONAL)> -restart <checkpoint_file>' )
-            CALL CLEANUP()
-               RETURN
-         END IF
-
-      CASE ('VTKLIN')
-         IF ( FirstArgumentSet .AND. .NOT. SecondArgumentSet ) THEN
-            Arg2 = Arg1
-            Arg1 = ""
-         END IF
-         IF ( .NOT. FirstArgumentSet .AND. .NOT. SecondArgumentSet ) THEN
-            CALL INVALID_SYNTAX( 'the restart capability for vtk mode shapes requires at least one argument: <input_file (OPTIONAL)> -vtklin <visualization_input_file>' )
-            CALL CLEANUP()
-               RETURN
-         END IF
-
-      CASE DEFAULT
-         CALL INVALID_SYNTAX( 'unknown command-line argument given: '//TRIM(FlagIter) )
-         CALL CLEANUP()
-         RETURN
-                                                
-      END SELECT
-
-   END DO
-
-   IF ( PRESENT( ErrStat ) ) ErrStat = ErrID_None
-   CALL CLEANUP()
-
-                  RETURN
-
-   CONTAINS
-      SUBROUTINE CLEANUP()
-         IF ( ALLOCATED(ArgArray) ) DEALLOCATE(ArgArray)
-         IF ( ALLOCATED(Flags) ) DEALLOCATE(Flags)
-         IF ( ALLOCATED(TempArray) ) DEALLOCATE(TempArray)
-      END SUBROUTINE
-
-      SUBROUTINE INVALID_SYNTAX(ErrorMessage)
-
-         CHARACTER(*), INTENT(IN) :: ErrorMessage
-
-         CALL DispCopyrightLicense( ProgName )
-         CALL DispCompileRuntimeInfo
-         CALL NWTC_DisplaySyntax( Arg1, ProgName )
-         CALL ProgAbort( ' Invalid syntax: '//TRIM(ErrorMessage), PRESENT(ErrStat) )
-         IF ( PRESENT(ErrStat) ) ErrStat = ErrID_Fatal
-
-      END SUBROUTINE
-
-      SUBROUTINE GET_COMMAND_LINE_ARG(ArgIndex, ArgGiven)
-
-         INTEGER, INTENT(IN) :: ArgIndex           !< Index location of the argument to get.
-         CHARACTER(1024), INTENT(OUT) :: ArgGiven  !< The gotten command-line argument.
-         INTEGER :: Error                          !< Indicates if there was an error getting an argument.
-
-         CALL GET_COMMAND_ARGUMENT( ArgIndex, ArgGiven, STATUS=Error )
-         ArgGiven = TRIM(ArgGiven)
-         IF ( Error /= 0 )  THEN
-            CALL ProgAbort ( ' Error getting command-line argument #'//TRIM( Int2LStr( ArgIndex ) )//'.', PRESENT(ErrStat) )
-            IF ( PRESENT(ErrStat) ) ErrStat = ErrID_Fatal
-         END IF
-
-      END SUBROUTINE
-
-      FUNCTION IsFlag(ArgString)
-
-         CHARACTER(*), INTENT(IN) :: ArgString
-         LOGICAL :: IsFlag
-
-         IF ( ArgString(1:1) == SwChar .OR. ArgString(1:1) == '-' ) THEN
-            IsFlag = .TRUE.
-         ELSE
-            IsFlag = .FALSE.
-         END IF
-
-      END FUNCTION
-
-   END SUBROUTINE CheckArgs
 !=======================================================================
 !> This subroutine checks the data to be parsed to make sure it finds
 !! the expected variable name and an associated value.
@@ -1695,28 +1199,40 @@ CONTAINS
       CALL Conv2UC ( ExpUCVarName )
 
 
-         ! See which word is the variable name.  Generate an error if it is neither.
-         ! If it is the first word, check to make sure the second word is not empty.
+         !  Allow for an empty variable name to be passed.  This occurs when we have
+         !  multiple lines of items that may not have variable keys associated.  In
+         !  this case, we will assume the first word has the value and return that.
+         !  Otherwise, we will check which is the variable keyname.
+      IF ( LEN_TRIM(ExpVarName) == 0 ) THEN
+         !  There isn't actually a variable name passed in, but this satisfies the
+         !  logic for retrieving the value in the calling routine
+         NameIndx = 2
 
-      IF ( TRIM( FndUCVarName ) == TRIM( ExpUCVarName ) )  THEN
-         NameIndx = 1
-         IF ( LEN_TRIM( Words(2) ) == 0 )  THEN
-            CALL ExitThisRoutine ( ErrID_Fatal, NewLine//' >> A fatal error occurred when parsing data from "'//TRIM( FileName ) &
-                      //'".'//NewLine//' >> The variable "'//TRIM( Words(1) )//'" was not assigned a value on line #' &
-                      //TRIM( Num2LStr( FileLineNum ) )//'.' )
-            RETURN
-         ENDIF
       ELSE
-         FndUCVarName = Words(2)
-         CALL Conv2UC ( FndUCVarName )
+            ! See which word is the variable name.  Generate an error if it is neither.
+            ! If it is the first word, check to make sure the second word is not empty.
+ 
          IF ( TRIM( FndUCVarName ) == TRIM( ExpUCVarName ) )  THEN
-            NameIndx = 2
+            NameIndx = 1
+            IF ( LEN_TRIM( Words(2) ) == 0 )  THEN
+               CALL ExitThisRoutine ( ErrID_Fatal, NewLine//' >> A fatal error occurred when parsing data from "'//TRIM( FileName ) &
+                         //'".'//NewLine//' >> The variable "'//TRIM( Words(1) )//'" was not assigned a value on line #' &
+                         //TRIM( Num2LStr( FileLineNum ) )//'.' )
+               RETURN
+            ENDIF
          ELSE
-            CALL ExitThisRoutine ( ErrID_Fatal, NewLine//' >> A fatal error occurred when parsing data from "'//TRIM( FileName ) &
-                     //'".'//NewLine//' >> The variable "'//TRIM( ExpVarName )//'" was not found on line #' &
-                     //TRIM( Num2LStr( FileLineNum ) )//'.' )
-            RETURN
+            FndUCVarName = Words(2)
+            CALL Conv2UC ( FndUCVarName )
+            IF ( TRIM( FndUCVarName ) == TRIM( ExpUCVarName ) )  THEN
+               NameIndx = 2
+            ELSE
+               CALL ExitThisRoutine ( ErrID_Fatal, NewLine//' >> A fatal error occurred when parsing data from "'//TRIM( FileName ) &
+                        //'".'//NewLine//' >> The variable "'//TRIM( ExpVarName )//'" was not found on line #' &
+                        //TRIM( Num2LStr( FileLineNum ) )//'.' )
+               RETURN
+            ENDIF
          ENDIF
+
       ENDIF
 
 
@@ -1919,24 +1435,6 @@ SUBROUTINE CheckR8Var( RealVar, RealDesc, ErrStat, ErrMsg )
    
 END SUBROUTINE CheckR8Var
 !=======================================================================
-!> \copydoc nwtc_io::checkr4var
-SUBROUTINE CheckR16Var( RealVar, RealDesc, ErrStat, ErrMsg )
-
-   REAL(QuKi),  INTENT(IN)            :: RealVar                               !< Real value to check
-   CHARACTER(*),INTENT(IN)            :: RealDesc                              !< description of RealVar
-   INTEGER,     INTENT(OUT)           :: ErrStat                               !< Error status
-   CHARACTER(*),INTENT(OUT)           :: ErrMsg                                !< Error message
-
-   IF (IEEE_IS_NAN(RealVar) .or. .not. IEEE_IS_FINITE( RealVar) ) THEN
-      ErrStat = ErrID_Fatal
-      ErrMsg = trim(RealDesc)//': value is not a finite real number.'
-   ELSE
-      ErrStat = ErrID_None
-      ErrMsg  = ""
-   END IF
-   
-END SUBROUTINE CheckR16Var
-!=======================================================================
 !> This routine converts all the text in a string to upper case.
    SUBROUTINE Conv2UC ( Str )
 
@@ -2000,7 +1498,7 @@ END SUBROUTINE CheckR16Var
 
    Ch = 0
 
-   DO
+   DO while (Ch + 1 < len(Line))
 
       NextWhite = SCAN( Line(Ch+1:) , ' ,;''"'//Tab )
       Ch        = Ch + NextWhite
@@ -2127,16 +1625,12 @@ END SUBROUTINE CheckR16Var
    CALL WrScr( 'Copyright (C) '//TRIM(Year)//' National Renewable Energy Laboratory' )
    CALL WrScr( 'Copyright (C) '//TRIM(Year)//' Envision Energy USA LTD' )
    CALL WrScr('')
-   CALL WrScr( 'This program is licensed under Apache License Version 2.0 and comes with ABSOLUTELY NO WARRANTY. '//&
-               'See the "LICENSE" file distributed with this software for details.')   
-
    IF (PRESENT(AdditionalComment)) THEN
-      CALL WrScr(Stars)
-      CALL WrScr(Stars)
       CALL WrScr( AdditionalComment )
       CALL WrScr('')       
    END IF
-   
+   CALL WrScr( 'This program is licensed under Apache License Version 2.0 and comes with ABSOLUTELY NO WARRANTY. '//&
+               'See the "LICENSE" file distributed with this software for details.')   
    CALL WrScr(Stars)
    CALL WrScr('')
 
@@ -2145,147 +1639,67 @@ END SUBROUTINE CheckR16Var
 !=======================================================================
 !> This routine packs the DLL_Type (nwtc_base::dll_type) data into an integer buffer.
 !! It is required for the FAST Registry. It is the inverse of DLLTypeUnPack (nwtc_io::dlltypeunpack).
-   SUBROUTINE DLLTypePack( InData, ReKiBuf, DbKiBuf, IntKiBuf, ErrStat, ErrMsg, SizeOnly )
-   
-   
-      TYPE(DLL_Type),                INTENT(IN   ) :: InData             !< DLL data to pack (store in arrays of type ReKi, DbKi, and/or IntKi)
-      REAL(ReKi),       ALLOCATABLE, INTENT(  OUT) :: ReKiBuf(:)         !< buffer with real (ReKi) data from InData structure
-      REAL(DbKi),       ALLOCATABLE, INTENT(  OUT) :: DbKiBuf(:)         !< buffer with double (DbKi) data from InData structure
-      INTEGER(IntKi),   ALLOCATABLE, INTENT(  OUT) :: IntKiBuf(:)        !< buffer with integer (IntKi) data from InData structure
-      INTEGER(IntKi),                INTENT(  OUT) :: ErrStat            !< error status
-      CHARACTER(*),                  INTENT(  OUT) :: ErrMsg             !< error message
-      LOGICAL,          OPTIONAL,    INTENT(IN   ) :: SizeOnly           !< flag to determine if we're just looking for the size of the buffers instead of the packed data
+   SUBROUTINE DLLTypePack(RF, InData)
+      type(RegFile), intent(inout)  :: RF
+      TYPE(DLL_Type), intent(in)       :: InData  !< DLL data to pack
       
-         ! Local variable
-      INTEGER(IntKi)                               :: Int_BufSz
-      INTEGER(IntKi)                               :: i,buf_start
-      
-      ErrStat = ErrID_None
-      ErrMsg  = ""
+      INTEGER(IntKi)                   :: i
 
-         ! get size of buffer:
-      Int_BufSz = LEN(InData%FileName) + LEN(InData%ProcName(1))*NWTC_MAX_DLL_PROC + 1
+      ! If buffer error, return
+      if (RF%ErrStat /= ErrID_None) return
       
-      ALLOCATE( IntKiBuf(Int_BufSz), STAT=ErrStat )
-      IF (ErrStat /= 0 ) THEN
-         ErrStat = ErrID_Fatal
-         ErrMsg  = ' DLLTypePack: Error allocating IntKiBuf.'
-         RETURN
-      END IF
-            
-      IF ( PRESENT(SizeOnly) ) THEN
-         IF ( SizeOnly ) RETURN
-      ENDIF      
+      ! has the DLL procedure been loaded?
+      call RegPack(RF, c_associated(InData%ProcAddr(1)))
       
-      !..............
-      ! Fill buffer
-      !..............
-      
-         ! has the DLL procedure been loaded?
-      IF ( C_ASSOCIATED(InData%ProcAddr(1))) THEN
-         IntKiBuf(1) = 1
-      ELSE
-         IntKiBuf(1) = 0         
-      END IF
-      
-         ! Put an ascii representation of the strings in the integer array
-      CALL Str2IntAry( InData%FileName, IntKiBuf(2:), ErrStat, ErrMsg )
-      buf_start=LEN(InData%FileName)+2
-      DO i=1,NWTC_MAX_DLL_PROC
-         CALL Str2IntAry( InData%ProcName(i), IntKiBuf(buf_start:), ErrStat, ErrMsg )
-         buf_start = buf_start + LEN(InData%ProcName(i))
-      END DO
-      
+      ! Pack strings
+      call RegPack(RF, InData%FileName)
+      do i = 1, NWTC_MAX_DLL_PROC
+         call RegPack(RF, InData%ProcName(i))
+      end do
+
+      ! If buffer error, return
+      if (RegCheckErr(RF, 'DLLTypeUnPack')) return
       
    END SUBROUTINE DLLTypePack
 !=======================================================================
 !> This routine unpacks the DLL_Type data from an integer buffer.
 !! It is required for the FAST Registry. It is the inverse of DLLTypePack (nwtc_io::dlltypepack).
-   SUBROUTINE DLLTypeUnPack( OutData, ReKiBuf, DbKiBuf, IntKiBuf, ErrStat, ErrMsg )
-   
-   
-      REAL(ReKi),       ALLOCATABLE, INTENT(IN   ) :: ReKiBuf(:)        !< buffer with real (ReKi) data to place in the OutData structure
-      REAL(DbKi),       ALLOCATABLE, INTENT(IN   ) :: DbKiBuf(:)        !< buffer with real (DbKi) data to place in the OutData structure
-      INTEGER(IntKi),   ALLOCATABLE, INTENT(IN   ) :: IntKiBuf(:)       !< buffer with integer (IntKi) data to place in the OutData structure
-      TYPE(DLL_Type),                INTENT(  OUT) :: OutData           !< the reconstituted OutData structure, created from 3 buffers
-      INTEGER(IntKi),                INTENT(  OUT) :: ErrStat           !< error status/level
-      CHARACTER(*),                  INTENT(  OUT) :: ErrMsg            !< message corresponding to ErrStat
-      
-         ! Local variable
-      INTEGER(IntKi)                               :: Int_BufSz
-      INTEGER(IntKi)                               :: i, Int_BufEnd
-      
-      ErrStat = ErrID_None
-      ErrMsg  = ""
+   subroutine DLLTypeUnPack(RF, OutData)
+      type(RegFile), intent(inout)  :: RF
+      type(DLL_Type), intent(out)   :: OutData !< Reconstituted OutData structure
+         
+      logical        :: WasAssociated
+      integer(IntKi) :: i
 
-      IF (.NOT. ALLOCATED(IntKiBuf) ) THEN
-         ErrStat = ErrID_Fatal
-         ErrMsg  = ' DLLTypeUnPack: invalid buffer.'
-      END IF
-                     
-         ! Get an ascii representation of the strings from the integer array                           
-      Int_BufSz = LEN(OutData%FileName) + 1
-      CALL IntAry2Str( IntKiBuf(2:(Int_BufSz)), OutData%FileName, ErrStat, ErrMsg )
-      IF (ErrStat >= AbortErrLev) RETURN
-      Int_BufSz = Int_BufSz + 1
-      do i=1,NWTC_MAX_DLL_PROC
-         Int_BufEnd=Int_BufSz+LEN(OutData%ProcName(i))-1
-         CALL IntAry2Str( IntKiBuf(Int_BufSz:Int_BufEnd), OutData%ProcName(i), ErrStat, ErrMsg )
-         IF (ErrStat >= AbortErrLev) RETURN
-         Int_BufSz = Int_BufSz+LEN(OutData%ProcName(i))
+      ! If buffer error, return
+      if (RF%ErrStat /= ErrID_None) return
+      
+      ! Get flag indicating if dll was associated
+      call RegUnpack(RF, WasAssociated)
+
+      ! Unpack strings
+      call RegUnpack(RF, OutData%FileName)
+      do i = 1, NWTC_MAX_DLL_PROC
+         call RegUnpack(RF, OutData%ProcName(i))
       end do
+
+      ! If buffer error, return
+      if (RegCheckErr(RF, 'DLLTypeUnPack')) return
       
-      
-      IF ( IntKiBuf(1) == 1 .AND. LEN_TRIM(OutData%FileName) > 0 .AND. LEN_TRIM(OutData%ProcName(1)) > 0 ) THEN
-         CALL LoadDynamicLib( OutData, ErrStat, ErrMsg )
+      ! If dll was loaded, and data in filename and procname, load dll
+      IF (WasAssociated .AND. LEN_TRIM(OutData%FileName) > 0 .AND. LEN_TRIM(OutData%ProcName(1)) > 0) THEN
+         CALL LoadDynamicLib(OutData, RF%ErrStat, RF%ErrMsg)
+      else
+         ! Nullifying
+         OutData%FileAddr  = INT(0,C_INTPTR_T)
+         OutData%FileAddrX = C_NULL_PTR
+         OutData%ProcAddr  = C_NULL_FUNPTR
       END IF
+
+      ! If buffer error, return
+      if (RegCheckErr(RF, 'DLLTypeUnPack')) return
       
    END SUBROUTINE DLLTypeUnPack   
-!=======================================================================
-!>
-   SUBROUTINE DispCompileRuntimeInfo()
-#ifdef HAS_FORTRAN2008_FEATURES
-      USE iso_fortran_env, ONLY: compiler_version
-#endif
-      CHARACTER(200) :: compiler_version_str
-      CHARACTER(200) :: name
-      CHARACTER(200) :: git_commit, architecture, compiled_precision
-      CHARACTER(200) :: execution_date, execution_time, execution_zone
-
-      name = ProgName
-      git_commit = QueryGitVersion()
-      architecture = TRIM(Num2LStr(BITS_IN_ADDR))//' bit'
-      IF (ReKi == SiKi) THEN
-         compiled_precision = 'single'
-      ELSE IF (ReKi == R8Ki) THEN
-         compiled_precision = 'double'
-      ELSE
-         compiled_precision = 'unknown'
-      END IF
-
-#if defined(HAS_FORTRAN2008_FEATURES)
-      compiler_version_str = compiler_version()
-#elif defined(__INTEL_COMPILER)
-      compiler_version_str = 'Intel(R) Fortran Compiler '//num2lstr(__INTEL_COMPILER)
-#endif
-
-      CALL WrScr(trim(name)//'-'//trim(git_commit))
-      CALL WrScr('Compile Info:')
-      call wrscr(' - Compiler: '//trim(compiler_version_str))
-      CALL WrScr(' - Architecture: '//trim(architecture))
-      CALL WrScr(' - Precision: '//trim(compiled_precision))
-      CALL WrScr(' - Date: '//__DATE__)
-      CALL WrScr(' - Time: '//__TIME__)
-      ! call wrscr(' - Options: '//trim(compiler_options()))
-
-      CALL DATE_AND_TIME(execution_date, execution_time, execution_zone)
-
-      CALL WrScr('Execution Info:')
-      CALL WrScr(' - Date: '//TRIM(execution_date(5:6)//'/'//execution_date(7:8)//'/'//execution_date(1:4)))
-      CALL WrScr(' - Time: '//TRIM(execution_time(1:2)//':'//execution_time(3:4)//':'//execution_time(5:6))//TRIM(execution_zone))
-      CALL WrScr('')
-
-   END SUBROUTINE
 !=======================================================================
 !> This routine displays the name of the program, its version, and its release date.
 !! Use DispNVD (nwtc_io::dispnvd) instead of directly calling a specific routine in the generic interface.
@@ -2316,7 +1730,7 @@ END SUBROUTINE CheckR16Var
          END IF
       END IF
       
-      CALL WrScr ( 'Running '//TRIM( GetNVD( ProgInfo ) )//'.' )
+      CALL WrScr ( ' Running '//TRIM( GetNVD( ProgInfo ) )//'.' )
 
    RETURN
    END SUBROUTINE DispNVD1
@@ -2385,65 +1799,44 @@ END SUBROUTINE CheckR16Var
    END SUBROUTINE FindLine
 !=======================================================================
 !> This routine returns the next unit number greater than 9 that is not currently in use.
-!! If it cannot find any unit between 10 and 99 that is available, it either aborts or returns an appropriate error status/message.   
+!! If it cannot find any unit between 10 and 2^16-1 that is available, it either aborts or returns an appropriate error status/message.   
    SUBROUTINE GetNewUnit ( UnIn, ErrStat, ErrMsg )
-
-
-
-      ! Argument declarations.
 
    INTEGER,        INTENT(OUT)            :: UnIn                                         !< Logical unit for the file.
    INTEGER(IntKi), INTENT(OUT), OPTIONAL  :: ErrStat                                      !< The error status code; If not present code aborts
    CHARACTER(*),   INTENT(OUT), OPTIONAL  :: ErrMsg                                       !< The error message, if an error occurred
 
-
-      ! Local declarations.
-
    INTEGER                                :: Un                                           ! Unit number
    LOGICAL                                :: Opened                                       ! Flag indicating whether or not a file is opened.
    INTEGER(IntKi), PARAMETER              :: StartUnit = 10                               ! Starting unit number to check (numbers less than 10 reserved)
-   INTEGER(IntKi), PARAMETER              :: MaxUnit   = 99                               ! The maximum unit number available (or 10 less than the number of files you want to have open at a time)
+   ! NOTE: maximum unit numbers in fortran 90 and later is 2**31-1.  However, there are limits within the OS.
+   !     macos -- 256  (change with ulimit -n)
+   !     linux -- 1024 (change with ulimit -n)
+   !     windows -- 512 (not sure how to change -- ADP)
+   INTEGER(IntKi), PARAMETER              :: MaxUnit   = 65535                            ! The maximum unit number available (or 10 less than the number of files you want to have open at a time)
    CHARACTER(ErrMsgLen)                   :: Msg                                          ! Temporary error message
 
+   ! See if unit is connected to an open file. Check the next largest number until it is not opened.
+   do Un = StartUnit, MaxUnit
+      UnIn = Un
+      inquire(unit=Un, opened=Opened)
+      if (Opened) cycle
+      if (present(ErrStat)) ErrStat = ErrID_None
+      if (present(ErrMsg))  ErrMsg  =  ''
+      return
+   end do
 
-      ! Initialize subroutine outputs
+   Msg = 'GetNewUnit() was unable to find an open file unit specifier between '//TRIM(Num2LStr(StartUnit)) &
+         //' and '//TRIM(Num2LStr(MaxUnit))//'.'
 
-   Un = StartUnit
+   UnIn = -1
+   if (present(ErrStat)) then
+      ErrStat = ErrID_Severe
+      if (present(ErrMsg)) ErrMsg = Msg
+   else
+      call ProgAbort(Msg)
+   end if
 
-   IF ( PRESENT( ErrStat ) ) ErrStat = ErrID_None
-   IF ( PRESENT( ErrMsg  ) ) ErrMsg  =  ''
-
-      ! See if unit is connected to an open file. Check the next largest number until it is not opened.
-
-   DO
-
-      INQUIRE ( UNIT=Un , OPENED=Opened )
-
-      IF ( .NOT. Opened )  EXIT
-      Un = Un + 1
-
-      IF ( Un > MaxUnit ) THEN
-
-         Msg = 'GetNewUnit() was unable to find an open file unit specifier between '//TRIM(Num2LStr(StartUnit)) &
-                                                                            //' and '//TRIM(Num2LStr(MaxUnit))//'.'
-
-         IF ( PRESENT( ErrStat ) ) THEN
-            ErrStat = ErrID_Severe
-            IF ( PRESENT( ErrMsg) ) ErrMsg  =  Msg
-         ELSE
-            CALL ProgAbort( Msg )
-         END IF
-
-         EXIT           ! stop searching now
-
-      END IF
-
-
-   END DO
-
-   UnIn = Un
-
-   RETURN
    END SUBROUTINE GetNewUnit
 !=======================================================================
 !> This function returns a text description of the ErrID (ErrStat) code.
@@ -2455,7 +1848,7 @@ END SUBROUTINE CheckR16Var
    INTEGER(IntKi), INTENT(IN) :: ErrID          !< error status/level
 
       ! Function delcaration
-   CHARACTER(13)              :: GetErrStr      !< description of the ErrID level
+   CHARACTER(25)              :: GetErrStr      !< description of the ErrID level
 
       SELECT CASE ( ErrID )
          CASE ( ErrID_None )
@@ -2469,12 +1862,11 @@ END SUBROUTINE CheckR16Var
          CASE ( ErrID_Fatal )
             GetErrStr = 'FATAL ERROR'
          CASE DEFAULT
-            GetErrStr = 'Unknown ErrID'
+            GetErrStr = 'Unknown ErrID '//TRIM(Num2LStr(ErrID))
       END SELECT
 
 
    END FUNCTION GetErrStr
-   
 !=======================================================================
 !> This function extracts the Name field from the ProgDesc data type
 !  and return it.
@@ -2486,8 +1878,16 @@ END SUBROUTINE CheckR16Var
       ! Function delcaration
       CHARACTER(200)               :: GetNVD      !< A single string containing the name, date, and version info
 
-      ! Store all the version info into a single string
-      GetNVD = TRIM( ProgInfo%Name ) !//' ('//Trim( ProgInfo%Ver )//', '//Trim( ProgInfo%Date )//')'
+      ! Store all the version info into a single string:
+      if (len_trim(ProgInfo%Ver) > 0) then
+         if (len_trim(ProgInfo%Date) > 0) then
+            GetNVD = TRIM( ProgInfo%Name )//' ('//Trim( ProgInfo%Ver )//', '//Trim( ProgInfo%Date )//')'
+         else
+            GetNVD = TRIM( ProgInfo%Name )//' ('//Trim( ProgInfo%Ver )//')'
+         end if
+      else
+         GetNVD = TRIM( ProgInfo%Name )
+      end if
 
    END FUNCTION GetNVD
 !=======================================================================
@@ -2635,72 +2035,160 @@ END SUBROUTINE CheckR16Var
 !! It uses spaces, tabs, commas, semicolons, single quotes, and double quotes ("whitespace")
 !! as word separators. If there aren't NumWords in the line, the remaining array elements will remain empty.
 !! Use CountWords (nwtc_io::countwords) to count the number of words in a line.
-   SUBROUTINE GetWords ( Line, Words, NumWords )
+   SUBROUTINE GetWords ( Line, Words, NumWords, NumFound, IgnoreQuotes )
 
       ! Argument declarations.
 
-   INTEGER, INTENT(IN)          :: NumWords                                     !< The number of words to look for.
+   INTEGER, INTENT(IN)            :: NumWords                                     !< The maximum number of words to look for (and size of Words)
 
-   CHARACTER(*), INTENT(IN)     :: Line                                         !< The string to search.
-   CHARACTER(*), INTENT(OUT)    :: Words(NumWords)                              !< The array of found words.
+   CHARACTER(*), INTENT(IN)       :: Line                                         !< The string to search.
+   CHARACTER(*), INTENT(OUT)      :: Words(NumWords)                              !< The array of found words.
+   INTEGER, OPTIONAL, INTENT(OUT) :: NumFound                                     !< The number of words found
+   LOGICAL, OPTIONAL, INTENT(IN)  :: IgnoreQuotes                                 !< Flag to ignore quotes (process as whitespace)
 
+   INTEGER                        :: iWord                                        ! Word index.
+   INTEGER                        :: i                                            ! Character index in line.
+   INTEGER                        :: iChar                                        ! Character index in word.
+   LOGICAL                        :: InQuotes                                     ! Flag indicating text is within quotes
+   LOGICAL                        :: IgnoreQuotesLoc                              ! Local flag to ignore quotes
 
-      ! Local declarations.
+   ! Initialize number of words found to zero if present
+   if (present(NumFound)) NumFound = 0
 
-   INTEGER                      :: Ch                                           ! Character position within the string.
-   INTEGER                      :: IW                                           ! Word index.
-   INTEGER                      :: NextWhite                                    ! The location of the next whitespace in the string.
+   ! If no text on line, return
+   if (len_trim(Line) == 0) return
 
+   ! If ignore quotes is present, set local flag, otherwise true
+   if (present(IgnoreQuotes)) then
+      IgnoreQuotesLoc = IgnoreQuotes
+   else
+      IgnoreQuotesLoc = .true. 
+   end if
 
+   ! Let's prefill the array with blanks
+   do iWord = 1, NumWords
+      Words(iWord) = ' '
+   end do
 
-      ! Let's prefill the array with blanks.
+   ! Initialize word index to first word
+   iWord = 1
+   
+   ! Initialize index within word
+   iChar = 0
 
-   DO IW=1,NumWords
-      Words(IW) = ' '
-   END DO ! IW
+   ! Initialize in quotes to false
+   InQuotes = .false.
 
+   ! Loop through characters in line
+   do i = 1, len_trim(line)
 
-      ! Let's make sure we have text on this line.
+      ! Select based on character
+      select case (Line(i:i))
+      case ('"', "'")               ! Double quotes, single quotes
+         if (IgnoreQuotesLoc .or. InQuotes) then
+            InQuotes = .false.
+            if (iChar > 0) then
+               ! If requested number of words found, exit; otherwise, new word
+               if (iWord == NumWords) exit
+               iWord = iWord + 1
+               iChar = 0
+            end if
+         else
+            InQuotes = .true.
+         end if
+         cycle
 
-   IF ( LEN_TRIM( Line ) == 0 )  RETURN
+      ! Word separator
+      case (',', ';', ' ', Tab)   ! Comma, semicolon, space, tab
+         ! If in quotes, keep these in word
+         if (.not. InQuotes) then
+            if (iChar > 0) then
+               ! If requested number of words found, exit; otherwise, new word
+               if (iWord == NumWords) exit
+               iWord = iWord + 1
+               iChar = 0
+            end if
+            cycle
+         end if
 
+      end select
 
-      ! Parse words separated by any combination of spaces, tabs, commas,
-      ! semicolons, single quotes, and double quotes ("whitespace").
+      ! Increment character index
+      iChar = iChar + 1
 
-   Ch = 0
-   IW = 0
+      ! If index is larger than length of word, continue
+      if (iChar > len(words(iWord))) then 
+         call ProgWarn('Error reading field from file. There are too many characters in the input file to store in the field. Value may be truncated. '//Line)
+         cycle
+      end if
 
-   DO
+      ! Add character to word
+      Words(iWord)(iChar:iChar) = Line(i:i)
 
-      NextWhite = SCAN( Line(Ch+1:) , ' ,;''"'//Tab )
+   end do
+   
+   if (present(NumFound)) NumFound = iWord
 
-      IF ( NextWhite > 1 )  THEN
-
-         IW        = IW + 1
-         Words(IW) = Line(Ch+1:Ch+NextWhite-1)
-
-         IF ( IW == NumWords )  EXIT
-
-         Ch = Ch + NextWhite
-
-      ELSE IF ( NextWhite == 1 )  THEN
-
-         Ch = Ch + 1
-
-         CYCLE
-
-      ELSE
-
-         EXIT
-
-      END IF
-
-   END DO
-
-
-   RETURN
    END SUBROUTINE GetWords
+!=======================================================================
+!> This subroutine is used to compare a header line (`HeaderLine`) with a list of column names.
+!! It searches for each possible column name (AvailableChanName) and returns an index array indicating which
+!! order the columns are listed in the file (this allows columns to be entered in different orders or for 
+!! some columns to be missing. It returns an error if any of the required channels are missing.
+   SUBROUTINE GetInputColumnIndex(MaxCols, AvailableChanNames, RequiredChanNames, HeaderLine, Indx, ErrStat, ErrMsg)
+   
+      INTEGER(IntKi), INTENT(IN   )    :: MaxCols                             !< maximum number of columns that should be in the input file
+      CHARACTER(*),   INTENT(IN   )    :: AvailableChanNames(MaxCols)         !< list of column headers, THESE SHOULD BE IN UPPER CASE
+      LOGICAL,        INTENT(IN   )    :: RequiredChanNames( MaxCols)         !< T/F corresponding to channel names to determine if these channels should be required
+      CHARACTER(*),   INTENT(IN   )    :: HeaderLine                          !< line of text to be read
+      INTEGER(IntKi), INTENT(INOUT)    :: Indx(MaxCols)                       !< index relating upper-case column names found in header line with AvailableChanNames
+      INTEGER(IntKi), INTENT(  OUT)    :: ErrStat                             !< returns a fatal error if a required channel name isn't found in HeaderLine
+      CHARACTER(*),   INTENT(  OUT)    :: ErrMsg                              !< returns message about which column is missing
+   
+      CHARACTER(ChanLen)               :: Words(MaxCols)
+      INTEGER(IntKi)                   :: i                    ! loop counter
+      INTEGER(IntKi)                   :: j                    ! loop counter
+      INTEGER(IntKi)                   :: FirstCheck
+      INTEGER(IntKi)                   :: NumFound
+            
+      ErrStat = ErrID_None
+      ErrMsg  = ""
+      
+      CALL GetWords ( HeaderLine, Words, MaxCols, NumFound )
+      
+      DO j = 1,NumFound
+         CALL Conv2UC ( Words(j) )
+      
+         ! stop reading any more headers if this word starts with a comment character (indicating that the columns aren't in the table)
+         IF ( INDEX( CommChars, Words(j)(1:1) ) > 0 ) THEN
+            NumFound = j - 1
+            EXIT
+         END IF
+      END DO
+      
+      Indx = -1 ! initialize all values to be "not found"
+      
+      FirstCheck = 1
+      DO i = 1,SIZE(Indx)
+         DO j = FirstCheck,NumFound
+            IF ( TRIM(AvailableChanNames(i)) == TRIM(Words(j)) ) THEN
+               Indx(I) = j
+               IF (j == FirstCheck + 1) FirstCheck = FirstCheck + 1 ! attempt to make this loop a little faster without assuming anything about the order of the words found
+               CYCLE
+            END IF
+         END DO
+      END DO
+      
+      ! check that the required columns are in the file:
+      DO i = 1,SIZE(Indx)
+         IF (Indx(i) < 1 .and. RequiredChanNames(i)) THEN
+            ErrStat = ErrID_Fatal
+            ErrMsg = TRIM(AvailableChanNames(i))//" , a required input, was not found in the line."
+            RETURN
+         END IF
+      END DO
+      
+   END SUBROUTINE GetInputColumnIndex
 !=======================================================================
 !> This routine converts an ASCII array of integers into an equivalent string
 !! (character array). This routine is the inverse of the Str2IntAry() (nwtc_io::str2intary) routine.
@@ -2748,23 +2236,25 @@ END SUBROUTINE CheckR16Var
 !! It eliminates trailing zeroes and even the decimal point if it is not a fraction. \n
 !! Use Num2LStr (nwtc_io::num2lstr) instead of directly calling a specific routine in the generic interface.   
    FUNCTION Int2LStr ( Num )
-
-   CHARACTER(11)                :: Int2LStr                                     !< string representing input number.
-
-
+      CHARACTER(11)                :: Int2LStr                                  !< string representing input number.
       ! Argument declarations.
-
-   INTEGER, INTENT(IN)          :: Num                                          !< The number to convert to a left-justified string.
-
-
-
-   WRITE (Int2LStr,'(I11)')  Num
-
-   Int2Lstr = ADJUSTL( Int2LStr )
-
-
-   RETURN
+      INTEGER(IntKi), INTENT(IN)   :: Num                                       !< The number to convert to a left-justified string.
+      WRITE (Int2LStr,'(I11)')  Num
+      Int2Lstr = ADJUSTL( Int2LStr )
+      RETURN
    END FUNCTION Int2LStr
+!=======================================================================
+!> This function returns a left-adjusted string representing the passed numeric value. 
+!! It eliminates trailing zeroes and even the decimal point if it is not a fraction. \n
+!! Use Num2LStr (nwtc_io::num2lstr) instead of directly calling a specific routine in the generic interface.   
+   FUNCTION B8Ki2LStr ( Num )
+      CHARACTER(20)                :: B8Ki2LStr                                 !< string representing input number.
+      ! Argument declarations.
+      INTEGER(B8Ki), INTENT(IN)    :: Num                                       !< The number to convert to a left-justified string.
+      WRITE (B8Ki2LStr,'(I20)')  Num
+      B8Ki2Lstr = ADJUSTL( B8Ki2LStr )
+      RETURN
+   END FUNCTION B8Ki2LStr
 !=======================================================================
 !> This function returns true if and only if the first character of the input StringToCheck matches on the of comment characters
 !! nwtc_io::commchars.
@@ -2864,6 +2354,8 @@ END SUBROUTINE CheckR16Var
                      //TRIM( DefaultInputFile )//'".' )
       END IF
       CALL WrScr    ( NewLine//' Note: values enclosed in square brackets [] are optional. Do not enter the brackets.')      
+      CALL WrScr    ( NewLine//' For more information and documentation, visit:' )
+      CALL WrScr    ( '    https://openfast.readthedocs.io/' )
       CALL WrScr    ( ' ')
                      
    END SUBROUTINE NWTC_DisplaySyntax
@@ -2908,8 +2400,9 @@ END SUBROUTINE CheckR16Var
    OPEN( Un, FILE=TRIM( InFile ), STATUS='OLD', FORM='UNFORMATTED', ACCESS='STREAM', IOSTAT=ErrStat, ACTION='READ' )
 
    IF ( ErrStat /= 0 ) THEN
+      ErrMsg  = 'OpenBInpFile:Cannot open file "'//TRIM( InFile )//'" for reading. Another program may have locked it.' &
+                //' (IOSTAT is '//TRIM(Num2LStr(ErrStat))//')'
       ErrStat = ErrID_Fatal
-      ErrMsg  = 'OpenBInpFile:Cannot open file "'//TRIM( InFile )//'" for reading. Another program may have locked it.'
    ELSE
       ErrStat = ErrID_None
       ErrMsg  = ''
@@ -2937,9 +2430,9 @@ END SUBROUTINE CheckR16Var
    OPEN( Un, FILE=TRIM( OutFile ), STATUS='UNKNOWN', FORM='UNFORMATTED' , ACCESS='STREAM', IOSTAT=ErrStat, ACTION='WRITE' )
 
    IF ( ErrStat /= 0 ) THEN
-      ErrStat = ErrID_Fatal
       ErrMsg  = 'OpenBOutFile:Cannot open file "'//TRIM( OutFile )//'". Another program may have locked it for writing.' &
                 //' (IOSTAT is '//TRIM(Num2LStr(ErrStat))//')'
+      ErrStat = ErrID_Fatal
    ELSE
       ErrStat = ErrID_None
       ErrMsg  = ''
@@ -2975,6 +2468,7 @@ END SUBROUTINE CheckR16Var
 
       ! Get a unit number for the echo file:
 
+   !$OMP critical(fileopenNWTCio_critical)
    IF ( Un < 0 ) THEN
       CALL GetNewUnit( Un, ErrStat2, ErrMsg2 )
          CALL SetErrStat(ErrStat2, ErrMsg2,ErrStat, ErrMsg, RoutineName )
@@ -2985,6 +2479,7 @@ END SUBROUTINE CheckR16Var
 
    CALL OpenFOutFile( Un, OutFile, ErrStat2, ErrMsg2 )
       CALL SetErrStat(ErrStat2, ErrMsg2,ErrStat, ErrMsg, RoutineName )
+   !$OMP end critical(fileopenNWTCio_critical)
       IF ( ErrStat >= AbortErrLev ) RETURN
 
 
@@ -3313,13 +2808,160 @@ END SUBROUTINE CheckR16Var
    RETURN
    END SUBROUTINE OpenUOutfile
 !=======================================================================
+!> This subroutine prints the contents of the FileInfo data structure to the screen
+!! This may be useful for diagnostic purposes.  this is written to unit U
+   subroutine Print_FileInfo_Struct( U, FileInfo )
+      integer(IntKi),      intent(in   ) :: U         !< Unit number to print to
+      type(FileInfoType),  intent(in   ) :: FileInfo  !< derived type containing everything read from file
+      integer(IntKi)                     :: i         !< generic counter
+      character(20)                      :: TmpStr20
+      character(45)                      :: TmpStr45
+      write(U,*)  '-------------- Print_FileInfo_Struct ------------'
+      write(U,*)  '  info stored in the FileInfo data type'
+      if (.not. allocated(FileInfo%FileLine) .and. .not. allocated(FileInfo%FileIndx) .and. .not. allocated(FileInfo%Lines)) then
+         write(U,*) '            Data not allocated'
+         return
+      endif
+      write(U,*)  '        %NumLines           (integer): ',FileInfo%NumLines
+      write(U,*)  '        %NumFiles           (integer): ',FileInfo%NumFiles
+      write(U,*)  '        %FileList  (array of strings): ',size(FileInfo%FileList) ! SIZE(array) will produce an error on some compilers if array not allocated
+      write(U,*)  '        %FileIndx  (array of integer): ',size(FileInfo%FileIndx) ! SIZE(array) will produce an error on some compilers if array not allocated
+      write(U,*)  '        %FileLine  (array of integer): ',size(FileInfo%FileLine) ! SIZE(array) will produce an error on some compilers if array not allocated
+      write(U,*)  '        %Lines     (array of strings): ',size(FileInfo%Lines   ) ! SIZE(array) will produce an error on some compilers if array not allocated
+      if (allocated(FileInfo%FileList)) then
+         write(U,*)  '  list of files read:'
+         write(U,*)  '     FileIdx     FileName'
+         do i=1,FileInfo%NumFiles
+            write(TmpStr20,'(7x,I3,10x)')  i
+            write(U,*) TmpStr20//trim(FileInfo%FileList(i))
+         enddo
+      endif
+      if (allocated(FileInfo%FileLine) .and. allocated(FileInfo%FileIndx) .and. allocated(FileInfo%Lines)) then
+         write(U,*) '  Non-comment lines stored in memory from files:'
+         write(U,*) '         i       FileIndx       FileLine     Lines(i)'
+         do i=1,FileInfo%NumLines
+            write(TmpStr45, '(5x,I5,10x,I5,10x,I5,5x)') i, FileInfo%FileIndx(i), FileInfo%FileLine(i)
+            write(U,*) TmpStr45, trim(FileInfo%Lines(i))
+         enddo
+      endif
+   end subroutine Print_FileInfo_Struct
+!=======================================================================
+!> This subroutine parses the specified line of text for AryLen CHARACTER values.
+!! Generate an error message if the value is the wrong type.
+!! Use ParseAry (nwtc_io::parseary) instead of directly calling a specific routine in the generic interface.   
+   SUBROUTINE ParseChAry ( FileInfo, LineNum, AryName, Ary, AryLen, ErrStat, ErrMsg, UnEc )
+
+         ! Arguments declarations.
+
+      INTEGER,             INTENT(IN)             :: AryLen                        !< The length of the array to parse.
+      TYPE (FileInfoType), INTENT(IN)             :: FileInfo                      !< The derived type for holding the file information.
+      INTEGER(IntKi),      INTENT(INOUT)          :: LineNum                       !< The number of the line to parse.
+      CHARACTER(*),        INTENT(IN)             :: AryName                       !< The array name we are trying to fill.
+      CHARACTER(*),        INTENT(OUT)            :: Ary(AryLen)                   !< The array to receive the input values.
+      INTEGER(IntKi),      INTENT(OUT)            :: ErrStat                       !< The error status.
+      CHARACTER(*),        INTENT(OUT)            :: ErrMsg                        !< The error message, if ErrStat /= 0.
+      INTEGER,             INTENT(IN), OPTIONAL   :: UnEc                          !< I/O unit for echo file. If present and > 0, write to UnEc.
+
+         ! Local declarations.
+
+      INTEGER(IntKi)                         :: ErrStatLcl                    ! Error status local to this routine.
+
+      CHARACTER(*), PARAMETER                :: RoutineName = 'ParseChAry'
+
+      ErrStat = ErrID_None
+      ErrMsg  = ""
+   
+      IF (LineNum > size(FileInfo%Lines) ) THEN
+         CALL SetErrStat ( ErrID_Fatal, NewLine//' >> A fatal error occurred when parsing data.'//NewLine//  &
+                  ' >> The "'//TRIM( AryName )//'" array was not assigned because the file is too short. LineNum='// &
+                   trim(num2lstr(LineNum))//'; NumLines='//trim(num2lstr(size(FileInfo%Lines))) &
+                  , ErrStat, ErrMsg, RoutineName )
+         RETURN
+      END IF
+   
+      READ (FileInfo%Lines(LineNum),*,IOSTAT=ErrStatLcl) Ary
+      IF ( ErrStatLcl /= 0 )  THEN
+         CALL SetErrStat ( ErrID_Fatal, 'A fatal error occurred when parsing data from "' &
+                  //TRIM( FileInfo%FileList(FileInfo%FileIndx(LineNum)) )//'".'//NewLine//  &
+                  ' >> The "'//TRIM( AryName )//'" array was not assigned valid CHARACTER values on line #' &
+                  //TRIM( Num2LStr( FileInfo%FileLine(LineNum) ) )//'.'//NewLine//' >> The text being parsed was :'//NewLine &
+                  //'    "'//TRIM( FileInfo%Lines(LineNum) )//'"',ErrStat,ErrMsg,RoutineName )
+         RETURN
+      ENDIF
+
+      IF ( PRESENT(UnEc) )  THEN
+         IF ( UnEc > 0 )  WRITE (UnEc,'(A)')  TRIM( FileInfo%Lines(LineNum) )
+      END IF
+
+      LineNum = LineNum + 1
+
+      RETURN
+
+   END SUBROUTINE ParseChAry
+!=======================================================================
+!> This subroutine parses a comment line
+   SUBROUTINE ParseCom ( FileInfo, LineNum, Var, ErrStat, ErrMsg, UnEc, IsLegalComment )
+
+         ! Arguments declarations.
+      INTEGER(IntKi), INTENT(OUT)            :: ErrStat                       !< The error status.
+      INTEGER(IntKi), INTENT(INOUT)          :: LineNum                       !< The number of the line to parse.
+      INTEGER,        INTENT(IN), OPTIONAL   :: UnEc                          !< I/O unit for echo file. If present and > 0, write to UnEc.
+      CHARACTER(*),   INTENT(OUT)            :: Var                           !< The variable to receive the comment
+      CHARACTER(*),   INTENT(OUT)            :: ErrMsg                        !< The error message, if ErrStat /= 0.
+      TYPE (FileInfoType), INTENT(IN)        :: FileInfo                      !< The derived type for holding the file information.
+      LOGICAL, OPTIONAL,   INTENT(INOUT)     :: IsLegalComment                !< True if the comment is a "legal" comment line starting with '---' or '==='. NOTE: We have too many options, we need to be more strict!!!!
+      CHARACTER(*), PARAMETER                :: RoutineName = 'ParseCom'
+      
+      ErrStat=ErrID_None
+      ErrMsg = ""
+
+      IF (LineNum > size(FileInfo%Lines) ) THEN
+         CALL SetErrStat ( ErrID_Fatal, NewLine//' >> A fatal error occurred when parsing data.'//NewLine//  &
+                   ' >> The comment line was not assigned because the file is too short. LineNum='// &
+                   trim(num2lstr(LineNum))//'; NumLines='//trim(num2lstr(size(FileInfo%Lines))) &
+                   , ErrStat, ErrMsg, RoutineName )
+         RETURN
+      END IF
+      
+      Var = trim(FileInfo%Lines(LineNum))
+
+      ! NOTE: comments were removed from fileInfo, so not checking that this line is a "true" comment
+      !if (.not. IsComment(Var)) then
+      !   CALL SetErrStat ( ErrID_Fatal, NewLine//' >> A fatal error occurred when parsing data.'//NewLine//  &
+      !      ' >> The comment line does not start with a comment character.' &
+      !             , ErrStat, ErrMsg, RoutineName )
+      !   return
+      !endif
+      IF ( PRESENT(UnEc) )  THEN
+         IF ( UnEc > 0 )  WRITE (UnEc,'(A)')  trim(Var)
+      END IF
+      LineNum = LineNum + 1
+
+      IF (PRESENT(IsLegalComment) ) then
+         if (len(Var)<=3) then
+            IsLegalComment=.False.
+         else
+            ! Here, we are talking about comments in the input file that are "expected to be there"
+            IsLegalComment =  (Var(1:3)=='---') .or.  (Var(1:3)=='===')
+         endif
+         if (.not.IsLegalComment) then
+            call SetErrStat(ErrID_Fatal, NewLine//' >> A fatal error occurred when parsing data.'//NewLine//  &
+                   ' >> The comment line did not start with `---` or `===`. LineNum='// &
+                   trim(num2lstr(LineNum))//'; NumLines='//trim(num2lstr(size(FileInfo%Lines))) &
+                   , ErrStat, ErrMsg, RoutineName )
+         endif
+      END IF
+
+   END SUBROUTINE ParseCom
+
+!=======================================================================
 !> This subroutine parses the specified line of text for two words.  One should be a
 !! the name of a variable and the other the value of the variable.
 !! Generate an error message if the value is the wrong type or if only one "word" is found.
 !!
 !! WARNING: This routine assumes the "words" containing the variable name and value are <= 20 characters. \n
 !! Use ParseVar (nwtc_io::parsevar) instead of directly calling a specific routine in the generic interface.   
-   SUBROUTINE ParseChVar ( FileInfo, LineNum, ExpVarName, Var, ErrStat, ErrMsg, UnEc )
+   SUBROUTINE ParseChVar ( FileInfo, LineNum, ExpVarName, Var, ErrStat, ErrMsg, UnEc, IsPath )
 
          ! Arguments declarations.
 
@@ -3328,6 +2970,7 @@ END SUBROUTINE CheckR16Var
       INTEGER(IntKi), INTENT(INOUT)          :: LineNum                       !< The number of the line to parse.
 
       INTEGER,        INTENT(IN), OPTIONAL   :: UnEc                          !< I/O unit for echo file. If present and > 0, write to UnEc.
+      LOGICAL,        INTENT(IN), OPTIONAL   :: IsPath                        !< Flag indicating that string is a path.
 
       CHARACTER(*),   INTENT(OUT)            :: Var                           !< The variable to receive the input value.
       CHARACTER(*),   INTENT(OUT)            :: ErrMsg                        !< The error message, if ErrStat /= 0.
@@ -3340,8 +2983,9 @@ END SUBROUTINE CheckR16Var
 
       INTEGER(IntKi)                         :: ErrStatLcl                    ! Error status local to this routine.
       INTEGER(IntKi)                         :: NameIndx                      ! The index into the Words array that points to the variable name.
+      LOGICAL                                :: IgnoreQuotes
 
-      CHARACTER(200)                         :: Words       (2)               ! The two "words" parsed from the line.
+      CHARACTER(NWTC_SizeOfNumWord)          :: Words       (2)               ! The two "words" parsed from the line.
       CHARACTER(ErrMsgLen)                   :: ErrMsg2
       CHARACTER(*), PARAMETER                :: RoutineName = 'ParseChVar'
 
@@ -3353,14 +2997,19 @@ END SUBROUTINE CheckR16Var
       
       IF (LineNum > size(FileInfo%Lines) ) THEN
          CALL SetErrStat ( ErrID_Fatal, NewLine//' >> A fatal error occurred when parsing data.'//NewLine//  &
-                   ' >> The "'//TRIM( ExpVarName )//'" variable was not assigned because the file is too short.' &
+                   ' >> The "'//TRIM( ExpVarName )//'" variable was not assigned because the file is too short. LineNum='// &
+                   trim(num2lstr(LineNum))//'; NumLines='//trim(num2lstr(size(FileInfo%Lines))) &
                    , ErrStat, ErrMsg, RoutineName )
          RETURN
       END IF
       
-      
-      CALL GetWords ( FileInfo%Lines(LineNum), Words, 2 )                     ! Read the first two words in Line.
-      IF ( Words(2) == '' )  THEN
+      if (present(IsPath)) then
+         IgnoreQuotes = .not. IsPath
+      else
+         IgnoreQuotes = .true.
+      end if
+      CALL GetWords ( FileInfo%Lines(LineNum), Words, 2, IgnoreQuotes=IgnoreQuotes )                     ! Read the first two words in Line.
+      IF ( Words(2) == '' .and. (LEN_TRIM(ExpVarName) > 0) )  THEN
          CALL SetErrStat ( ErrID_Fatal, 'A fatal error occurred when parsing data from "' &
                    //TRIM( FileInfo%FileList(FileInfo%FileIndx(LineNum)) )//'".'//NewLine//  &
                    ' >> The variable "'//TRIM( ExpVarName )//'" was not assigned valid string value on line #' &
@@ -3392,7 +3041,7 @@ END SUBROUTINE CheckR16Var
 !!
 !! WARNING: This routine assumes the "words" containing the variable name and value are <= 20 characters.
 !! Use ParseVarWDefault (nwtc_io::parsevarwdefault) instead of directly calling a specific routine in the generic interface.   
-   SUBROUTINE ParseChVarWDefault ( FileInfo, LineNum, ExpVarName, Var, VarDefault, ErrStat, ErrMsg, UnEc )
+   SUBROUTINE ParseChVarWDefault ( FileInfo, LineNum, ExpVarName, Var, VarDefault, ErrStat, ErrMsg, UnEcIn )
 
          ! Arguments declarations.
 
@@ -3400,7 +3049,7 @@ END SUBROUTINE CheckR16Var
       INTEGER(IntKi), INTENT(OUT)            :: ErrStat                       !< The error status.
       INTEGER(IntKi), INTENT(INOUT)          :: LineNum                       !< The number of the line to parse.
 
-      INTEGER,        INTENT(IN), OPTIONAL   :: UnEc                          !< I/O unit for echo file. If present and > 0, write to UnEc.
+      INTEGER,        INTENT(IN), OPTIONAL   :: UnEcIn                          ! I/O unit for echo file. If present and > 0, write to UnEc.
 
       CHARACTER(*),   INTENT(OUT)            :: Var                           !< The variable to receive the input value.
       CHARACTER(*),   INTENT(IN)             :: VarDefault                    !< The default value for the variable.
@@ -3412,6 +3061,7 @@ END SUBROUTINE CheckR16Var
 
          ! Local declarations.
 
+      INTEGER                                :: UnEc                          ! I/O unit for echo file.
       INTEGER(IntKi)                         :: ErrStatLcl                    ! Error status local to this routine.
 
       CHARACTER(ErrMsgLen)                   :: ErrMsg2
@@ -3420,6 +3070,12 @@ END SUBROUTINE CheckR16Var
       
       ErrStat=ErrID_None
       ErrMsg = ""
+      
+      if (PRESENT(UnEcIn)) then
+         UnEc = UnEcIn
+      else
+         UnEc = 0
+      end if
 
          ! First parse this as a string
       CALL ParseVar ( FileInfo, LineNum, ExpVarName, defaultStr, ErrStatLcl, ErrMsg2, UnEc )
@@ -3438,13 +3094,13 @@ END SUBROUTINE CheckR16Var
 !> This subroutine parses the specified line of text for AryLen REAL values.
 !! Generate an error message if the value is the wrong type.
 !! Use ParseAry (nwtc_io::parseary) instead of directly calling a specific routine in the generic interface.   
-   SUBROUTINE ParseDbAry ( FileInfo, LineNum, AryName, Ary, AryLen, ErrStat, ErrMsg, UnEc )
+   SUBROUTINE ParseR8Ary ( FileInfo, LineNum, AryName, Ary, AryLen, ErrStat, ErrMsg, UnEc )
 
          ! Arguments declarations.
 
       INTEGER, INTENT(IN)                    :: AryLen                        !< The length of the array to parse.
 
-      REAL(DbKi), INTENT(OUT)                :: Ary       (AryLen)            !< The array to receive the input values.
+      REAL(R8Ki), INTENT(OUT)                :: Ary       (AryLen)            !< The array to receive the input values.
 
       INTEGER(IntKi), INTENT(OUT)            :: ErrStat                       !< The error status.
       INTEGER(IntKi), INTENT(INOUT)          :: LineNum                       !< The number of the line to parse.
@@ -3462,7 +3118,7 @@ END SUBROUTINE CheckR16Var
       INTEGER(IntKi)                         :: ErrStatLcl                    ! Error status local to this routine.
       INTEGER(IntKi)                         :: i                             ! Error status local to this routine.
 
-      CHARACTER(*), PARAMETER                :: RoutineName = 'ParseDbAry'
+      CHARACTER(*), PARAMETER                :: RoutineName = 'ParseR8Ary'
 
 
       ErrStat = ErrID_None
@@ -3470,7 +3126,8 @@ END SUBROUTINE CheckR16Var
       
       IF (LineNum > size(FileInfo%Lines) ) THEN
          CALL SetErrStat ( ErrID_Fatal, NewLine//' >> A fatal error occurred when parsing data.'//NewLine//  &
-                   ' >> The "'//TRIM( AryName )//'" array was not assigned because the file is too short.' &
+                   ' >> The "'//TRIM( AryName )//'" array was not assigned because the file is too short. LineNum='// &
+                   trim(num2lstr(LineNum))//'; NumLines='//trim(num2lstr(size(FileInfo%Lines))) &
                    , ErrStat, ErrMsg, RoutineName )
          RETURN
       END IF
@@ -3500,14 +3157,14 @@ END SUBROUTINE CheckR16Var
 
       RETURN
 
-   END SUBROUTINE ParseDbAry
+   END SUBROUTINE ParseR8Ary
 !=======================================================================
 !> \copydoc nwtc_io::parsechvar
-   SUBROUTINE ParseDbVar ( FileInfo, LineNum, ExpVarName, Var, ErrStat, ErrMsg, UnEc )
+   SUBROUTINE ParseR8Var ( FileInfo, LineNum, ExpVarName, Var, ErrStat, ErrMsg, UnEc )
 
          ! Arguments declarations.
 
-      REAL(DbKi), INTENT(OUT)                :: Var                           ! The double-precision REAL variable to receive the input value.
+      REAL(R8Ki), INTENT(OUT)                :: Var                           ! The double-precision REAL variable to receive the input value.
 
       INTEGER(IntKi), INTENT(OUT)            :: ErrStat                       ! The error status.
       INTEGER(IntKi), INTENT(INOUT)          :: LineNum                       ! The number of the line to parse.
@@ -3525,9 +3182,9 @@ END SUBROUTINE CheckR16Var
       INTEGER(IntKi)                         :: ErrStatLcl                    ! Error status local to this routine.
       INTEGER(IntKi)                         :: NameIndx                      ! The index into the Words array that points to the variable name.
 
-      CHARACTER(20)                          :: Words       (2)               ! The two "words" parsed from the line.
+      CHARACTER(NWTC_SizeOfNumWord)          :: Words       (2)               ! The two "words" parsed from the line.
       CHARACTER(ErrMsgLen)                   :: ErrMsg2
-      CHARACTER(*), PARAMETER                :: RoutineName = 'ParseDbVar'
+      CHARACTER(*), PARAMETER                :: RoutineName = 'ParseR8Var'
 
 
       ErrStat = ErrID_None
@@ -3535,7 +3192,8 @@ END SUBROUTINE CheckR16Var
 
       IF (LineNum > size(FileInfo%Lines) ) THEN
          CALL SetErrStat ( ErrID_Fatal, NewLine//' >> A fatal error occurred when parsing data.'//NewLine//  &
-                   ' >> The "'//TRIM( ExpVarName )//'" variable was not assigned because the file is too short.' &
+                   ' >> The "'//TRIM( ExpVarName )//'" variable was not assigned because the file is too short. LineNum='// &
+                   trim(num2lstr(LineNum))//'; NumLines='//trim(num2lstr(size(FileInfo%Lines))) &
                    , ErrStat, ErrMsg, RoutineName )
          RETURN
       END IF
@@ -3567,10 +3225,10 @@ END SUBROUTINE CheckR16Var
       LineNum = LineNum + 1
 
       RETURN
-   END SUBROUTINE ParseDbVar
+   END SUBROUTINE ParseR8Var
 !=======================================================================
 !> \copydoc nwtc_io::parsechvarwdefault
-   SUBROUTINE ParseDbVarWDefault ( FileInfo, LineNum, ExpVarName, Var, VarDefault, ErrStat, ErrMsg, UnEc )
+   SUBROUTINE ParseR8VarWDefault ( FileInfo, LineNum, ExpVarName, Var, VarDefault, ErrStat, ErrMsg, UnEcIn )
 
          ! Arguments declarations.
 
@@ -3578,10 +3236,10 @@ END SUBROUTINE CheckR16Var
       INTEGER(IntKi), INTENT(OUT)            :: ErrStat                       ! The error status.
       INTEGER(IntKi), INTENT(INOUT)          :: LineNum                       ! The number of the line to parse.
 
-      INTEGER,        INTENT(IN), OPTIONAL   :: UnEc                          ! I/O unit for echo file. If present and > 0, write to UnEc.
+      INTEGER,        INTENT(IN), OPTIONAL   :: UnEcIn                          ! I/O unit for echo file. If present and > 0, write to UnEc.
 
-      REAL(DbKi), INTENT(OUT)                :: Var                           ! The double-precision REAL variable to receive the input value.
-      REAL(DbKi),     INTENT(IN)             :: VarDefault                    ! The double-precision REAL used as the default.
+      REAL(R8Ki), INTENT(OUT)                :: Var                           ! The double-precision REAL variable to receive the input value.
+      REAL(R8Ki),     INTENT(IN)             :: VarDefault                    ! The double-precision REAL used as the default.
       CHARACTER(*),   INTENT(OUT)            :: ErrMsg                        ! The error message, if ErrStat /= 0.
       CHARACTER(*),   INTENT(IN)             :: ExpVarName                    ! The expected variable name.
 
@@ -3590,15 +3248,22 @@ END SUBROUTINE CheckR16Var
 
          ! Local declarations.
 
+      INTEGER                                :: UnEc                          ! I/O unit for echo file.
       INTEGER(IntKi)                         :: ErrStatLcl                    ! Error status local to this routine.
 
       CHARACTER(ErrMsgLen)                   :: ErrMsg2
-      CHARACTER(*), PARAMETER                :: RoutineName = 'ParseDbVarDefault'
+      CHARACTER(*), PARAMETER                :: RoutineName = 'ParseR8VarDefault'
       CHARACTER(20)                          :: defaultStr
       
       ErrStat=ErrID_None
       ErrMsg = ""
 
+      if (PRESENT(UnEcIn)) then
+         UnEc = UnEcIn
+      else
+         UnEc = 0
+      end if
+      
          ! First parse this as a string
       CALL ParseVar ( FileInfo, LineNum, ExpVarName, defaultStr, ErrStatLcl, ErrMsg2, UnEc )
          CALL SetErrStat(ErrStatLcl, ErrMsg2, ErrStat, ErrMsg, RoutineName )
@@ -3613,7 +3278,7 @@ END SUBROUTINE CheckR16Var
       END IF             
       
       RETURN
-   END SUBROUTINE ParseDbVarWDefault
+   END SUBROUTINE ParseR8VarWDefault
 !=======================================================================
 !> \copydoc nwtc_io::parsedbary
    SUBROUTINE ParseInAry ( FileInfo, LineNum, AryName, Ary, AryLen, ErrStat, ErrMsg, UnEc )
@@ -3639,7 +3304,6 @@ END SUBROUTINE CheckR16Var
 
       INTEGER(IntKi)                         :: ErrStatLcl                    ! Error status local to this routine.
 
-      CHARACTER(20), ALLOCATABLE             :: Words       (:)               ! The array "words" parsed from the line.
       CHARACTER(*), PARAMETER                :: RoutineName = 'ParseInAry'
 
       ErrStat = ErrID_None
@@ -3647,17 +3311,11 @@ END SUBROUTINE CheckR16Var
 
       IF (LineNum > size(FileInfo%Lines) ) THEN
          CALL SetErrStat ( ErrID_Fatal, NewLine//' >> A fatal error occurred when parsing data.'//NewLine//  &
-                   ' >> The "'//TRIM( AryName )//'" array was not assigned because the file is too short.' &
+                   ' >> The "'//TRIM( AryName )//'" array was not assigned because the file is too short. LineNum='// &
+                   trim(num2lstr(LineNum))//'; NumLines='//trim(num2lstr(size(FileInfo%Lines))) &
                    , ErrStat, ErrMsg, RoutineName )
          RETURN
       END IF
-
-      ALLOCATE ( Words( AryLen ) , STAT=ErrStatLcl )
-      IF ( ErrStatLcl /= 0 )  THEN
-         CALL SetErrStat ( ErrID_Fatal, 'Fatal error allocating memory for the Words array.',ErrStat,ErrMsg,RoutineName )
-         CALL Cleanup()
-         RETURN
-      ENDIF
 
 
       READ (FileInfo%Lines(LineNum),*,IOSTAT=ErrStatLcl)  Ary
@@ -3667,7 +3325,6 @@ END SUBROUTINE CheckR16Var
                    ' >> The "'//TRIM( AryName )//'" array was not assigned valid INTEGER values on line #' &
                    //TRIM( Num2LStr( FileInfo%FileLine(LineNum) ) )//'.'//NewLine//' >> The text being parsed was :'//NewLine &
                    //'    "'//TRIM( FileInfo%Lines(LineNum) )//'"',ErrStat,ErrMsg,RoutineName )
-         CALL Cleanup()
          RETURN
       ENDIF
 
@@ -3677,25 +3334,9 @@ END SUBROUTINE CheckR16Var
 
       LineNum = LineNum + 1
 
-      CALL Cleanup()
-      
+
       RETURN
 
-   !=======================================================================
-   CONTAINS
-   !=======================================================================
-      SUBROUTINE Cleanup ( )
-
-         ! This subroutine cleans up the parent routine before exiting.
-
-            ! Deallocate the Words array if it had been allocated.
-
-         IF ( ALLOCATED( Words ) ) DEALLOCATE( Words )
-
-
-         RETURN
-
-      END SUBROUTINE Cleanup
 
    END SUBROUTINE ParseInAry
 !=======================================================================
@@ -3722,7 +3363,7 @@ END SUBROUTINE CheckR16Var
       INTEGER                                :: DashLoc                       ! The possible location of the dash in the range text.
 
       CHARACTER( 20)                         :: InclInfoUC                    ! InclInfo converted to upper case.
-      CHARACTER(512)                         :: Words       (2)               ! The two "words" parsed from the line.
+      CHARACTER(2048)                        :: Words       (2)               ! The two "words" parsed from the line.
       CHARACTER(1024)                        :: PriPath                       ! path name of primary file (RelativePathFileName)
       CHARACTER(*), PARAMETER                :: RoutineName = 'ParseInclInfo'
 
@@ -3744,7 +3385,7 @@ END SUBROUTINE CheckR16Var
 
          IF ( DashLoc > 0 )  THEN                                             ! Must be in the form of "<num1>-<num2>".
 
-            READ (Words(1)(:DashLoc-1),*,IOSTAT=ErrStatLcl)  RangeBeg         ! Parse the first number as the beginning fo the range.
+            READ (Words(1)(:DashLoc-1),*,IOSTAT=ErrStatLcl)  RangeBeg         ! Parse the first number as the beginning of the range.
             IF ( ErrStatLcl /= 0 )  THEN
                CALL SetErrStat(ErrID_Fatal,'Fatal error for an incorrectly formatted include-file line range.',ErrStat,ErrMsg,RoutineName)
                RETURN
@@ -3846,7 +3487,7 @@ END SUBROUTINE CheckR16Var
       INTEGER(IntKi)                         :: ErrStatLcl                    ! Error status local to this routine.
       INTEGER(IntKi)                         :: NameIndx                      ! The index into the Words array that points to the variable name.
 
-      CHARACTER(20)                          :: Words       (2)               ! The two "words" parsed from the line.
+      CHARACTER(NWTC_SizeOfNumWord)          :: Words       (2)               ! The two "words" parsed from the line.
       CHARACTER(ErrMsgLen)                   :: ErrMsg2
       CHARACTER(*), PARAMETER                :: RoutineName = 'ParseInVar'
 
@@ -3856,7 +3497,8 @@ END SUBROUTINE CheckR16Var
 
       IF (LineNum > size(FileInfo%Lines) ) THEN
          CALL SetErrStat ( ErrID_Fatal, NewLine//' >> A fatal error occurred when parsing data.'//NewLine//  &
-                   ' >> The "'//TRIM( ExpVarName )//'" variable was not assigned because the file is too short.' &
+                   ' >> The "'//TRIM( ExpVarName )//'" variable was not assigned because the file is too short. LineNum='// &
+                   trim(num2lstr(LineNum))//'; NumLines='//trim(num2lstr(size(FileInfo%Lines))) &
                    , ErrStat, ErrMsg, RoutineName )
          RETURN
       END IF
@@ -3890,7 +3532,7 @@ END SUBROUTINE CheckR16Var
    END SUBROUTINE ParseInVar
 !=======================================================================
 !> \copydoc nwtc_io::parsechvarwdefault
-   SUBROUTINE ParseInVarWDefault ( FileInfo, LineNum, ExpVarName, Var, VarDefault, ErrStat, ErrMsg, UnEc )
+   SUBROUTINE ParseInVarWDefault ( FileInfo, LineNum, ExpVarName, Var, VarDefault, ErrStat, ErrMsg, UnEcIn )
 
       ! This subroutine parses the specified line of text for two words.  One should be a
       ! the name of a integer variable and the other an integer value.
@@ -3905,7 +3547,7 @@ END SUBROUTINE CheckR16Var
       INTEGER(IntKi), INTENT(OUT)            :: ErrStat                       ! The error status.
       INTEGER(IntKi), INTENT(INOUT)          :: LineNum                       ! The number of the line to parse.
 
-      INTEGER,        INTENT(IN), OPTIONAL   :: UnEc                          ! I/O unit for echo file. If present and > 0, write to UnEc.
+      INTEGER,        INTENT(IN), OPTIONAL   :: UnEcIn                          ! I/O unit for echo file. If present and > 0, write to UnEc.
 
       INTEGER(IntKi), INTENT(OUT)            :: Var                           ! The INTEGER variable to receive the input value.
       INTEGER(IntKi),   INTENT(IN)           :: VarDefault                    ! The INTEGER used as the default.
@@ -3917,6 +3559,7 @@ END SUBROUTINE CheckR16Var
 
          ! Local declarations.
 
+      INTEGER                                :: UnEc                          ! I/O unit for echo file.
       INTEGER(IntKi)                         :: ErrStatLcl                    ! Error status local to this routine.
 
       CHARACTER(ErrMsgLen)                   :: ErrMsg2
@@ -3925,6 +3568,12 @@ END SUBROUTINE CheckR16Var
       
       ErrStat=ErrID_None
       ErrMsg = ""
+      
+      if (PRESENT(UnEcIn)) then
+         UnEc = UnEcIn
+      else
+         UnEc = 0
+      end if
 
          ! First parse this as a string
       CALL ParseVar ( FileInfo, LineNum, ExpVarName, defaultStr, ErrStatLcl, ErrMsg2, UnEc )
@@ -3970,7 +3619,6 @@ END SUBROUTINE CheckR16Var
 
       INTEGER(IntKi)                         :: ErrStatLcl                    ! Error status local to this routine.
 
-      CHARACTER(20), ALLOCATABLE             :: Words       (:)               ! The array "words" parsed from the line.
       CHARACTER(*), PARAMETER                :: RoutineName = 'ParseLoAry'
 
       ErrStat = ErrID_None
@@ -3978,18 +3626,11 @@ END SUBROUTINE CheckR16Var
 
       IF (LineNum > size(FileInfo%Lines) ) THEN
          CALL SetErrStat ( ErrID_Fatal, NewLine//' >> A fatal error occurred when parsing data.'//NewLine//  &
-                   ' >> The "'//TRIM( AryName )//'" array was not assigned because the file is too short.' &
+                   ' >> The "'//TRIM( AryName )//'" array was not assigned because the file is too short. LineNum='// &
+                   trim(num2lstr(LineNum))//'; NumLines='//trim(num2lstr(size(FileInfo%Lines))) &
                    , ErrStat, ErrMsg, RoutineName )
          RETURN
       END IF
-      
-      
-      ALLOCATE ( Words( AryLen ) , STAT=ErrStatLcl )
-      IF ( ErrStatLcl /= 0 )  THEN
-         CALL SetErrStat ( ErrID_Fatal, NewLine//'Fatal error allocating memory for the Words array.',ErrStat,ErrMsg,RoutineName )
-         CALL Cleanup()
-         RETURN
-      ENDIF
 
 
       READ (FileInfo%Lines(LineNum),*,IOSTAT=ErrStatLcl)  Ary
@@ -3999,7 +3640,6 @@ END SUBROUTINE CheckR16Var
                    ' >> The "'//TRIM( AryName )//'" array was not assigned valid LOGICAL values on line #' &
                    //TRIM( Num2LStr( FileInfo%FileLine(LineNum) ) )//'.'//NewLine//' >> The text being parsed was :'//NewLine &
                    //'    "'//TRIM( FileInfo%Lines(LineNum) )//'"',ErrStat,ErrMsg,RoutineName )
-         CALL Cleanup()
          RETURN
       ENDIF
 
@@ -4008,24 +3648,8 @@ END SUBROUTINE CheckR16Var
       END IF
 
       LineNum = LineNum + 1
-      CALL Cleanup()
 
       RETURN
-
-   !=======================================================================
-   CONTAINS
-   !=======================================================================
-      SUBROUTINE Cleanup ( )
-
-         ! This subroutine cleans up the parent routine before exiting.
-
-            ! Deallocate the Words array if it had been allocated.
-
-         IF ( ALLOCATED( Words ) ) DEALLOCATE( Words )
-
-         RETURN
-
-      END SUBROUTINE Cleanup
 
    END SUBROUTINE ParseLoAry
 !=======================================================================
@@ -4057,7 +3681,7 @@ END SUBROUTINE CheckR16Var
       INTEGER(IntKi)                         :: ErrStatLcl                    ! Error status local to this routine.
       INTEGER(IntKi)                         :: NameIndx                      ! The index into the Words array that points to the variable name.
 
-      CHARACTER(20)                          :: Words       (2)               ! The two "words" parsed from the line.
+      CHARACTER(NWTC_SizeOfNumWord)          :: Words       (2)               ! The two "words" parsed from the line.
       CHARACTER(ErrMsgLen)                   :: ErrMsg2
       CHARACTER(*), PARAMETER                :: RoutineName = 'ParseLoVar'
 
@@ -4066,7 +3690,8 @@ END SUBROUTINE CheckR16Var
 
       IF (LineNum > size(FileInfo%Lines) ) THEN
          CALL SetErrStat ( ErrID_Fatal, NewLine//' >> A fatal error occurred when parsing data.'//NewLine//  &
-                   ' >> The "'//TRIM( ExpVarName )//'" variable was not assigned because the file is too short.' &
+                   ' >> The "'//TRIM( ExpVarName )//'" variable was not assigned because the file is too short. LineNum='// &
+                   trim(num2lstr(LineNum))//'; NumLines='//trim(num2lstr(size(FileInfo%Lines))) &
                    , ErrStat, ErrMsg, RoutineName )
          RETURN
       END IF
@@ -4076,10 +3701,8 @@ END SUBROUTINE CheckR16Var
 
       CALL ChkParseData ( Words, ExpVarName, FileInfo%FileList(FileInfo%FileIndx(LineNum)) &
                         , FileInfo%FileLine(LineNum), NameIndx, ErrStatLcl, ErrMsg2 )
-      IF ( ErrStatLcl /= 0 )  THEN
          CALL SetErrStat ( ErrStatLcl, ErrMsg2, ErrStat, ErrMsg, RoutineName )
-         RETURN
-      ENDIF
+         IF (ErrStat >= AbortErrLev) RETURN
 
       READ (Words(3-NameIndx),*,IOSTAT=ErrStatLcl)  Var
 
@@ -4103,7 +3726,7 @@ END SUBROUTINE CheckR16Var
    END SUBROUTINE ParseLoVar
 !=======================================================================
 !> \copydoc nwtc_io::parsechvarwdefault
-   SUBROUTINE ParseLoVarWDefault ( FileInfo, LineNum, ExpVarName, Var, VarDefault, ErrStat, ErrMsg, UnEc )
+   SUBROUTINE ParseLoVarWDefault ( FileInfo, LineNum, ExpVarName, Var, VarDefault, ErrStat, ErrMsg, UnEcIn )
 
          ! Arguments declarations.
 
@@ -4111,7 +3734,7 @@ END SUBROUTINE CheckR16Var
       INTEGER(IntKi), INTENT(OUT)            :: ErrStat                       ! The error status.
       INTEGER(IntKi), INTENT(INOUT)          :: LineNum                       ! The number of the line to parse.
 
-      INTEGER,        INTENT(IN), OPTIONAL   :: UnEc                          ! I/O unit for echo file. If present and > 0, write to UnEc.
+      INTEGER,        INTENT(IN), OPTIONAL   :: UnEcIn                          ! I/O unit for echo file. If present and > 0, write to UnEc.
 
       LOGICAL, INTENT(OUT)                   :: Var                           ! The LOGICAL variable to receive the input value.
       LOGICAL,   INTENT(IN)                  :: VarDefault                    ! The LOGICAL used as the default.
@@ -4123,6 +3746,7 @@ END SUBROUTINE CheckR16Var
 
          ! Local declarations.
 
+      INTEGER                                :: UnEc                          ! I/O unit for echo file.
       INTEGER(IntKi)                         :: ErrStatLcl                    ! Error status local to this routine.
 
       CHARACTER(ErrMsgLen)                   :: ErrMsg2
@@ -4132,6 +3756,12 @@ END SUBROUTINE CheckR16Var
       ErrStat=ErrID_None
       ErrMsg = ""
 
+      if (PRESENT(UnEcIn)) then
+         UnEc = UnEcIn
+      else
+         UnEc = 0
+      end if
+      
          ! First parse this as a string
       CALL ParseVar ( FileInfo, LineNum, ExpVarName, defaultStr, ErrStatLcl, ErrMsg2, UnEc )
          CALL SetErrStat(ErrStatLcl, ErrMsg2, ErrStat, ErrMsg, RoutineName )
@@ -4155,7 +3785,7 @@ END SUBROUTINE CheckR16Var
 
       INTEGER, INTENT(IN)                    :: AryLen                        ! The length of the array to parse.
 
-      REAL(ReKi), INTENT(OUT)                :: Ary       (AryLen)            ! The single-precision REAL array to receive the input values.
+      REAL(SiKi), INTENT(OUT)                :: Ary       (AryLen)            ! The single-precision REAL array to receive the input values.
 
       INTEGER(IntKi), INTENT(OUT)            :: ErrStat                       ! The error status.
       INTEGER(IntKi), INTENT(INOUT)          :: LineNum                       ! The number of the line to parse.
@@ -4180,7 +3810,8 @@ END SUBROUTINE CheckR16Var
 
       IF (LineNum > size(FileInfo%Lines) ) THEN
          CALL SetErrStat ( ErrID_Fatal, NewLine//' >> A fatal error occurred when parsing data.'//NewLine//  &
-                   ' >> The "'//TRIM( AryName )//'" array was not assigned because the file is too short.' &
+                   ' >> The "'//TRIM( AryName )//'" array was not assigned because the file is too short. LineNum='// &
+                   trim(num2lstr(LineNum))//'; NumLines='//trim(num2lstr(size(FileInfo%Lines))) &
                    , ErrStat, ErrMsg, RoutineName )
          RETURN
       END IF
@@ -4215,7 +3846,7 @@ END SUBROUTINE CheckR16Var
 
          ! Arguments declarations.
 
-      REAL(ReKi), INTENT(OUT)                :: Var                           ! The single-precision REAL variable to receive the input value.
+      REAL(SiKi), INTENT(OUT)                :: Var                           ! The single-precision REAL variable to receive the input value.
 
       INTEGER(IntKi), INTENT(OUT)            :: ErrStat                       ! The error status.
       INTEGER(IntKi), INTENT(INOUT)          :: LineNum                       ! The number of the line to parse.
@@ -4233,7 +3864,7 @@ END SUBROUTINE CheckR16Var
       INTEGER(IntKi)                         :: ErrStatLcl                    ! Error status local to this routine.
       INTEGER(IntKi)                         :: NameIndx                      ! The index into the Words array that points to the variable name.
 
-      CHARACTER(20)                          :: Words       (2)               ! The two "words" parsed from the line.
+      CHARACTER(NWTC_SizeOfNumWord)          :: Words       (2)               ! The two "words" parsed from the line.
       CHARACTER(ErrMsgLen)                   :: ErrMsg2
       CHARACTER(*), PARAMETER                :: RoutineName = 'ParseSiVar'
 
@@ -4242,7 +3873,8 @@ END SUBROUTINE CheckR16Var
       
       IF (LineNum > size(FileInfo%Lines) ) THEN
          CALL SetErrStat ( ErrID_Fatal, NewLine//' >> A fatal error occurred when parsing data.'//NewLine//  &
-                   ' >> The "'//TRIM( ExpVarName )//'" variable was not assigned because the file is too short.' &
+                   ' >> The "'//TRIM( ExpVarName )//'" variable was not assigned because the file is too short. LineNum='// &
+                   trim(num2lstr(LineNum))//'; NumLines='//trim(num2lstr(size(FileInfo%Lines))) &
                    , ErrStat, ErrMsg, RoutineName )
          RETURN
       END IF
@@ -4265,10 +3897,12 @@ END SUBROUTINE CheckR16Var
          RETURN
       ENDIF
 
-      CALL CheckRealVar( Var, ExpVarName, ErrStat, ErrMsg)
+      CALL CheckRealVar( Var, ExpVarName, ErrStatLcl, ErrMsg2 )
+         CALL SetErrStat( ErrStatLcl, ErrMsg2, ErrStat, ErrMsg, RoutineName )
+         IF ( ErrStat >= AbortErrLev )  RETURN
       
       IF ( PRESENT(UnEc) )  THEN
-         IF ( UnEc > 0 )  WRITE (UnEc,'(1X,A15," = ",A20)')  Words
+         IF ( UnEc > 0 )  WRITE (UnEc,'(1X,A15," = ",A20)')  Words !bjj: not sure this is the best way to echo the number being read (in case of truncation, etc)
       END IF
 
       LineNum = LineNum + 1
@@ -4278,7 +3912,7 @@ END SUBROUTINE CheckR16Var
    END SUBROUTINE ParseSiVar
 !=======================================================================
 !> \copydoc nwtc_io::parsechvarwdefault
-   SUBROUTINE ParseSiVarWDefault ( FileInfo, LineNum, ExpVarName, Var, VarDefault, ErrStat, ErrMsg, UnEc )
+   SUBROUTINE ParseSiVarWDefault ( FileInfo, LineNum, ExpVarName, Var, VarDefault, ErrStat, ErrMsg, UnEcIn )
 
          ! Arguments declarations.
 
@@ -4286,10 +3920,10 @@ END SUBROUTINE CheckR16Var
       INTEGER(IntKi), INTENT(OUT)            :: ErrStat                       ! The error status.
       INTEGER(IntKi), INTENT(INOUT)          :: LineNum                       ! The number of the line to parse.
 
-      INTEGER,        INTENT(IN), OPTIONAL   :: UnEc                          ! I/O unit for echo file. If present and > 0, write to UnEc.
+      INTEGER,        INTENT(IN), OPTIONAL   :: UnEcIn                          ! I/O unit for echo file. If present and > 0, write to UnEc.
 
-      REAL(ReKi), INTENT(OUT)                :: Var                           ! The single-precision REAL variable to receive the input value.
-      REAL(ReKi),   INTENT(IN)               :: VarDefault                    ! The single-precision REAL used as the default.
+      REAL(SiKi), INTENT(OUT)                :: Var                           ! The single-precision REAL variable to receive the input value.
+      REAL(SiKi),   INTENT(IN)               :: VarDefault                    ! The single-precision REAL used as the default.
       CHARACTER(*),   INTENT(OUT)            :: ErrMsg                        ! The error message, if ErrStat /= 0.
       CHARACTER(*),   INTENT(IN)             :: ExpVarName                    ! The expected variable name.
 
@@ -4298,6 +3932,7 @@ END SUBROUTINE CheckR16Var
 
          ! Local declarations.
 
+      INTEGER                                :: UnEc                          ! I/O unit for echo file.
       INTEGER(IntKi)                         :: ErrStatLcl                    ! Error status local to this routine.
 
       CHARACTER(ErrMsgLen)                   :: ErrMsg2
@@ -4306,6 +3941,12 @@ END SUBROUTINE CheckR16Var
       
       ErrStat=ErrID_None
       ErrMsg = ""
+      
+      if (PRESENT(UnEcIn)) then
+         UnEc = UnEcIn
+      else
+         UnEc = 0
+      end if
 
          ! First parse this as a string
       CALL ParseVar ( FileInfo, LineNum, ExpVarName, defaultStr, ErrStatLcl, ErrMsg2, UnEc )
@@ -4314,7 +3955,7 @@ END SUBROUTINE CheckR16Var
       CALL Conv2UC( defaultStr )
       IF ( INDEX(defaultStr, "DEFAULT" ) /= 1 ) THEN ! If it's not "default", read this variable
          LineNum = LineNum - 1  ! back up a line
-         CALL ParseVar ( FileInfo, LineNum, ExpVarName, Var, ErrStatLcl, ErrMsg2, UnEc )
+         CALL ParseVar ( FileInfo, LineNum, ExpVarName, Var, ErrStatLcl, ErrMsg2 )
             CALL SetErrStat( ErrStatLcl, ErrMsg2, ErrStat, ErrMsg, RoutineName )
       ELSE
          Var = VarDefault  ! "DEFAULT" value
@@ -4395,6 +4036,159 @@ END SUBROUTINE CheckR16Var
    RETURN
    END SUBROUTINE PremEOF
 !=======================================================================
+!> The following takes an input file as a C_Char string with C_NULL_CHAR deliniating line endings
+   subroutine InitFileInfo_FromNullCString(FileString, FileInfo, ErrStat, ErrMsg)
+      CHARACTER(kind=C_char,len=*), intent(in   )  :: FileString  !< input file as single C string with C_NULL_CHAR separated lines
+      TYPE(FileInfoType),           intent(  out)  :: FileInfo
+      INTEGER(IntKi),               intent(  out)  :: ErrStat
+      CHARACTER(*),                 intent(  out)  :: ErrMsg
+
+      integer                                    :: ErrStat2                   !< temporary error status  from a call
+      character(ErrMsgLen)                       :: ErrMsg2                    !< temporary error message from a call
+      character(MaxFileInfoLineLen), allocatable :: FileStringArray(:)
+      character(*),                    parameter :: RoutineName = 'InitFileInfo_FromNullCString'
+      integer :: idx, NumLines, MaxLineLen, NullLoc, Line
+
+      ErrStat = ErrID_None
+      ErrMsg  = ""
+      NumLines = 0      ! Initialize counter for lines
+      NullLoc  = 0
+      MaxLineLen = 0
+
+         ! Find how many non-comment lines we have
+      do idx=1,len(FileString)
+         if(FileString(idx:idx) == C_NULL_CHAR) then
+            MaxLineLen = max(MaxLineLen,idx-NullLoc)
+            NumLines = NumLines + 1    ! Increment line number
+            NullLoc  = idx
+         endif 
+      enddo
+         ! If the last line is not NULL terminated, might miss the line containing END
+      if (NullLoc < len_trim(FileString)) then
+         NumLines = NumLines + 1
+      endif
+
+      if (NumLines == 0) then
+         ErrStat2 = ErrID_Fatal
+         ErrMsg2  = "Input string contains no C_NULL_CHAR characters. "// &
+                  " Cannot separete passed file info into string array."
+         if (Failed()) return;
+      endif
+      if (MaxLineLen > MaxFileInfoLineLen) then
+         ErrStat2 = ErrID_Warn
+         ErrMsg2  = "Input string contains lines longer than "//trim(Num2LStr(MaxFileInfoLineLen))// &
+                  " characters.  Check that the flat input file string is properly C_NULL_CHAR delineated"
+         if (Failed()) return;
+      endif
+
+         ! Now allocate a string array
+      call AllocAry( FileStringArray, NumLines, "FileStringArray", ErrStat2, ErrMsg2 )
+      if (Failed()) return;
+      FileStringArray = ""
+
+         ! Now step through the FileString and parse it into the array
+      idx      = 1   ! Index of start
+      do Line=1,NumLines
+         ! Index into the next segment
+         NullLoc = index(FileString(idx:len(FileString)),C_NULL_CHAR)
+         ! started indexing at idx, so add that back in for location in FileString
+         NullLoc = NullLoc + idx - 1
+         if (NullLoc == idx) then   ! blank line
+            FileStringArray(Line) = ''
+         elseif (NullLoc > idx) then
+            FileStringArray(Line) = trim(FileString(idx:NullLoc-1))
+         else
+            ! If not NULL terminated
+            if (len_trim(FileString(NullLoc:len_trim(FileString))) > 0) then
+               FileStringArray(Line) = trim(FileString(NullLoc+1:len_trim(FileString)))
+            endif
+            exit  ! exit loop as we didn't find any more
+         endif
+         idx = min(NullLoc + 1,len(FileString))    ! Start next segment of file, but overstep end
+      enddo
+
+         ! Pass through to the FileInfo initialize routine
+      call InitFileInfo(FileStringArray, FileInfo, ErrStat2, ErrMsg2)
+      if (Failed()) return;
+   contains
+      logical function Failed()
+         CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
+         Failed = ErrStat >= AbortErrLev
+         if (Failed) then
+            call Cleanup()
+         endif
+      end function Failed
+      subroutine Cleanup()
+         if (allocated(FileStringArray))  deallocate(FileStringArray)
+      end subroutine Cleanup
+   end subroutine InitFileInfo_FromNullCString
+!=======================================================================
+   SUBROUTINE InitFileInfo_FromStringArray( StringArray, FileInfo, ErrStat, ErrMsg )
+
+      CHARACTER(*), DIMENSION(:), INTENT(IN   ) :: StringArray
+      TYPE(FileInfoType),         INTENT(  OUT) :: FileInfo
+      INTEGER(IntKi),             INTENT(  OUT) :: ErrStat
+      CHARACTER(*),               INTENT(  OUT) :: ErrMsg
+
+      character(len=len(StringArray))  :: TmpStringArray(size(StringArray))
+      character(len=len(StringArray))  :: Line
+      integer                          :: TmpFileLine(size(StringArray))
+
+      CHARACTER(*), PARAMETER :: RoutineName = 'InitFileInfo_FromStringArray'
+      INTEGER :: i, NumLines, IC, NumCommChars, LineLen, FirstComm, CommLoc
+
+      ErrStat = ErrID_None
+      ErrMsg  = ""
+      NumLines = 0      ! Initialize counter for non-comment populated lines
+      TmpFileLine = 0   ! Line number that was passed in 
+      NumCommChars = LEN_TRIM( CommChars )   ! Number of globally specified CommChars
+      TmpStringArray = ""
+
+         ! Find how many non-comment lines we have
+      do i=1,size(StringArray)
+         Line=StringArray(i)
+         LineLen      = LEN_TRIM( Line )
+         IF ( ( NumCommChars == 0 ) .OR. ( LineLen == 0 ) ) CYCLE 
+ 
+         FirstComm = MIN( LEN( Line ), LineLen + 1 )
+ 
+         DO IC=1,NumCommChars
+            CommLoc = INDEX( Line, CommChars(IC:IC) )
+            IF ( CommLoc > 0 )  THEN
+               FirstComm = MIN( CommLoc, FirstComm )
+            ENDIF
+         END DO
+
+            ! Only keep lines with no comments and some sort of length
+         if ( LEN_TRIM( Line(:FirstComm-1) ) > 0 ) then
+            NumLines=NumLines+1
+            TmpStringArray(NumLines) = Line(:FirstComm-1)   ! Store non-comment line
+            TmpFileLine(NumLines) = i                        ! Corresponding line number of passed in info
+         endif
+      enddo
+
+         ! Now save the FileInfo
+      FileInfo%NumLines = NumLines        ! only lines that contained anything 
+      FileInfo%NumFiles = 1
+      ALLOCATE( FileInfo%Lines(FileInfo%NumLines) )
+      ALLOCATE( FileInfo%FileLine(FileInfo%NumLines) )
+      ALLOCATE( FileInfo%FileIndx(FileInfo%NumLines) )
+      ALLOCATE( FileInfo%FileList(FileInfo%NumFiles) )
+
+      FileInfo%FileIndx = FileInfo%NumFiles
+      FileInfo%FileList = (/ "passed file info" /)
+      FileInfo%Lines    = ""  ! initialize empty in case of error
+      FileInfo%FileLine =  0  ! initialize empyt in case of later error
+      DO i = 1, FileInfo%NumLines
+         IF ( LEN_TRIM(TmpStringArray(i)) > MaxFileInfoLineLen ) THEN
+            CALL SetErrStat( ErrID_Fatal, 'Input string '//trim(Num2LStr(i))//' exceeds the bounds of FileInfoType.' , ErrStat, ErrMsg, RoutineName )
+         END IF
+         FileInfo%Lines(i)    = trim(TmpStringArray(i))
+         FileInfo%FileLine(i) = TmpFileLine(i)
+      END DO      
+
+   END SUBROUTINE InitFileInfo_FromStringArray
+!=======================================================================
 !> This routine calls ScanComFile (nwtc_io::scancomfile) and ReadComFile (nwtc_io::readcomfile) 
 !! to move non-comments in a set of nested files starting with TopFile into the FileInfo (nwtc_io::fileinfo) structure.
    SUBROUTINE ProcessComFile ( TopFileName, FileInfo, ErrStat, ErrMsg )
@@ -4413,13 +4207,13 @@ END SUBROUTINE CheckR16Var
 
          ! Local declarations.
 
-      INTEGER(IntKi)                               :: AryInd    = 0           ! The index into the FileInfo arrays.  There is no data in the arrays at the start.
-      INTEGER(IntKi)                               :: ErrStatLcl              ! Error status local to this routine.
-      INTEGER(IntKi)                               :: FileIndx  = 1           ! The index into the FileInfo%FileList array.  Start with the first file in the list.
-      INTEGER(IntKi)                               :: RangeBeg  = 1           ! The first line in a range of lines to be included from a file.
-      INTEGER(IntKi)                               :: RangeEnd  = 0           ! The last line in a range of lines to be included from a file.  Zero to read to the end of the file.
+      INTEGER(IntKi)                               :: AryInd                 ! The index into the FileInfo arrays.  There is no data in the arrays at the start.
+      INTEGER(IntKi)                               :: ErrStatLcl             ! Error status local to this routine.
+      INTEGER(IntKi)                               :: FileIndx               ! The index into the FileInfo%FileList array.  Start with the first file in the list.
+      INTEGER(IntKi)                               :: RangeBeg               ! The first line in a range of lines to be included from a file.
+      INTEGER(IntKi)                               :: RangeEnd               ! The last line in a range of lines to be included from a file.  Zero to read to the end of the file.
 
-      INTEGER                                      :: File      = 0           ! Index into the arrays.
+      INTEGER                                      :: File                   ! Index into the arrays.
       
       CHARACTER(ErrMsgLen)                         :: ErrMsg2
       CHARACTER(*),       PARAMETER                :: RoutineName = 'ProcessComFile'
@@ -4427,6 +4221,7 @@ END SUBROUTINE CheckR16Var
       TYPE (FNlist_Type), POINTER                  :: FirstFile               ! The first file in the linked list (TopFile).
       TYPE (FNlist_Type), POINTER                  :: LastFile                ! The last file in the linked list.
 
+      
 
          ! Scan the file, and it's included files, to determine how many lines will be kept and generate
          ! a linked list of the different files.
@@ -4434,6 +4229,7 @@ END SUBROUTINE CheckR16Var
 
       ErrStat = ErrID_None
       ErrMsg  = ""
+
       
       ALLOCATE ( FirstFile ) !bjj: fix me , IOStat=ErrStatLcl2
       LastFile => FirstFile
@@ -4468,7 +4264,6 @@ END SUBROUTINE CheckR16Var
             CALL Cleanup()
             RETURN
          ENDIF
-
 
          ! Copy the linked list of file names into the FileList array.
          ! This MUST be done before calling ReadComFile.
@@ -4508,9 +4303,21 @@ END SUBROUTINE CheckR16Var
          ENDIF
 
 
+      if ( FileInfo%NumLines < 1) then
+         CALL SetErrStat( ErrID_Fatal, 'No data found in '//trim(TopFileName)//'.' , ErrStat, ErrMsg, RoutineName )
+         CALL Cleanup()
+         RETURN
+      end if
+      
+      ! initialize this, just in case
+      FileInfo%FileIndx = 1
+      
          ! Read the file and save all but the comments.
 
       AryInd = 0
+      FileIndx  = 1           ! The index into the FileInfo%FileList array.  Start with the first file in the list.
+      RangeBeg  = 1           ! The first line in a range of lines to be included from a file.
+      RangeEnd  = 0           ! The last line in a range of lines to be included from a file.  Zero to read to the end of the file.
       CALL ReadComFile ( FileInfo, FileIndx, AryInd, RangeBeg, RangeEnd, ErrStatLcl, ErrMsg2 )
          CALL SetErrStat( ErrStatLcl, ErrMsg2, ErrStat, ErrMsg, RoutineName )
          IF ( ErrStatLcl >= AbortErrLev )  THEN
@@ -4518,7 +4325,14 @@ END SUBROUTINE CheckR16Var
             RETURN
          ENDIF
 
-      CALL Cleanup()         
+      IF ( AryInd /= FileInfo%NumLines ) THEN ! This would happen if there is a mis-match between ScanComFile and ReadComFile
+         CALL SetErrStat( ErrID_Fatal, "Error processing files: number of lines read ("//trim(num2lstr(AryInd))// &
+                  ") does not match array size ("//trim(num2lstr(fileInfo%NumLines))//").", ErrStat, ErrMsg, RoutineName )
+         CALL Cleanup()
+         RETURN
+      END IF
+
+      CALL Cleanup()
       RETURN
 
    !=======================================================================
@@ -4535,12 +4349,11 @@ END SUBROUTINE CheckR16Var
             ! Deallocate the linked list of file names.
 
           CurrFile => FirstFile
-          NextFile => CurrFile%Next
-          DO
+          DO WHILE(ASSOCIATED(currFile))
+              NextFile => CurrFile%Next
               DEALLOCATE(CurrFile)
               IF ( .NOT. ASSOCIATED( NextFile ) )  EXIT
               CurrFile => NextFile
-              NextFile => CurrFile%Next
           ENDDO
           
 !bjj: this needs to happen elsewhere...
@@ -4635,16 +4448,18 @@ END SUBROUTINE CheckR16Var
 
 !=======================================================================
 !> \copydoc nwtc_io::int2lstr
-   FUNCTION R2LStr4 ( Num )
+   FUNCTION R2LStr4 ( Num, Fmt_in )
 
       ! Function declaration.
 
    CHARACTER(15)                :: R2LStr4                                         ! This function.
+   CHARACTER(*), OPTIONAL       :: Fmt_in
 
 
       ! Argument declarations.
 
    REAL(SiKi), INTENT(IN)       :: Num                                             ! The number to convert.
+   CHARACTER(15)                :: Fmt                                             ! format for output
 
 
       ! Return a 0 if that's what we have.
@@ -4656,8 +4471,14 @@ END SUBROUTINE CheckR16Var
 
 
       ! Write the number into the string using G format and left justify it.
+   if ( present( Fmt_in ) ) then
+      Fmt = '('//Fmt_in//')'
+   else
+      Fmt = '(1PG15.5)'
+   end if
+      
 
-   WRITE (R2LStr4,'(1PG15.5)')  Num
+   WRITE (R2LStr4,Fmt)  Num
 
    CALL AdjRealStr( R2LStr4 )
 
@@ -4666,16 +4487,18 @@ END SUBROUTINE CheckR16Var
    END FUNCTION R2LStr4
 !=======================================================================
 !> \copydoc nwtc_io::int2lstr
-   FUNCTION R2LStr8 ( Num )
+   FUNCTION R2LStr8 ( Num, Fmt_in )
 
       ! Function declaration.
 
    CHARACTER(15)                :: R2LStr8                                         ! This function.
+   CHARACTER(*), OPTIONAL       :: Fmt_in
 
 
       ! Argument declarations.
 
    REAL(R8Ki), INTENT(IN)       :: Num                                             ! The floating-point number to convert.
+   CHARACTER(15)                :: Fmt                                             ! format for output
 
 
       ! Return a 0 if that's what we have.
@@ -4687,50 +4510,19 @@ END SUBROUTINE CheckR16Var
 
 
       ! Write the number into the string using G format and left justify it.
+   if ( present( Fmt_in ) ) then
+      Fmt = '('//Fmt_in//')'
+   else
+      Fmt = '(1PG15.5)'
+   end if
 
-   WRITE (R2LStr8,'(1PG15.5)')  Num
+   WRITE (R2LStr8,Fmt)  Num
 
    CALL AdjRealStr( R2LStr8 )
 
 
    RETURN
    END FUNCTION R2LStr8
-!=======================================================================
-!> \copydoc nwtc_io::int2lstr
-   FUNCTION R2LStr16 ( Num )
-
-      ! This function converts a 16-byte floating point number to
-      ! a left-aligned string.  It eliminates trailing zeroes
-      ! and even the decimal point if it is not a fraction.
-
-
-      ! Function declaration.
-
-   CHARACTER(15)                :: R2LStr16                                        ! This function.
-
-
-      ! Argument declarations.
-
-   REAL(QuKi), INTENT(IN)       :: Num                                             ! The floating-point number to convert.
-
-
-      ! Return a 0 if that's what we have.
-
-   IF ( Num == 0.0_QuKi )  THEN
-      R2LStr16 = '0'
-      RETURN
-   END IF
-
-
-      ! Write the number into the string using G format and left justify it.
-
-   WRITE (R2LStr16,'(1PG15.5)')  Num
-
-   CALL AdjRealStr( R2LStr16 )
-
-
-   RETURN
-   END FUNCTION R2LStr16
 !======================================================================
 !> This routine reads a AryLen values separated by whitespace (or other Fortran record delimiters such as commas) 
 !!  into an array (either on same line or multiple lines).
@@ -4877,20 +4669,26 @@ END SUBROUTINE CheckR16Var
       ! Local declarations:
 
    INTEGER                      :: IOS                                             ! I/O status returned from the read statement.
+   CHARACTER(ErrMsgLen)         :: CommentInt                                      ! internal comment, if not returned from this subroutine
 
 
-
-
-   READ (UnIn,'(A)',IOSTAT=IOS)  Comment
+   IF (PRESENT(Comment)) THEN
+      READ (UnIn,'(A)',IOSTAT=IOS)  Comment
+   ELSE
+      READ (UnIn,'(A)',IOSTAT=IOS)  CommentInt
+   END IF
 
    CALL CheckIOS ( IOS, Fil, ComName, StrType, ErrStat, ErrMsg )
-
-
    IF (ErrStat >= AbortErrLev) RETURN
 
    IF ( PRESENT(UnEc) )  THEN
-      IF ( UnEc > 0 ) &
-         WRITE (UnEc,'(A)')  TRIM(Comment)
+      IF ( UnEc > 0 ) THEN
+         IF (PRESENT(Comment)) THEN
+            WRITE (UnEc,'(A)')  TRIM(Comment)
+         ELSE
+            WRITE (UnEc,'(A)')  TRIM(CommentInt)
+         END IF
+      END IF
    END IF
 
 
@@ -4928,7 +4726,7 @@ END SUBROUTINE CheckR16Var
    INTEGER                                   :: UnIn                          ! The unit number used for the input file.
                                                                               ! Should the comment characters be passed to this routine instead of being hard coded? -mlb
    CHARACTER(1024)                           :: IncFileName                   ! The name of a file that this one includes.
-   CHARACTER(512)                            :: Line                          ! The contents of a line returned from ReadLine() with comment removed.
+   CHARACTER(2048)                           :: Line                          ! The contents of a line returned from ReadLine() with comment removed.
    CHARACTER(ErrMsgLen)                      :: ErrMsg2
    CHARACTER(*), PARAMETER                   :: RoutineName = 'ReadComFile'
 
@@ -4937,17 +4735,20 @@ END SUBROUTINE CheckR16Var
    ErrMsg  = ""
    
       ! Open the input file.
-
+   IF ( FileIndx > SIZE(FileInfo%FileList ) ) THEN
+      CALL SetErrStat( ErrID_Fatal, "Error processing file: Invalid FileIndx.", ErrStat, ErrMsg, RoutineName )
+      CALL Cleanup()
+      RETURN
+   END IF
+   
+   !$OMP critical(fileopenNWTCio_critical)
    CALL GetNewUnit ( UnIn, ErrStatLcl, ErrMsg2 )
       CALL SetErrStat( ErrStatLcl, ErrMsg2, ErrStat, ErrMsg, RoutineName )
 
    CALL OpenFInpFile ( UnIn, FileInfo%FileList(FileIndx), ErrStatLcl, ErrMsg2 )
       CALL SetErrStat( ErrStatLcl, ErrMsg2, ErrStat, ErrMsg, RoutineName )
-      IF ( ErrStat >= AbortErrLev )  THEN
-         CALL Cleanup()
-         RETURN
-      END IF
-      
+   !$OMP end critical(fileopenNWTCio_critical)
+      IF ( ErrStat >= AbortErrLev )  RETURN
 
 
       ! Skip the beginning of the file, if requested.
@@ -5006,7 +4807,7 @@ END SUBROUTINE CheckR16Var
                ErrStatLcl = 0
 
                ! Which file in the prestored list is the new one?
-
+            NewIndx = 0
             DO File=1,FileInfo%NumFiles
                IF ( TRIM( FileInfo%FileList(File) ) == TRIM( IncFileName ) )  THEN
                   NewIndx = File
@@ -5014,6 +4815,11 @@ END SUBROUTINE CheckR16Var
                ENDIF ! ( TRIM( FileInfo%FileList(File) ) == TRIM( Line(2:) ) )
             ENDDO ! File
 
+            IF (NewIndx < 1) THEN ! This would happen if there is a mis-match between ScanComFile and ReadComFile
+               CALL SetErrStat( ErrID_Fatal, "Error processing file: "//TRIM(IncFileName)//"is not in the pre-stored list.", ErrStat, ErrMsg, RoutineName )
+               CALL Cleanup()
+               RETURN
+            END IF
 
                ! Let's recursively process this new file.
 
@@ -5029,6 +4835,16 @@ END SUBROUTINE CheckR16Var
 
 
                ! Not a file name.  Add this line to stack.
+         
+            IF ( AryInd >= FileInfo%NumLines ) THEN ! This would happen if there is a mis-match between ScanComFile and ReadComFile
+               CALL SetErrStat( ErrID_Fatal, "Error processing file: Too many data lines.", ErrStat, ErrMsg, RoutineName )
+               CALL Cleanup()
+               RETURN
+            ELSE IF (AryInd < 0) THEN
+               CALL SetErrStat( ErrID_Fatal, "Error processing file: Invalid AryInd.", ErrStat, ErrMsg, RoutineName )
+               CALL Cleanup()
+               RETURN
+            END IF
 
             AryInd                    = AryInd + 1
             FileInfo%FileLine(AryInd) = FileLine
@@ -5480,7 +5296,7 @@ END SUBROUTINE CheckR16Var
 
    IF ( FileType == FileFmtID_NoCompressWithoutTime ) THEN
       DO IRow=1,FASTdata%NumRecs
-         FASTdata%Data(IRow,2:) = REAL(TmpInArray(IRow,:), ReKi)
+         FASTdata%Data(IRow,2:) = REAL(TmpR8InArray(IRow,:), ReKi)
       END DO ! IRow=1,FASTdata%NumRecs
    ELSE
       DO IRow=1,FASTdata%NumRecs
@@ -5564,6 +5380,48 @@ END SUBROUTINE CheckR16Var
 
    RETURN
    END SUBROUTINE ReadIAry
+!> This routine reads a AryLen values separated by whitespace (or other Fortran record delimiters such as commas) 
+!!  into an array (either on same line or multiple lines) from an input string
+!! Use ReadAry (nwtc_io::readary) instead of directly calling a specific routine in the generic interface.   
+   SUBROUTINE ReadIAryFromStr ( Str, Ary, AryLen, AryName, AryDescr, ErrStat, ErrMsg, UnEc )
+
+   ! Argument declarations:
+   CHARACTER(*), INTENT(IN)     :: Str                                             !< String to read from
+   INTEGER, INTENT(IN)          :: AryLen                                          !< Length of the array.
+   INTEGER, INTENT(IN), OPTIONAL:: UnEc                                            !< I/O unit for echo file. If present and > 0, write to UnEc
+   INTEGER, INTENT(OUT)         :: ErrStat                                         !< Error status
+   CHARACTER(*), INTENT(OUT)    :: ErrMsg                                          !< Error message describing ErrStat
+   INTEGER,    INTENT(INOUT)    :: Ary(AryLen)                                     !< Integer array being read.
+   CHARACTER(*), INTENT(IN)     :: AryDescr                                        !< Text string describing the variable.
+   CHARACTER(*), INTENT(IN)     :: AryName                                         !< Text string containing the variable name.
+   ! Local declarations:
+   INTEGER                      :: Ind                                             ! Index into the string array.  Assumed to be one digit.
+   INTEGER                      :: IOS                                             ! I/O status returned from the read statement.
+
+   ! Init of output
+   do Ind=1,AryLen
+       Ary(Ind)=0.0
+   end do
+   ! Reading fields from string
+   READ (Str,*,IOSTAT=IOS)  ( Ary(Ind), Ind=1,AryLen )
+
+   ! Dedicated "CheckIOS"
+   IF ( IOS < 0 )  THEN
+      write(ErrMsg,'(A,I0,A)') 'End of line reached while trying to read ',AryLen,' value from string:`'//trim(Str)//'`'
+      ErrStat = ErrID_Fatal
+   ELSE IF ( IOS > 0 )  THEN
+      write(ErrMsg,'(A,I0,A)') 'Unexpected error while trying to read ',AryLen,' value from string:`'//trim(Str)//'`'
+   ELSE
+       ErrMsg=''
+       ErrStat = ErrID_None
+   END IF
+   IF (ErrStat >= AbortErrLev) RETURN
+   IF ( PRESENT(UnEc) )  THEN
+      IF ( UnEc > 0 ) &
+         WRITE (UnEc,Ec_ReAryFrmt)  TRIM( AryName ), AryDescr, ( Ary(Ind), Ind=1,MIN(AryLen,NWTC_MaxAryLen) )
+   END IF
+   RETURN
+   END SUBROUTINE ReadIAryFromStr
 !=======================================================================
 !> \copydoc nwtc_io::readcvar
 !! WARNING: this routine limits the size of the number being read to 30 characters   
@@ -5704,7 +5562,7 @@ END SUBROUTINE CheckR16Var
 
    IF ( PRESENT(UnEc) )  THEN
       IF ( UnEc > 0 ) &
-         WRITE (UnEc,Ec_IntFrmt)  Var, VarName, VarDescr
+         WRITE (UnEc,Ec_LgFrmt)  Var, VarName, VarDescr
    END IF
 
 
@@ -5956,9 +5814,10 @@ END SUBROUTINE CheckR16Var
 
       IF ( AryLenRead > MaxAryLen )  THEN
 
-         ErrStat = ErrID_Fatal
+         ErrStat = ErrID_Severe
          ErrMsg = 'ReadOutputList:The maximum number of output channels allowed is '//TRIM( Int2LStr(MaxAryLen) )//'.'
-         RETURN
+         AryLenRead = AryLenRead - NumWords ! The total number of output channels read in so far.
+!         RETURN ! finish reading the file instead of returning first
 
       ELSE
 
@@ -5966,11 +5825,111 @@ END SUBROUTINE CheckR16Var
 
       END IF
 
+
    END DO
 
 
    RETURN
    END SUBROUTINE ReadOutputList
+!=======================================================================
+!> This routine reads up to MaxAryLen values from an input file and store them in CharAry(:).
+!! These values represent the names of output channels, and they are specified in the format
+!! required for OutList(:) in FAST input files.
+!! The end of this list is specified with the line beginning with the 3 characters "END".
+   SUBROUTINE ReadOutputListFromFileInfo ( FileInfo, LineNum, CharAry, AryLenRead, ErrStat, ErrMsg, UnEc )
+
+      ! Argument declarations:
+
+   TYPE (FileInfoType), INTENT(IN)   :: FileInfo                                   !< The derived type for holding the file information.
+   INTEGER(IntKi),      INTENT(INOUT):: LineNum                                    !< The number of the line to parse.
+   INTEGER,             INTENT(OUT)  :: AryLenRead                                 !< Length of the array that was actually read.
+   INTEGER,             INTENT(IN), OPTIONAL :: UnEc                               !< I/O unit for echo file (if > 0).
+   INTEGER,             INTENT(OUT)  :: ErrStat                                    !< Error status
+   CHARACTER(*),        INTENT(OUT)  :: ErrMsg                                     !< Error message
+
+   CHARACTER(*),        INTENT(OUT)  :: CharAry(:)                                 !< Character array being read (calling routine dimensions it to max allowable size).
+
+
+      ! Local declarations:
+
+   INTEGER                          :: MaxAryLen                                   ! Maximum length of the array being read
+   INTEGER                          :: NumWords                                    ! Number of words contained on a line
+   INTEGER                          :: ErrStat2
+
+!   INTEGER                          :: QuoteCh                                     ! Character position.
+
+   CHARACTER(MaxFileInfoLineLen)    :: OutLine                                     ! Character string read from file, containing output list
+   CHARACTER(3)                     :: EndOfFile
+
+
+      ! Initialize some values
+
+   ErrStat = ErrID_None
+   ErrMsg  = ''
+   MaxAryLen  = SIZE(CharAry)
+   AryLenRead = 0
+
+   CharAry = ''
+
+
+      ! Read in all of the lines containing output parameters and store them in CharAry(:).
+      ! The end of this list is specified with the line beginning with END.
+
+   DO
+
+      IF ( PRESENT(UnEc) )  THEN
+         if (UnEc > 0) WRITE(UnEc, '(A)')  trim(FileInfo%Lines(LineNum))
+      ENDIF
+      
+!      OutLine = adjustl(trim(FileInfo%Lines(LineNum)))   ! remove leading whitespace
+      READ (FileInfo%Lines(LineNum),*,IOSTAT=ErrStat2)  OutLine ! read first output channel name, or remove quotes on list of outputs so that this behaves like ReadOutputList
+      IF (ErrStat2 /= 0) THEN
+         ErrStat = ErrID_Fatal
+         ErrMsg  = 'Error reading from OutList. Line # '//trim(num2lstr(LineNum))//': "'//trim(FileInfo%Lines(LineNum))//'".'
+         RETURN
+      END IF
+
+      !IF ( PRESENT(UnEc) )  THEN
+      !   IF ( UnEc > 0 ) WRITE (UnEc,Ec_StrFrmt)  OutLine, "List of user-requested output channels", '"OutList"'
+      !END IF      
+      
+      LineNum = LineNum + 1
+      
+
+      EndOfFile = OutLine(1:3)            ! EndOfFile is the 1st 3 characters of OutLine
+      CALL Conv2UC( EndOfFile )           ! Convert EndOfFile to upper case
+      IF ( EndOfFile == 'END' ) THEN
+         EXIT     ! End of OutList has been reached; therefore, exit this DO
+      ENDIF
+
+      NumWords = CountWords( OutLine )    ! The number of words in OutLine.
+
+      AryLenRead = AryLenRead + NumWords  ! The total number of output channels read in so far.
+
+         ! Check to see if the maximum # allowable in the array has been reached.
+
+      IF ( AryLenRead > MaxAryLen )  THEN
+
+         ErrStat = ErrID_Severe
+         ErrMsg = 'ReadOutputList:The maximum number of output channels allowed is '//TRIM( Int2LStr(MaxAryLen) )//'.'
+         AryLenRead = AryLenRead - NumWords ! The total number of output channels read in so far.
+!        RETURN ! finish processing the OutList variable before returning
+
+      ELSE
+
+         CALL GetWords ( OutLine, CharAry((AryLenRead - NumWords + 1):AryLenRead), NumWords )
+
+      END IF
+
+
+      if (LineNum > FileInfo%NumLines) exit  ! Don't overrun end of file in case no END found
+
+   END DO
+
+
+   RETURN
+   END SUBROUTINE ReadOutputListFromFileInfo
+
 !=======================================================================
 !> \copydoc nwtc_io::readcary
    SUBROUTINE ReadR4Ary ( UnIn, Fil, Ary, AryLen, AryName, AryDescr, ErrStat, ErrMsg, UnEc )
@@ -6066,7 +6025,6 @@ END SUBROUTINE CheckR16Var
    RETURN
    END SUBROUTINE ReadR4AryFromStr
 !=======================================================================
-!=======================================================================
 !> \copydoc nwtc_io::readcary
    SUBROUTINE ReadR8Ary ( UnIn, Fil, Ary, AryLen, AryName, AryDescr, ErrStat, ErrMsg, UnEc )
 
@@ -6160,101 +6118,132 @@ END SUBROUTINE CheckR16Var
    END IF
    RETURN
    END SUBROUTINE ReadR8AryFromStr
+
 !=======================================================================
-!> \copydoc nwtc_io::readcary
-   SUBROUTINE ReadR16Ary ( UnIn, Fil, Ary, AryLen, AryName, AryDescr, ErrStat, ErrMsg, UnEc )
-
-
-      ! This routine reads a AryLen values into a 16-byte real array separated by white space
-      ! (possibly on the same line of the input file).
-
-
-      ! Argument declarations:
-
-   INTEGER,      INTENT(IN)          :: AryLen                                     ! Length of the array.
-   INTEGER,      INTENT(IN)          :: UnIn                                       ! I/O unit for input file.
-   INTEGER,      INTENT(IN),OPTIONAL :: UnEc                                       ! I/O unit for echo file. If present and > 0, write to UnEc
-   INTEGER,      INTENT(OUT)         :: ErrStat                                    ! Error status
-   CHARACTER(*), INTENT(OUT)         :: ErrMsg                                     ! Error message
-
-
-   REAL(QuKi), INTENT(INOUT)         :: Ary(AryLen)                                ! Real array being read.
-
-   CHARACTER(*), INTENT(IN)          :: Fil                                        ! Name of the input file.
-   CHARACTER(*), INTENT(IN)          :: AryDescr                                   ! Text string describing the variable.
-   CHARACTER(*), INTENT(IN)          :: AryName                                    ! Text string containing the variable name.
-
-
-      ! Local declarations:
-
-   INTEGER                      :: Ind                                             ! Index into the real array.  Assumed to be one digit.
-   INTEGER                      :: IOS                                             ! I/O status returned from the read statement.
-
-
-
-   READ (UnIn,*,IOSTAT=IOS)  ( Ary(Ind), Ind=1,AryLen )
-
-   CALL CheckIOS ( IOS, Fil, TRIM( AryName ), NumType, ErrStat, ErrMsg )
-
-   IF (ErrStat >= AbortErrLev) RETURN
-
-   DO Ind=1,AryLen
-      CALL CheckRealVar( Ary(Ind), AryName, ErrStat, ErrMsg)
-         IF (ErrStat >= AbortErrLev) RETURN
-   END DO
-   
-   IF ( PRESENT(UnEc) )  THEN
-      IF ( UnEc > 0 ) THEN
-         WRITE( UnEc, Ec_ReAryFrmt ) TRIM( AryName ), AryDescr, Ary(1:MIN(AryLen,NWTC_MaxAryLen))
-      END IF
-   END IF
-
-
-   RETURN
-   END SUBROUTINE ReadR16Ary
-!======================================================================
 !> This routine reads a AryLen values separated by whitespace (or other Fortran record delimiters such as commas) 
-!!  into an array (either on same line or multiple lines) from an input string
-!! Use ReadAry (nwtc_io::readary) instead of directly calling a specific routine in the generic interface.   
-   SUBROUTINE ReadR16AryFromStr ( Str, Ary, AryLen, AryName, AryDescr, ErrStat, ErrMsg, UnEc )
+!!  into an array (either on same line or multiple lines), or sets default values.
+!! Use ReadAryWDefault (nwtc_io::readarywdefault) instead of directly calling a specific routine in the generic interface.   
+subroutine ReadR4AryWDefault ( UnIn, Fil, Ary, AryLen, AryName, AryDescr, AryDefault, ErrStat, ErrMsg, UnEc )
+   ! This routine reads a AryLen values into a 4-byte real array separated by white space, or sets to default
+   integer,       intent(in   )           :: UnIn                 ! I/O unit for input file.
+   character(*),  intent(in   )           :: Fil                  ! Name of the input file.
+   integer,       intent(in   )           :: AryLen               ! Length of the array.
+   real(R4Ki),    intent(inout)           :: Ary(AryLen)          ! Real array being read.
+   character(*),  intent(in   )           :: AryName              ! Text string containing the variable name.
+   character(*),  intent(in   )           :: AryDescr             ! Text string describing the variable.
+   real(R4Ki),    intent(in   )           :: AryDefault(AryLen)   ! Default value for variable being read
+   integer,       intent(  out)           :: ErrStat              ! Error status
+   character(*),  intent(  out)           :: ErrMsg               ! Error message
+   integer,       intent(in   ), optional :: UnEc                 ! I/O unit for echo file. If present and > 0, write to UnEc
 
-   ! Argument declarations:
-   CHARACTER(*), INTENT(IN)     :: Str                                             !< String to read from
-   INTEGER, INTENT(IN)          :: AryLen                                          !< Length of the array.
-   INTEGER, INTENT(IN), OPTIONAL:: UnEc                                            !< I/O unit for echo file. If present and > 0, write to UnEc
-   INTEGER, INTENT(OUT)         :: ErrStat                                         !< Error status
-   CHARACTER(*), INTENT(OUT)    :: ErrMsg                                          !< Error message describing ErrStat
-   REAL(QuKi), INTENT(INOUT)   :: Ary(AryLen)                                ! Real array being read.
-   CHARACTER(*), INTENT(IN)     :: AryDescr                                        !< Text string describing the variable.
-   CHARACTER(*), INTENT(IN)     :: AryName                                         !< Text string containing the variable name.
-   ! Local declarations:
-   INTEGER                      :: Ind                                             ! Index into the string array.  Assumed to be one digit.
-   INTEGER                      :: IOS                                             ! I/O status returned from the read statement.
+   integer                                :: Ind                  ! Index into the string array.  Assumed to be one digit.
+   integer                                :: IOS                  ! I/O status returned from the read statement.
+   character(30)                          :: Word                 ! String to hold the words on the line.
+   character(2048)                        :: Line                 ! The contents of a line returned from ReadLine() with comment removed.
+   integer                                :: LineLen              ! Length of line read in
 
-   ! Init of output
-   do Ind=1,AryLen
-       Ary(Ind)=0.0
-   end do
-   ! Reading fields from string
-   READ (Str,*,IOSTAT=IOS)  ( Ary(Ind), Ind=1,AryLen )
+   call ReadLine( UnIn, CommChars, Line, LineLen, IOS )           ! Reads a line.  Returns what is before the first comment character.
+   call CheckIOS( IOS, Fil, trim(AryName), StrType, ErrStat, ErrMsg )   ! Assume `default` is most likely
+      if (ErrStat >= AbortErrLev) return
 
-   ! Dedicated "CheckIOS"
-   IF ( IOS < 0 )  THEN
-      write(ErrMsg,'(A,I0,A)') 'End of line reached while trying to read ',AryLen,' value from string:`'//trim(Str)//'`'
-      ErrStat = ErrID_Fatal
-   ELSE IF ( IOS > 0 )  THEN
-      write(ErrMsg,'(A,I0,A)') 'Unexpected error while trying to read ',AryLen,' value from string:`'//trim(Str)//'`'
-   ELSE
-       ErrMsg=''
-       ErrStat = ErrID_None
-   END IF
-   IF (ErrStat >= AbortErrLev) RETURN
-   IF ( PRESENT(UnEc) )  THEN
-      IF ( UnEc > 0 ) &
-         WRITE (UnEc,Ec_ReAryFrmt)  TRIM( AryName ), AryDescr, ( Ary(Ind), Ind=1,MIN(AryLen,NWTC_MaxAryLen) )
-   END IF
-   RETURN
-   END SUBROUTINE ReadR16AryFromStr
+   ! check for default
+   call GetWords(Line, Word, 1)
+   call Conv2UC( Word )
+
+   if ( index(Word, "DEFAULT" ) /= 1 ) then  ! If it's not "default", read this variable; otherwise use the DEFAULT value
+
+      ! read the first AryLen numbers from the line
+      read (Line,*,iostat=IOS)  ( Ary(Ind), Ind=1,AryLen )
+
+      ! Check if there was an error
+      call CheckIOS ( IOS, Fil, trim( AryName ), NumType, ErrStat, ErrMsg )
+      if (ErrStat >= AbortErrLev) return
+      
+      do Ind=1,AryLen
+         call CheckRealVar( Ary(Ind), AryName, ErrStat, ErrMsg)
+            if (ErrStat >= AbortErrLev) return
+      end do
+
+      if ( present(UnEc) )  then
+         if ( UnEc > 0 ) then
+            write(UnEc, Ec_ReAryFrmt)  trim(AryName), AryDescr, Ary(1:min(AryLen,NWTC_MaxAryLen))
+         end if
+      end if
+
+   else
+      ! Set default
+      Ary = AryDefault
+      if ( present(UnEc) )  then
+         if ( UnEc > 0 ) then
+            write(UnEc, Ec_ReAryFrmt)  trim(AryName), trim(AryDescr)//' (set to default)', Ary(1:min(AryLen,NWTC_MaxAryLen))
+         endif
+      endif
+   endif
+
+   return
+end subroutine ReadR4AryWDefault
+!=======================================================================
+!> \copydoc nwtc_io::readr4arywdefault   
+subroutine ReadR8AryWDefault ( UnIn, Fil, Ary, AryLen, AryName, AryDescr, AryDefault, ErrStat, ErrMsg, UnEc )
+   ! This routine reads a AryLen values into a 8-byte real array separated by white space, or sets to default
+   integer,       intent(in   )           :: UnIn                 ! I/O unit for input file.
+   character(*),  intent(in   )           :: Fil                  ! Name of the input file.
+   integer,       intent(in   )           :: AryLen               ! Length of the array.
+   real(R8Ki),    intent(inout)           :: Ary(AryLen)          ! Real array being read.
+   character(*),  intent(in   )           :: AryDescr             ! Text string describing the variable.
+   character(*),  intent(in   )           :: AryName              ! Text string containing the variable name.
+   real(R8Ki),    intent(in   )           :: AryDefault(AryLen)   ! Default value for variable being read
+   integer,       intent(  out)           :: ErrStat              ! Error status
+   character(*),  intent(  out)           :: ErrMsg               ! Error message
+   integer,       intent(in   ), optional :: UnEc                 ! I/O unit for echo file. If present and > 0, write to UnEc
+
+   integer                                :: Ind                  ! Index into the string array.  Assumed to be one digit.
+   integer                                :: IOS                  ! I/O status returned from the read statement.
+   character(30)                          :: Word                 ! String to hold the words on the line.
+   character(2048)                        :: Line                 ! The contents of a line returned from ReadLine() with comment removed.
+   integer                                :: LineLen              ! Length of line read in
+
+   call ReadLine( UnIn, CommChars, Line, LineLen, IOS )           ! Reads a line.  Returns what is before the first comment character.
+   call CheckIOS( IOS, Fil, trim(AryName), StrType, ErrStat, ErrMsg )   ! Assume `default` is most likely
+      if (ErrStat >= AbortErrLev) return
+
+   ! check for default
+   call GetWords(Line, Word, 1)
+   call Conv2UC( Word )
+
+   if ( index(Word, "DEFAULT" ) /= 1 ) then  ! If it's not "default", read this variable; otherwise use the DEFAULT value
+
+      ! read the first AryLen numbers from the line
+      read (Line,*,iostat=IOS)  ( Ary(Ind), Ind=1,AryLen )
+
+      ! Check if there was an error
+      call CheckIOS ( IOS, Fil, trim( AryName ), NumType, ErrStat, ErrMsg )
+      if (ErrStat >= AbortErrLev) return
+      
+      do Ind=1,AryLen
+         call CheckRealVar( Ary(Ind), AryName, ErrStat, ErrMsg)
+            if (ErrStat >= AbortErrLev) return
+      end do
+
+      if ( present(UnEc) )  then
+         if ( UnEc > 0 ) then
+            write(UnEc, Ec_ReAryFrmt)  trim(AryName), AryDescr, Ary(1:min(AryLen,NWTC_MaxAryLen))
+         end if
+      end if
+
+   else
+      ! Set default
+      Ary = AryDefault
+      if ( present(UnEc) )  then
+         if ( UnEc > 0 ) then
+            write(UnEc, Ec_ReAryFrmt)  trim(AryName), trim(AryDescr)//' (set to default)', Ary(1:min(AryLen,NWTC_MaxAryLen))
+         endif
+      endif
+   endif
+
+   return
+end subroutine ReadR8AryWDefault
+
 !=======================================================================
 !> \copydoc nwtc_io::readcarylines   
    SUBROUTINE ReadR4AryLines ( UnIn, Fil, Ary, AryLen, AryName, AryDescr, ErrStat, ErrMsg, UnEc )
@@ -6350,55 +6339,6 @@ END SUBROUTINE CheckR16Var
    RETURN
    END SUBROUTINE ReadR8AryLines
 !=======================================================================
-!> \copydoc nwtc_io::readcarylines   
-   SUBROUTINE ReadR16AryLines ( UnIn, Fil, Ary, AryLen, AryName, AryDescr, ErrStat, ErrMsg, UnEc )
-
-
-      ! This routine reads a AryLen values into a real array from the next AryLen lines of the input file.
-
-
-      ! Argument declarations:
-
-   INTEGER, INTENT(IN)          :: AryLen                                          ! Length of the array.
-   INTEGER, INTENT(IN)          :: UnIn                                            ! I/O unit for input file.
-   INTEGER, INTENT(IN), OPTIONAL:: UnEc                                            ! I/O unit for echo file. If present and > 0, write to UnEc
-   INTEGER, INTENT(OUT)         :: ErrStat                                         ! Error status
-   CHARACTER(*), INTENT(OUT)    :: ErrMsg                                          ! Error message associated with ErrStat
-
-   REAL(QuKi), INTENT(OUT)      :: Ary(AryLen)                                     ! Real (16-byte) array being read.
-
-   CHARACTER(*), INTENT(IN)     :: Fil                                             ! Name of the input file.
-   CHARACTER(*), INTENT(IN)     :: AryDescr                                        ! Text string describing the variable.
-   CHARACTER(*), INTENT(IN)     :: AryName                                         ! Text string containing the variable name.
-
-
-      ! Local declarations:
-
-   INTEGER                      :: Ind                                             ! Index into the real array.  Assumed to be one digit.
-   INTEGER                      :: IOS                                             ! I/O status returned from the read statement.
-
-
-
-   ErrStat = ErrID_None
-   ErrMsg  = ""
-   
-   DO Ind=1,AryLen
-      READ (UnIn,*,IOSTAT=IOS)  Ary(Ind)
-
-      CALL CheckIOS ( IOS, Fil, TRIM( AryName )//'('//TRIM( Num2LStr( Ind ) )//')', NumType, ErrStat, ErrMsg )
-         IF (ErrStat >= AbortErrLev) RETURN
-      CALL CheckRealVar( Ary(Ind), AryName, ErrStat, ErrMsg)
-         IF (ErrStat >= AbortErrLev) RETURN
-
-      IF ( PRESENT(UnEc) )  THEN
-         IF ( UnEc > 0 ) &
-                WRITE (UnEc,Ec_ReFrmt)  Ary(Ind), TRIM( AryName )//'('//TRIM( Int2LStr( Ind ) )//')', AryDescr
-      END IF
-   END DO
-
-   RETURN
-   END SUBROUTINE ReadR16AryLines
-!=======================================================================
 !> \copydoc nwtc_io::readcvar
 !! WARNING: this routine limits the size of the number being read to 30 characters   
    SUBROUTINE ReadR4Var ( UnIn, Fil, Var, VarName, VarDescr, ErrStat, ErrMsg, UnEc )
@@ -6432,7 +6372,6 @@ END SUBROUTINE CheckR16Var
    CALL ReadNum ( UnIn, Fil, Word, VarName, ErrStat, ErrMsg )
    IF ( ErrStat >= AbortErrLev) RETURN  ! If we're about to read a T/F and treat it as a number, we have a less severe ErrStat
 
-
    READ (Word,*,IOSTAT=IOS)  Var
 
    CALL CheckIOS ( IOS, Fil, VarName, NumType, ErrStat, ErrMsg )
@@ -6454,8 +6393,8 @@ END SUBROUTINE CheckR16Var
 
       ! Argument declarations:
 
-   REAL(SiKi),    INTENT(OUT)         :: Var                                             ! Variable being read
-   REAL(SiKi),    INTENT(IN )         :: VarDefault                                      ! Default value for variable being read
+   REAL(R4Ki),    INTENT(OUT)         :: Var                                             ! Variable being read
+   REAL(R4Ki),    INTENT(IN )         :: VarDefault                                      ! Default value for variable being read
 
    INTEGER(IntKi),INTENT(OUT)         :: ErrStat                                         ! Error status; if present, program does not abort on error
    CHARACTER(*),  INTENT(OUT)         :: ErrMsg                                          ! Error message
@@ -6593,106 +6532,31 @@ END SUBROUTINE CheckR16Var
    RETURN
    END SUBROUTINE ReadR8VarWDefault
 !=======================================================================
-!> \copydoc nwtc_io::readcvar
-!! WARNING: this routine limits the size of the number being read to 30 characters   
-   SUBROUTINE ReadR16Var ( UnIn, Fil, Var, VarName, VarDescr, ErrStat, ErrMsg, UnEc )
-
-
-      ! This routine reads a single double (real) variable from the next line of the input file.
-      ! New code should call ReadVar instead of directly calling this routine.
-
-
-      ! Argument declarations:
-
-   REAL(QuKi),    INTENT(OUT)         :: Var                                             ! Real (16-byte) variable being read.
-   INTEGER(IntKi),INTENT(OUT),OPTIONAL:: ErrStat                                         ! Error status; if present, program does not abort on error
-   CHARACTER(*),  INTENT(OUT),OPTIONAL:: ErrMsg                                          ! Error message
-
-   INTEGER,       INTENT(IN)          :: UnIn                                            ! I/O unit for input file.
-   INTEGER,       INTENT(IN), OPTIONAL:: UnEc                                            ! I/O unit for echo file. If present and > 0, write to UnEc
-
-   CHARACTER( *), INTENT(IN)          :: Fil                                             ! Name of the input file.
-   CHARACTER( *), INTENT(IN)          :: VarDescr                                        ! Text string describing the variable.
-   CHARACTER( *), INTENT(IN)          :: VarName                                         ! Text string containing the variable name.
-
-
-      ! Local declarations:
-
-   INTEGER                            :: IOS                                             ! I/O status returned from the read statement.
-
-   CHARACTER(30)                      :: Word                                            ! String to hold the first word on the line.
-
-
-
-
-   CALL ReadNum ( UnIn, Fil, Word, VarName, ErrStat, ErrMsg )
-   IF ( ErrStat >= AbortErrLev) RETURN  ! If we're about to read a T/F and treat it as a number, we have a less severe ErrStat
-
-
-   READ (Word,*,IOSTAT=IOS)  Var
-
-   CALL CheckIOS ( IOS, Fil, VarName, NumType, ErrStat, ErrMsg )
-      IF (ErrStat >= AbortErrLev) RETURN
-   CALL CheckRealVar( Var, VarName, ErrStat, ErrMsg)
-      IF (ErrStat >= AbortErrLev) RETURN
-
-   IF ( PRESENT(UnEc) )  THEN
-      IF ( UnEc > 0 ) &
-         WRITE (UnEc,Ec_ReFrmt)  Var, VarName, VarDescr
-   END IF
-
-
-   RETURN
-   END SUBROUTINE ReadR16Var
-!=======================================================================
 !> \copydoc nwtc_io::readr4varwdefault
-   SUBROUTINE ReadR16VarWDefault ( UnIn, Fil, Var, VarName, VarDescr, VarDefault, ErrStat, ErrMsg, UnEc )
-
+   SUBROUTINE ReadIAryWDefault ( UnIn, Fil, Var, AryLen, VarName, VarDescr, VarDefault, ErrStat, ErrMsg, UnEc )
       ! Argument declarations:
-
-   REAL(QuKi),    INTENT(OUT)         :: Var                                             !< Variable being read
-   REAL(QuKi),    INTENT(IN )         :: VarDefault                                      !< Default value for variable being read
-
+   INTEGER,                            INTENT(IN ) :: AryLen                                  !< Length of the array.
+   INTEGER(IntKi), dimension(AryLen),  INTENT(OUT) :: Var                                     !< Variable being read
+   INTEGER(IntKi), dimension(AryLen),  INTENT(IN ) :: VarDefault                              !< Default value for variable being read
    INTEGER(IntKi),INTENT(OUT)         :: ErrStat                                         !< Error status; if present, program does not abort on error
    CHARACTER(*),  INTENT(OUT)         :: ErrMsg                                          !< Error message
-
    INTEGER,       INTENT(IN)          :: UnIn                                            !< I/O unit for input file.
    INTEGER,       INTENT(IN), OPTIONAL:: UnEc                                            !< I/O unit for echo file. If present and > 0, write to UnEc
-
    CHARACTER( *), INTENT(IN)          :: Fil                                             !< Name of the input file.
    CHARACTER( *), INTENT(IN)          :: VarDescr                                        !< Text string describing the variable.
    CHARACTER( *), INTENT(IN)          :: VarName                                         !< Text string containing the variable name.
-
-
       ! Local declarations:
-
-   INTEGER                            :: IOS                                             ! I/O status returned from the read statement.
-   CHARACTER(30)                      :: Word                                            ! String to hold the first word on the line.
-
-
-   CALL ReadNum ( UnIn, Fil, Word, VarName, ErrStat, ErrMsg )
-   IF ( ErrStat >= AbortErrLev) RETURN  ! If we're about to read a T/F and treat it as a number, we have a less severe ErrStat
-
-   
-   CALL Conv2UC( Word )
-   IF ( INDEX(Word, "DEFAULT" ) /= 1 ) THEN ! If it's not "default", read this variable; otherwise use the DEFAULT value
-      READ (Word,*,IOSTAT=IOS)  Var
-
-      CALL CheckIOS ( IOS, Fil, VarName, NumType, ErrStat, ErrMsg )
-         IF (ErrStat >= AbortErrLev) RETURN
-      CALL CheckRealVar( Var, VarName, ErrStat, ErrMsg)
-         IF (ErrStat >= AbortErrLev) RETURN
+   CHARACTER(1024)                    :: sVar                                            ! String to hold the value of the variable
+   ! Read full content of variable as one string, should it be "default", or an array
+   CALL ReadVar (UnIn, Fil, sVar, VarName, VarDescr, ErrStat, ErrMsg, UnEc)
+   IF ( ErrStat >= AbortErrLev) RETURN  
+   CALL Conv2UC( sVar )
+   IF ( INDEX(sVar, "DEFAULT" ) /= 1 ) THEN ! If it's not "default", read this variable; otherwise use the DEFAULT value
+      call ReadIAryFromStr (sVar, Var, AryLen, VarName, VarDescr, ErrStat, ErrMsg)
    ELSE
       Var = VarDefault
    END IF   
-   
-   IF ( PRESENT(UnEc) )  THEN
-      IF ( UnEc > 0 ) &
-         WRITE (UnEc,Ec_ReFrmt)  Var, VarName, VarDescr
-   END IF
-
-   RETURN
-   END SUBROUTINE ReadR16VarWDefault
+   END SUBROUTINE ReadIAryWDefault
 !=======================================================================
 !> This routine reads a string from the next line of the input file.
    SUBROUTINE ReadStr ( UnIn, Fil, CharVar, VarName, VarDescr, ErrStat, ErrMsg, UnEc )
@@ -6785,7 +6649,7 @@ END SUBROUTINE CheckR16Var
 
       CHARACTER(1024)                              :: FileName                ! The name of this file being processed.
       CHARACTER(1024)                              :: IncFileName             ! The name of a file that this one includes.
-      CHARACTER(512)                               :: Line                    ! The contents of a line returned from ReadLine() with comment removed.
+      CHARACTER(2048)                              :: Line                    ! The contents of a line returned from ReadLine() with comment removed.
       CHARACTER(ErrMsgLen)                         :: ErrMsg2
       CHARACTER(*),       PARAMETER                :: RoutineName = 'ScanComFile'
 
@@ -6797,21 +6661,21 @@ END SUBROUTINE CheckR16Var
       ErrMsg  = ""
 
          ! Is this file already open from earlier in the recursion.  That would be bad.
-
+         ! But if it's being read by another thread, we allow it.
       FileName = ThisFile%Filename
       INQUIRE ( FILE=Filename, OPENED=IsOpen )
       IF ( IsOpen )  THEN
-         CALL SetErrStat( ErrID_Fatal, 'Fatal error scanning "'//TRIM( Filename ) &
-                          //'". A file cannot directly or indirectly include itself.', ErrStat, ErrMsg, RoutineName )
-         RETURN
+         CALL SetErrStat( ErrID_Warn, 'The file being read is already opened (maybe by another thread?): "'//TRIM( Filename ), ErrStat, ErrMsg, RoutineName )
       ENDIF
 
 
          ! Open the input file.
       UnIn = -1
+      !$OMP critical(fileopenNWTCio_critical)
       CALL GetNewUnit ( UnIn, ErrStatLcl, ErrMsg2 )
 
       CALL OpenFInpFile ( UnIn, Filename, ErrStatLcl, ErrMsg2 )
+      !$OMP end critical(fileopenNWTCio_critical)
       IF ( ErrStatLcl /= 0 )  THEN
          CALL SetErrStat( ErrStatLcl, ErrMsg2, ErrStat, ErrMsg, RoutineName )
          CALL Cleanup()
@@ -7068,6 +6932,8 @@ END SUBROUTINE CheckR16Var
    REAL(SiKi), PARAMETER         :: IntMin   = -32768.0              ! Smallest integer represented in 2 bytes
    REAL(SiKi), PARAMETER         :: IntRng   = IntMax - IntMin       ! Max Range of 2 byte integer
 
+   REAL(SiKi), PARAMETER         :: SqrtEps = SQRT(EPSILON(1.0_SiKi)) ! small number for tolerance
+
 
          ! Local variables
 
@@ -7117,6 +6983,7 @@ END SUBROUTINE CheckR16Var
 
       ! Generate the unit number for the binary file
    UnIn = 0
+   !$OMP critical(fileopenNWTCio_critical)
    CALL GetNewUnit( UnIn, ErrStat2, ErrMsg2 )
       CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
 
@@ -7126,6 +6993,7 @@ END SUBROUTINE CheckR16Var
 
    CALL OpenBOutFile ( UnIn, TRIM(FileName), ErrStat2, ErrMsg2 )
       CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
+   !$OMP end critical(fileopenNWTCio_critical)
       IF ( ErrStat >= AbortErrLev ) THEN
          CALL Cleanup()
          RETURN
@@ -7273,8 +7141,8 @@ END SUBROUTINE CheckR16Var
       ! Calculate the scaling parameters for each channel
       !...............................................................................................................................
       DO IC=1,NumOutChans                    ! Loop through the output channels
-         IF ( ColMax(IC) == ColMin(IC) ) THEN
-            ColScl(IC) = IntRng/SQRT(EPSILON(1.0_SiKi))
+         IF ( abs(ColMax(IC) - ColMin(IC)) < SqrtEps ) THEN
+            ColScl(IC) = IntRng/SqrtEps
          ELSE
             ColScl(IC) = IntRng/REAL( ColMax(IC) - ColMin(IC), SiKi )
          ENDIF
@@ -7554,36 +7422,6 @@ END SUBROUTINE CheckR16Var
    END SUBROUTINE WrMatrix1R8
 !=======================================================================
 !> \copydoc nwtc_io::wrmatrix1r4
-   SUBROUTINE WrMatrix1R16( A, Un, ReFmt, MatName )
-   
-      REAL(QuKi),             INTENT(IN) :: A(:)
-      INTEGER,                INTENT(IN) :: Un
-      CHARACTER(*),           INTENT(IN) :: ReFmt   ! Format for printing ReKi numbers
-      CHARACTER(*), OPTIONAL, INTENT(IN) :: MatName
-
-      INTEGER        :: ErrStat
-      INTEGER                            :: nr  ! size (rows and columns) of A
-      CHARACTER(256)                     :: Fmt
-   
-   
-      nr = SIZE(A,1)
-
-      IF ( PRESENT(MatName) ) THEN
-         WRITE( Un, '(A,": ",A," x ",A)', IOSTAT=ErrStat ) TRIM(MatName), TRIM(Num2LStr(nr)), "1"
-      END IF
-      
-      Fmt = "(2x, "//TRIM(Num2LStr(nr))//"(1x,"//ReFmt//"))"   
-   
-      WRITE( Un, Fmt, IOSTAT=ErrStat ) A(:)
-      IF (ErrStat /= 0) THEN
-         CALL WrScr('Error '//TRIM(Num2LStr(ErrStat))//' writing matrix in WrMatrix1R16().')
-         RETURN
-      END IF
-
-   RETURN
-   END SUBROUTINE WrMatrix1R16
-!=======================================================================
-!> \copydoc nwtc_io::wrmatrix1r4
    SUBROUTINE WrMatrix2R4( A, Un, ReFmt, MatName )
       
       REAL(SiKi),             INTENT(IN) :: A(:,:)
@@ -7655,44 +7493,8 @@ END SUBROUTINE CheckR16Var
    RETURN
    END SUBROUTINE WrMatrix2R8
 !=======================================================================  
-!> \copydoc nwtc_io::wrmatrix1r4
-   SUBROUTINE WrMatrix2R16( A, Un, ReFmt, MatName )
-   
-      REAL(QuKi),             INTENT(IN) :: A(:,:)
-      INTEGER,                INTENT(IN) :: Un
-      CHARACTER(*),           INTENT(IN) :: ReFmt   ! Format for printing ReKi numbers  
-      CHARACTER(*), OPTIONAL, INTENT(IN) :: MatName
-
-      INTEGER                            :: ErrStat
-      INTEGER                            :: nr, nc  ! size (rows and columns) of A
-      INTEGER                            :: i       ! indices into A
-      CHARACTER(256)                     :: Fmt
-   
-   
-      nr = SIZE(A,1)
-      nc = SIZE(A,2)
-
-      IF ( PRESENT(MatName) ) THEN
-         WRITE( Un, '(A,": ",A," x ",A)', IOSTAT=ErrStat ) TRIM(MatName), TRIM(Num2LStr(nr)), TRIM(Num2LStr(nc))
-      END IF
-      
-      Fmt = "(2x, "//TRIM(Num2LStr(nc))//"(1x,"//ReFmt//"))"   
-
-      DO i=1,nr
-         WRITE( Un, Fmt, IOSTAT=ErrStat ) A(i,:)
-         IF (ErrStat /= 0) THEN
-            CALL WrScr('Error '//TRIM(Num2LStr(ErrStat))//' writing matrix in WrMatrix2R16().')
-            RETURN
-         END IF
-         
-         
-      END DO
-
-   RETURN
-   END SUBROUTINE WrMatrix2R16
-!=======================================================================  
 !> Based on nwtc_io::wrmatrix, this routine writes a matrix to an already-open text file. It allows
-!! the user to omit rows and columns of A in the the file.
+!! the user to omit rows and columns of A in the file.
 !! Use WrPartialMatrix (nwtc_io::wrpartialmatrix) instead of directly calling a specific routine in the generic interface.
    SUBROUTINE WrPartialMatrix1R8( A, Un, ReFmt, MatName, UseCol, UseAllCols, ExtCol )
    
@@ -8023,46 +7825,6 @@ END SUBROUTINE CheckR16Var
    RETURN
    END SUBROUTINE WrR8AryFileNR
 !=======================================================================
-!> \copydoc nwtc_io::wrr4aryfilenr
-   SUBROUTINE WrR16AryFileNR ( Unit, Ary, Fmt, ErrStat, ErrMsg  )
-
-      ! Argument declarations.
-
-   INTEGER,      INTENT(IN)     :: Unit                                         !  I/O unit for input file.
-   REAL(QuKi),   INTENT(IN)     :: Ary (:)                                      !  Array to be written without a newline at the end.
-   CHARACTER(*), INTENT(IN)     :: Fmt                                          !  Fmt of one element to be written.
-                                                                                  
-   INTEGER(IntKi), INTENT(OUT)  :: ErrStat                                      !  Error status
-   CHARACTER(*),   INTENT(OUT)  :: ErrMsg                                       !  Error message associated with ErrStat
-                                                                                  
-      ! Local variables:
-   CHARACTER(50)                :: Fmt2                                         ! Fmt of entire array to be written (will be copied).
-
-
-
-   IF ( SIZE(Ary) == 0 ) THEN
-      ErrStat = ErrID_None
-      ErrMsg  = ''
-      RETURN
-   END IF
-   
-
-   WRITE(Fmt2,*) SIZE(Ary)
-   Fmt2 = '('//TRIM(Fmt2)//'('//TRIM(Fmt)//'))'
-
-   WRITE (Unit,Fmt2,ADVANCE='NO',IOSTAT=ErrStat)  Ary
-   IF ( ErrStat /= 0 ) THEN
-      ErrStat = ErrID_Fatal
-      ErrMsg = 'WrR16AryFileNR:Error '//TRIM(Num2LStr(ErrStat))//' occurred while writing to file using this format: '//TRIM(Fmt2)
-   ELSE
-      ErrStat = ErrID_None
-      ErrMsg  = ''
-   END IF
-
-
-   RETURN
-   END SUBROUTINE WrR16AryFileNR
-!=======================================================================
 !> This routine writes out a string to the screen.
    RECURSIVE SUBROUTINE WrScr ( InStr )
 
@@ -8084,7 +7846,7 @@ END SUBROUTINE CheckR16Var
    INTEGER                      :: NewLineIndx                                  ! The string index where the NewLine character occurs
 
    CHARACTER(10)                :: Frm                                          ! Format specifier for the output.
-   CHARACTER(LEN(InStr))        :: Str                                          ! The next string to be processed
+   CHARACTER(Len=:),allocatable :: Str                                          ! The next string to be processed
 
 
 
@@ -8164,298 +7926,92 @@ END SUBROUTINE CheckR16Var
 
    RETURN
    END SUBROUTINE WrScr1
-!=======================================================================
-!> This routine writes out the heading for an vtk xml file (associated footer generated in
-!! nwtc_io::wrvtk_footer). It tries to open a text file for writing and returns the Unit number of the opened file.
-   SUBROUTINE WrVTK_header( FileName, NumberOfPoints, NumberOfLines, NumberOfPolys, Un, ErrStat, ErrMsg ) 
-   
-      CHARACTER(*)    , INTENT(IN   )        :: FileName             !< Name of output file
-      INTEGER(IntKi)  , INTENT(IN   )        :: NumberOfPoints       !< Number of points in this VTK file
-      INTEGER(IntKi)  , INTENT(IN   )        :: NumberOfLines        !< Number of lines in this VTK file
-      INTEGER(IntKi)  , INTENT(IN   )        :: NumberOfPolys        !< Number of polygons in this VTK file
-      INTEGER(IntKi)  , INTENT(  OUT)        :: Un                   !< unit number of opened file
-      INTEGER(IntKi)  , INTENT(  OUT)        :: ErrStat              !< error level/status of OpenFOutFile operation
-      CHARACTER(*)    , INTENT(  OUT)        :: ErrMsg               !< message when error occurs
-   
-      CALL GetNewUnit( Un, ErrStat, ErrMsg )      
-      CALL OpenFOutFile ( Un, TRIM(FileName), ErrStat, ErrMsg )
-         if (ErrStat >= AbortErrLev) return
-      
-      ! Write a VTP mesh file (Polygonal VTK file) with positions and polygons (surfaces)
-      ! (note alignment of WRITE statements to make sure spaces are lined up in XML file)
-      WRITE(Un,'(A)')         '<?xml version="1.0"?>'
-      WRITE(Un,'(A)')         '<VTKFile type="PolyData" version="0.1" byte_order="LittleEndian">' ! bjj note: we don't have binary data in this file, so byte_order shouldn't matter, right?
-      WRITE(Un,'(A)')         '  <PolyData>'
-      WRITE(Un,'(2(A,i7),A)') '    <Piece NumberOfPoints="', NumberOfPoints, '" NumberOfVerts="  0" NumberOfLines="', NumberOfLines, '"'
-      WRITE(Un,'(A,i7,A)')    '           NumberOfStrips="  0" NumberOfPolys="',  NumberOfPolys, '">'
-   
-      RETURN
-   END SUBROUTINE WrVTK_header
-!=======================================================================
-!> This routine writes out the footer for an vtk xml file (associated header generated  
-!! in nwtc_io::wrvtk_header). It closes the file Un.
-   SUBROUTINE WrVTK_footer( Un ) 
-   
-      INTEGER(IntKi)  , INTENT(IN   )        :: Un                   !< unit number of opened file
-         
-      WRITE(Un,'(A)')         '    </Piece>'
-      WRITE(Un,'(A)')         '  </PolyData>'
-      WRITE(Un,'(A)')         '</VTKFile>'
-      CLOSE(Un)         
-   
-      RETURN
-   END SUBROUTINE WrVTK_footer
-   
-!=======================================================================
-!> This routine reads the header for a vtk, ascii, structured_points dataset file,
-!! including all the information about the structured points.  It tries to open a 
-!! text file for reading and returns the Unit number of the opened file.
-!! The caller is responsible for closing the file unit unless caller set Un = -1!
-   SUBROUTINE ReadVTK_SP_info( FileName, descr, dims, origin, gridSpacing, vecLabel, Un, ErrStat, ErrMsg ) 
-   
-      CHARACTER(*)    , INTENT(IN   )        :: FileName             !< Name of output file     
-      CHARACTER(1024) , INTENT(  OUT)        :: descr                !< Line describing the contents of the file
-      INTEGER(IntKi)  , INTENT(  OUT)        :: dims(3)              !< dimension of the 3D grid (nX,nY,nZ)
-      REAL(ReKi)      , INTENT(  OUT)        :: origin(3)            !< the lower-left corner of the 3D grid (X0,Y0,Z0)
-      REAL(ReKi)      , INTENT(  OUT)        :: gridSpacing(3)       !< spacing between grid points in each of the 3 directions (dX,dY,dZ)
-      CHARACTER(1024) , INTENT(  OUT)        :: vecLabel
-      INTEGER(IntKi)  , INTENT(INOUT)        :: Un                   !< unit number of opened file
-      INTEGER(IntKi)  , INTENT(  OUT)        :: ErrStat              !< error level/status of OpenFOutFile operation
-      CHARACTER(*)    , INTENT(  OUT)        :: ErrMsg               !< message when error occurs
-   
-      INTEGER(IntKi)              :: ErrStat2              ! local error level/status of OpenFOutFile operation
-      CHARACTER(ErrMsgLen)        :: ErrMsg2              ! local message when error occurs   
-      CHARACTER(1024)             :: Line, Line2              ! one line of the file
-      CHARACTER(1024)             :: formatLbl
-      CHARACTER(*), PARAMETER     :: RoutineName = 'ReadVTK_SP_info'
-      INTEGER(IntKi)              :: sz, nPts
-      LOGICAL                     :: closeOnReturn
-      
-      ErrStat = ErrID_None
-      ErrMsg  = ''
-      
-      IF (Un == -1 ) THEN
-         closeOnReturn = .TRUE.
-      ELSE
-         closeOnReturn = .FALSE.
-      END IF
-      
-      CALL GetNewUnit( Un, ErrStat, ErrMsg )      
-      CALL OpenFInpFile ( Un, TRIM(FileName), ErrStat, ErrMsg )
-         if (ErrStat >= AbortErrLev) return
-      
-       CALL ReadCom( Un, FileName, 'File header: Module Version (line 1)', ErrStat2, ErrMsg2, 0 )
-         CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
-   
-      CALL ReadStr( Un, FileName, descr, 'descr', 'File Description line', ErrStat2, ErrMsg2, 0 )
-         CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
-         
-      formatLbl = ""   
-      CALL ReadStr( Un, FileName, formatLbl, 'formatLbl', 'ASCII label', ErrStat2, ErrMsg2 )
-         CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
-      call Conv2UC(formatLbl)
-      if (INDEX(formatLbl, "ASCII" ) /= 1 ) THEN ! If this line doesn't contain the word ASCII, we have a bad file header
-         CALL SetErrStat( ErrID_Fatal, 'Invalid vtk structured_points file: did not find ASCII label', ErrStat, ErrMsg, RoutineName )
-      end if  
-      Line = ""
-      CALL ReadStr( Un, FileName, Line, "dataset", "DATASET STRUCTURED_POINTS", ErrStat2, ErrMsg2 )
-      CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
-         
-      CALL Conv2UC( Line )
-      IF ( INDEX(Line, "DATASET" ) /= 1 ) THEN ! If this line doesn't contain the word dataset, we have a bad file header
-        CALL SetErrStat( ErrID_Fatal, 'Invalid vtk structured_points file: did not find DATASET label', ErrStat, ErrMsg, RoutineName )
-      END IF 
-      IF ( INDEX(Line, "STRUCTURED_POINTS" ) == 0 ) THEN ! If this line doesn't also contain the word structured_points, we have a bad file header
-         CALL SetErrStat( ErrID_Fatal, 'Invalid vtk structured_points file: did not find STRUCTURED_POINTS label', ErrStat, ErrMsg, RoutineName )
-      end if
-        
-         ! Dimensions
-      Line = ""
-      CALL ReadStr( Un, FileName, Line, "Dimensions", "DIMENSIONS data", ErrStat2, ErrMsg2 )
-      CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
-      
-      Line = trim(Line)
-      CALL Conv2UC( Line )
-      IF ( INDEX(Line, "DIMENSIONS" ) /= 1 ) THEN ! If this line doesn't contain the word dataset, we have a bad file header
-         CALL SetErrStat( ErrID_Fatal, 'Invalid vtk structured_points file: did not find DIMENSIONS label', ErrStat, ErrMsg, RoutineName )
-      ELSE
-         sz = len(Line)
-         Line = Line(12:sz)
-         READ(Line,*, IOSTAT=ErrStat2)  dims
-         if (ErrStat2 /= 0) then
-            CALL SetErrStat( ErrID_Fatal, 'Error reading "dims".', ErrStat, ErrMsg, RoutineName )
-         end if
-      END IF 
-      
-         ! Origin
-      Line = ""
-      CALL ReadStr( Un, FileName, Line, "Origin", "ORIGIN data", ErrStat2, ErrMsg2 )
-      CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
-      
-      Line = trim(Line)
-      CALL Conv2UC( Line )
-      IF ( INDEX(Line, "ORIGIN" ) /= 1 ) THEN ! If this line doesn't contain the word dataset, we have a bad file header
-         CALL SetErrStat( ErrID_Fatal, 'Invalid vtk structured_points file: did not find ORIGIN label', ErrStat, ErrMsg, RoutineName )
-      ELSE
-         sz = len(Line)
-         Line = Line(8:sz)
-         READ(Line,*, IOSTAT=ErrStat2)  origin
-         if (ErrStat2 /= 0) then
-            CALL SetErrStat( ErrID_Fatal, 'Error reading "origin".', ErrStat, ErrMsg, RoutineName )
-         end if
 
-      END IF 
-      
-         ! Spacing      
-      Line = ""
-      CALL ReadStr( Un, FileName, Line, "gridSpacing", "SPACING data", ErrStat2, ErrMsg2 )
-      CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
-      
-      Line = trim(Line)
-      CALL Conv2UC( Line )
-      IF ( INDEX(Line, "SPACING" ) /= 1 ) THEN ! If this line doesn't contain the word dataset, we have a bad file header
-         CALL SetErrStat( ErrID_Fatal, 'Invalid vtk structured_points file: did not find SPACING label', ErrStat, ErrMsg, RoutineName )
-      ELSE
-         sz = len(Line)
-         Line = Line(9:sz)
-         READ(Line,*,IOSTAT=ErrStat2)  gridSpacing
-         if (ErrStat2 /= 0) then
-            CALL SetErrStat( ErrID_Fatal, 'Error reading "gridSpacing".', ErrStat, ErrMsg, RoutineName )
-         end if
-         
-      END IF 
-      
-         ! Point Data
-      Line = ""
-      CALL ReadStr( Un, FileName, Line, "Point_Data", "POINT_DATA", ErrStat2, ErrMsg2 )
-      CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
-      
-      Line = trim(Line)
-      CALL Conv2UC( Line )
-      IF ( INDEX(Line, "POINT_DATA" ) /= 1 ) THEN ! If this line doesn't contain the word dataset, we have a bad file header
-         CALL SetErrStat( ErrID_Fatal, 'Invalid vtk structured_points file: did not find POINT_DATA label', ErrStat, ErrMsg, RoutineName )
-      ELSE
-         sz = len(Line)
-         Line = Line(12:sz)
-         READ(Line,*,IOSTAT=ErrStat2)  nPts
-         if (ErrStat2 /= 0) then
-            CALL SetErrStat( ErrID_Fatal, 'Error reading "nPts".', ErrStat, ErrMsg, RoutineName )
-         end if
-      END IF 
-      
-         ! Vector Label
-      Line = ""
-      CALL ReadStr( Un, FileName, Line, "Vectors", "VECTORS label", ErrStat2, ErrMsg2 )
-      CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
-      
-      Line = trim(Line)
-      Line2 = Line
-      CALL Conv2UC( Line2 )
-      IF ( INDEX(Line2, "VECTORS" ) /= 1 ) THEN ! If this line doesn't contain the word dataset, we have a bad file header
-         CALL SetErrStat( ErrID_Fatal, 'Invalid vtk structured_points file: did not find VECTORS label', ErrStat, ErrMsg, RoutineName )
-      ELSE
-         sz = INDEX(Line2, "FLOAT" )
-         IF ( sz == 0 ) THEN
-            CALL SetErrStat( ErrID_Fatal, 'Invalid VECTORS datatype.  Must be set to float.', ErrStat, ErrMsg, RoutineName )
-         ELSE        
-            vecLabel = Line(9:sz-2)
-         END IF
-      END IF 
-      
-      IF ( (ErrStat >= AbortErrLev) .or. closeOnReturn ) THEN        
-         close(Un)
-         Un = -1
-         RETURN
-      END IF
-      
-      RETURN
-   END SUBROUTINE ReadVTK_SP_info
-   
-!=======================================================================
-!> This routine reads the vector data for a vtk, ascii, structured_points dataset file,
-!! The Unit number of the  file is already assumed to be valid via a previous call to
-!! ReadVTK_SP_info.  
-   SUBROUTINE ReadVTK_SP_vectors( Un, dims, gridVals, ErrStat, ErrMsg ) 
-   
-      INTEGER(IntKi)  , INTENT(IN   )        :: Un                   !< unit number of opened file
-      INTEGER(IntKi)  , INTENT(IN   )        :: dims(3)              !< dimension of the 3D grid (nX,nY,nZ)
-      REAL(ReKi)      , INTENT(  OUT)        :: gridVals(:,:,:,:)    !< 4D array of data, size (3,nX,nY,nZ), must be pre-allocated
-      INTEGER(IntKi)  , INTENT(  OUT)        :: ErrStat              !< error level/status of OpenFOutFile operation
-      CHARACTER(*)    , INTENT(  OUT)        :: ErrMsg               !< message when error occurs
-   
-      INTEGER(IntKi)                         :: ErrStat2             ! local error level/status of OpenFOutFile operation
-      CHARACTER(*), PARAMETER                :: RoutineName = 'ReadVTK_SP_vectors'
-      
-      ErrStat = ErrID_None
-      ErrMsg  = ''
-      
-      READ(Un,*, IOSTAT=ErrStat2)  gridVals(1:3,1:dims(1),1:dims(2),1:dims(3))
-      if (ErrStat2 /= 0) then
-         CALL SetErrStat( ErrID_Fatal, 'Error reading vector data.', ErrStat, ErrMsg, RoutineName )
-      end if
-     
-      close(Un)
-      
-   END SUBROUTINE ReadVTK_SP_vectors
-   
-!=======================================================================
-!> This routine writes out the heading for an vtk, ascii, structured_points dataset file .
-!! It tries to open a text file for writing and returns the Unit number of the opened file.
-   SUBROUTINE WrVTK_SP_header( FileName, descr, Un, ErrStat, ErrMsg ) 
-   
-      CHARACTER(*)    , INTENT(IN   )        :: FileName             !< Name of output file     
-      CHARACTER(*)    , INTENT(IN   )        :: descr                !< Line describing the contents of the file
-      INTEGER(IntKi)  , INTENT(  OUT)        :: Un                   !< unit number of opened file
-      INTEGER(IntKi)  , INTENT(  OUT)        :: ErrStat              !< error level/status of OpenFOutFile operation
-      CHARACTER(*)    , INTENT(  OUT)        :: ErrMsg               !< message when error occurs
-   
-      CALL GetNewUnit( Un, ErrStat, ErrMsg )      
-      CALL OpenFOutFile ( Un, TRIM(FileName), ErrStat, ErrMsg )
-         if (ErrStat >= AbortErrLev) return
-      
-      WRITE(Un,'(A)')  '# vtk DataFile Version 3.0'
-      WRITE(Un,'(A)')  trim(descr)
-      WRITE(Un,'(A)')  'ASCII'
-      WRITE(Un,'(A)')  'DATASET STRUCTURED_POINTS'
-      
-      RETURN
-   END SUBROUTINE WrVTK_SP_header
-   
-   
-   
-   SUBROUTINE WrVTK_SP_vectors3D( Un, dataDescr, dims, origin, gridSpacing, gridVals, ErrStat, ErrMsg ) 
-   
-      INTEGER(IntKi)  , INTENT(IN   )        :: Un                   !< unit number of previously opened file (via call to WrVTK_SP_header)
-      CHARACTER(*)    , INTENT(IN   )        :: dataDescr            !< Short label describing the vector data
-      INTEGER(IntKi)  , INTENT(IN   )        :: dims(3)              !< dimension of the 3D grid (nX,nY,nZ)
-      REAL(ReKi)      , INTENT(IN   )        :: origin(3)            !< the lower-left corner of the 3D grid (X0,Y0,Z0)
-      REAL(ReKi)      , INTENT(IN   )        :: gridSpacing(3)       !< spacing between grid points in each of the 3 directions (dX,dY,dZ)
-      REAL(ReKi)      , INTENT(IN   )        :: gridVals(:,:,:,:)      !< 3D array of data, size (nX,nY,nZ)
-      INTEGER(IntKi)  , INTENT(  OUT)        :: ErrStat              !< error level/status of OpenFOutFile operation
-      CHARACTER(*)    , INTENT(  OUT)        :: ErrMsg               !< message when error occurs
- 
-      INTEGER(IntKi)                         :: nPts                 ! Total number of grid points 
-      
-      if ( .not. (Un > 0) ) then
-         ErrStat = ErrID_Fatal
-         ErrMsg  = 'WrVTK_SP_points: Invalid file unit, be sure to call WrVTK_SP_header prior to calling WrVTK_SP_points.'
+   !----------------------------------------------------------------------------------------------------------------------------------
+   !> Read a delimited file of float with one or multiple lines of header
+   !! TODO: put me in a CSV.f90 file of the NWTC library
+   !! TODO: automatic detection of number of columns for instance using ReadCAryFromStr
+   !!       See also the quick and dirty check introduced to read blade files that don't have Buoyancy columns
+   subroutine ReadDelimFile(Filename, nCol, array, errStat, errMsg, nHeaderLines, priPath)
+      character(len=*),                        intent(in)  :: Filename
+      integer(IntKi),                          intent(in)  :: nCol
+      real(ReKi), dimension(:,:), allocatable, intent(out) :: array
+      integer(IntKi)         ,                 intent(out) :: errStat ! Status of error message
+      character(*)           ,                 intent(out) :: errMsg  ! Error message if errStat /= ErrID_None
+      integer(IntKi), optional,                intent(in ) :: nHeaderLines
+      character(*)  , optional,                intent(in ) :: priPath  ! Primary path, to use if filename is not absolute
+      integer(IntKi)       :: UnIn, i, j, nLine, nHead
+      character(len= 2048) :: line
+      integer(IntKi)       :: errStat2      ! local status of error message
+      character(ErrMsgLen) :: errMsg2       ! temporary Error message
+      character(len=2048) :: Filename_Loc   ! filename local to this function
+      errStat = ErrID_None
+      errMsg  = ""
+
+      Filename_Loc = Filename
+      if (present(priPath)) then
+         if (PathIsRelative(Filename_Loc)) Filename_Loc = trim(PriPath)//trim(Filename)
+      endif
+
+      ! Open file
+      call GetNewUnit(UnIn) 
+      call OpenFInpFile(UnIn, Filename_Loc, errStat2, errMsg2); if(Failed()) return 
+      ! Count number of lines
+      nLine = line_count(UnIn, errStat2, errMsg2); if(Failed()) return
+      if (allocated(array)) deallocate(array)
+      allocate(array(nLine-1, nCol), stat=errStat2); errMsg2='allocation failed'; if(Failed())return
+      ! Read header
+      nHead=1
+      if (present(nHeaderLines)) nHead = nHeaderLines
+      do i=1,nHead
+         read(UnIn, *, IOSTAT=errStat2) line
+         errMsg2 = ' Error reading line '//trim(Num2LStr(1))//' of file: '//trim(Filename_Loc)
+         if(Failed()) return
+      enddo
+      ! Read data
+      do i = 1,nLine-1
+         read (UnIn,*,IOSTAT=errStat2) (array(i,j), j=1,nCol)
+         errMsg2 = ' Error reading line '//trim(Num2LStr(i+1))//' of file: '//trim(Filename_Loc)
+         if(Failed()) return
+      end do  
+      close(UnIn) 
+   contains
+      logical function Failed()
+         CALL SetErrStat(errStat2, errMsg2, errStat, errMsg, 'ReadDelimFile' )
+         Failed = errStat >= AbortErrLev
+         if (Failed) then
+            if ((UnIn)>0) close(UnIn)
+         endif
+      end function Failed
+   end subroutine ReadDelimFile
+
+   !----------------------------------------------------------------------------------------------------------------------------------
+   !> Counts number of lines in a file, do not count last line if empty
+   integer function line_count(iUnit, errStat, errMsg)
+      integer(IntKi), intent(in) :: iUnit
+      integer(IntKi), intent(out) :: errStat ! Error status
+      character(*),   intent(out) :: errMsg  ! Error message associated with ErrStat
+      character(len=2048) :: line
+      integer, parameter :: nline_max=100000000 ! 100 M safety for infinite loop..
+      integer :: i
+      errStat = ErrID_None
+      errMsg  = ''
+      line_count=0
+      do i=1,nline_max 
+         line=''
+         read(iUnit,'(A)',END=100)line
+         line_count=line_count+1
+      enddo
+      if (line_count==nline_max) then
+         errStat = ErrID_Fatal
+         errMsg = 'Error: maximum number of line exceeded for line_count'
          return
-      end if
-   
-      ErrStat = ErrID_None
-      ErrMsg  = ''
-      nPts    = dims(1)*dims(2)*dims(3)
+      endif
+   100 if(len(trim(line))>0) then
+         line_count=line_count+1
+      endif
+      rewind(iUnit)
+      return
+   end function line_count
       
-      ! Note: gridVals must be stored such that the left-most dimension is X and the right-most dimension is Z
-      WRITE(Un,'(A,3(i5,1X))')    'DIMENSIONS ',  dims
-      WRITE(Un,'(A,3(f10.2,1X))') 'ORIGIN '    ,  origin
-      WRITE(Un,'(A,3(f10.2,1X))') 'SPACING '   ,  gridSpacing
-      WRITE(Un,'(A,i15)')         'POINT_DATA ',  nPts
-      WRITE(Un,'(A)')            'VECTORS '//trim(dataDescr)//' float'
-      WRITE(Un,'(3(f10.2,1X))')   gridVals
-      close(Un)
-      RETURN
-      
-   END SUBROUTINE WrVTK_SP_vectors3D
-   
 END MODULE NWTC_IO

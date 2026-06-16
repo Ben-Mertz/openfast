@@ -14,10 +14,29 @@
 # limitations under the License.
 #
 
-add_executable(openfast
-  src/FAST_Prog.f90)
-target_link_libraries(openfast openfast_postlib foamfastlib)
-set_property(TARGET openfast PROPERTY LINKER_LANGUAGE Fortran)
+set (CMAKE_CXX_STANDARD 11)
+
+add_executable(openfast src/FAST_Prog.f90)
+target_link_libraries(openfast openfastlib_static)
+set_target_properties(openfast PROPERTIES LINKER_LANGUAGE Fortran)
+
+string(TOUPPER ${CMAKE_Fortran_COMPILER_ID} _compiler_id)
+if (${_compiler_id} STREQUAL "GNU" AND NOT ${VARIABLE_TRACKING})
+  # With variable tracking enabled, the compile step frequently aborts on large modules and
+  # restarts with this option off. Disabling avoids this problem when compiling with
+  # full optimizations. However, variable tracking should be enabled when actively debugging
+  # for better runtime debugging output.
+  # https://gcc.gnu.org/onlinedocs/gcc/Debugging-Options.html
+  set_source_files_properties(src/FAST_Prog.f90 PROPERTIES COMPILE_FLAGS "-fno-var-tracking -fno-var-tracking-assignments")
+endif()
 
 install(TARGETS openfast
   RUNTIME DESTINATION bin)
+
+if(BUILD_OPENFAST_LIB_DRIVER)
+  add_executable(openfast_lib_driver src/FAST_Prog.cpp src/FastLibAPI.cpp)
+  target_link_libraries(openfast_lib_driver openfastlib)
+  
+  install(TARGETS openfast_lib_driver
+    RUNTIME DESTINATION bin)
+endif()

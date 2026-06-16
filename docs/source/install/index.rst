@@ -5,113 +5,350 @@ Installing OpenFAST
 Guidelines and procedures for obtaining precompiled binaries or compiling
 OpenFAST from source code are described here. While there
 are multiple ways to achieve the same outcome, the OpenFAST team has developed
-a comprehensive and well thought out system for compiling the source code.
-Thus, the methods described here are the only officially supported and
+a comprehensive and well-thought out system for installation, so the methods
+described here are the only officially supported and
 maintained paths for obtaining an OpenFAST executable.
 
-For Windows users only, precompiled binaries are available as described in the
-:ref:`download_binaries` section. For all platforms, OpenFAST is configured
-to build with with CMake and a system-appropriate build tool. Background
-on CMake is given in :ref:`understanding_cmake`, and procedures for configuring
-and compiling are given in :ref:`cmake_unix` and :ref:`cmake_windows`. Finally,
-an alternative and more appropriate option for compiling on Windows while
-doing active software development is given in :ref:`vs_windows`.
+Most users of OpenFAST will not require modifying or compiling the source
+code. **For the simplest installation of OpenFAST without changing the source
+code,** refer to the table in the :ref:`download_binaries` or :ref:`use_docker`
+sections and read the corresponding documentation for specific instructions.
+For instructions on compiling, see :ref:`compile_from_source`.
+
+To manipulate OpenFAST files using python, see :ref:`python_wrapper`.
+
 
 .. _download_binaries:
 
 Download binaries
 ~~~~~~~~~~~~~~~~~
-Each tagged release is accompanied by precompiled binaries for Windows
-systems. DLL's for MAP and the DISCON controllers are also included.
-The following architecture and precision combinations are currently
-available:
+For users who intend to run OpenFAST simulations without changing the
+source code, installation with precompiled binaries is recommended.
+The installation procedures are specific for each supported operating
+system, and the table below maps operating systems to the method for
+obtaining binaries. "Release" versions are well tested and stable versions
+of OpenFAST. A new release corresponds to a merge from the ``dev``
+branch of the repository to the ``main`` branch along with a version tag.
+"Prerelease" versions contain the latest commits to the ``dev`` branch
+and may contain unstable code but will always have the latest features.
 
-- 32 bit single precision
-- 64 bit single precision
-- 64 bit double precision
+================== ================= ===================== ======================
+ Operating System   Method            OpenFAST Version      Docs Section
+================== ================= ===================== ======================
+Linux               Conda             Release, Prerelease   :ref:`conda_install`
+macOS               Conda             Release, Prerelease   :ref:`conda_install`
+macOS               Homebrew          Release               :ref:`brew_install` 
+Windows             GitHub Releases   Release               :ref:`gh_install`
+================== ================= ===================== ======================
 
-All precompiled binaries can be found in the ``Assets`` dropdown in the
-`GitHub Releases <https://github.com/openfast/openfast/releases>`__. Click
-`here <https://github.com/OpenFAST/openfast/releases/latest/download/windows_openfast_binaries.zip>`__
-to download the latest binaries.
+.. _conda_install:
 
-Note that the precompiled binaries require either the Intel fortran
-compiler or the Intel MKL redistributable libraries, which are not by
-default included with the binaries. To configure the libraries, download the
-installers from `here <https://software.intel.com/sites/default/files/managed/bb/e0/ww_ifort_redist_msi_2017.8.275.zip>`__
-and run the MSI file(s) to install the libraries. Note that if you have a
-Command Prompt open, you will need to close it after installing the libraries
-in order for the changes to take effect.
+Conda Installation
+------------------
+OpenFAST releases are distributed through the `Anaconda <https://anaconda.org/>`_
+package manager via the `OpenFAST Conda Forge <https://anaconda.org/conda-forge/openfast/>`_
+channel for macOS and Linux. The installation includes
+
+- OpenFAST glue-code executable
+- Available module drivers
+- C++ header files
+
+The following commands describe how to create a new environment, install
+OpenFAST, and test the installation.
+
+.. code-block:: bash
+
+    # Create a new conda environment
+    conda create -n openfast_env
+
+    # Install OpenFAST through the Conda Forge channel
+    conda install -c conda-forge openfast
+
+    # Test OpenFAST
+    which openfast
+    openfast -v
+
+    # Test the HydroDyn driver
+    which hydrodyn_driver
+    hydrodyn_driver -v
+
+Prereleases can be installed via conda by specifying the ``dev`` label,
+as shown below.
+
+.. code-block:: bash
+
+    conda install -c conda-forge/label/dev openfast
+
+These are always the latest commits to the ``dev`` branch
+of the repository and contain the latest changes to OpenFAST, but these
+builds are not as well tested as the full release versions.
+
+.. _brew_install:
+
+Homebrew Installation
+---------------------
+For macOS systems, OpenFAST releases are distributed through
+the `Homebrew <https://brew.sh>`_ package manager. The installation includes
+only the OpenFAST glue-code executable.
+
+To install with Homebrew and test the installation, use the following
+commands. 
+
+.. code-block:: bash
+
+    # Update Homebrew
+    brew update
+
+    # Install OpenFAST
+    brew search openfast
+    brew install openfast
+    
+    # Test OpenFAST
+    which openfast
+    openfast -v
+
+.. _gh_install:
+
+GitHub Releases
+---------------
+For Windows systems only, precompiled binaries are made available for each
+release on the OpenFAST GitHub `Releases <https://github.com/openfast/openfast/releases/latest>`_
+page. The binaries are compiled with the Intel Fortran compiler
+version 2020.
+
+.. important::
+
+    The precompiled binaries require either the Intel Fortran
+    compiler or the Intel MKL redistributable libraries, which are
+    not by default included with the binaries. To configure the
+    libraries, download the installers from the bottom of
+    `this page <https://software.intel.com/content/www/us/en/develop/articles/redistributable-libraries-for-intel-c-and-fortran-2020-compilers-for-windows.html>`__.
+    If you have a Command Prompt open, you will need to close it after
+    installing the libraries in order for the changes to take effect.
+    Admin privileges are required to install the Intel libraries.
+
+The OpenFAST executables can be downloaded from the "Assets" dropdown
+in each Release. The two assets named "Source code" are not needed.
+
+.. image:: ../../_static/assets_download.jpg
+   :align: center
+
+The zipped file contains the following items:
+
+================================================== ==============================================
+ File Name                                              Description
+================================================== ==============================================
+openfast_Win32.exe                                  32-bit single precision
+openfast_x64.exe                                    64-bit single precision
+openfast_x64_double.exe                             64-bit double precision
+Map_Win32.dll                                       32-bit MAP++ library
+Map_x64.dll                                         64-bit MAP++ library
+DISCON_DLLS/<64bit or Win32>/DISCON.dll             Controller library for Jonkman 5-MW (formerly called the NREL 5-MW)
+DISCON_DLLS/<64bit or Win32>/DISCON_ITIBarge.dll    Controller library for Jonkman 5-MW (formerly called the NREL 5-MW) - ITI Barge
+DISCON_DLLS/<64bit or Win32>/DISCON_OC3Hywind.dll   Controller library for Jonkman 5-MW (formerly called the NREL 5-MW) - OC3 Hywind
+================================================== ==============================================
+
+After extracting the contents, the OpenFAST executables
+can be tested by opening a command prompt, moving into the directory
+containing the executables, and running a simple test command:
+
+.. code-block:: bash
+
+    cd C:\your\path\Desktop\openfast_binaries\
+    openfast_x64.exe /h
+
+
+.. _use_docker:
+
+Running OpenFAST with docker
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+OpenFAST is available to be run on docker starting with version 3.5.3. Three approaches are shared below.
+
+Using a docker image from Docker hub
+------------------------------------
+Multiple versions of OpenFAST are also available as docker images from our `docker registry <https://hub.docker.com/r/nrel/openfast>`_.
+To pull and run one with files from your local machine available, run:
+
+.. code-block:: shell
+
+    docker run --rm -it --volume=/path/to/files:/files nrel/openfast:latest openfast /files/main.fst
+
+This command deletes the container (but not the image) when the analysis is finished and leaves the outputs in the same
+local directory as the input files. 
+
+You can also run commands interactively inside the container with:
+
+.. code-block:: shell
+
+    docker run --rm -it --volume=/path/to/files:/files nrel/openfast:latest /bin/bash
+
+To pull a specific release, substitute the version number in place of `latest` in the above commands (i.e. `nrel/openfast:3.5.3`).
+
+
+Using a docker image from GitHub container registry
+---------------------------------------------------
+In addition to images hosted on Docker hub, we also host docker images on our
+`GitHub container registry <https://github.com/orgs/OpenFAST/packages?repo_name=openfast>`_.
+The commands for pulling an image from the GitHub container repository are
+similar to those for pulling and running from Docker hub.  
+
+To pull and run with local files:
+
+.. code-block:: shell
+
+    docker run --rm -it --volume=/path/to/files:/files ghcr.io/openfast/openfast:latest openfast /files/main.fst
+
+For running the container interactively:
+
+.. code-block:: shell
+
+    docker run --rm -it --volume=/path/to/files:/files ghcr.io/openfast/openfast:latest /bin/bash
+
+To pull a specific release, substitute the version number in place of `latest` in the above commands (i.e. `ghcr.io/openfast/openfast:3.5.3`).
+
+Build your own images
+---------------------
+You can also build your own custom images using our `Dockerfile` or base your images on ours. See the
+`Docker readme <https://github.com/OpenFAST/openfast/blob/main/share/docker/README.md>`_ for more information on this.
+
+
+.. _python_wrapper:
+
+Install the ``openfast_io`` python wrapper
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The ``openfast_io`` python package is a wrapper comprising readers and writers for converting OpenFAST files to/from
+python objects.
+
+To use `openfast_io` as a library for incorporation into other scripts or tools, it is available via (assuming that you have already setup your python environment):
+
+.. code-block:: bash
+
+    pip install openfast_io
+
+These instructions are for interaction directly with the `openfast_io` source code.
+
+1. Follow this step only if you have not cloned the OpenFAST repo:
+
+.. code-block:: bash
+
+    git clone https://github.com/OpenFAST/OpenFAST.git
+    cd OpenFAST
+
+2. Assuming you are within the OpenFAST directory:
+
+.. code-block:: bash
+
+    cd openfast_io
+    pip install -e .
+
+For more information and installation options, see the `OpenFAST Python readme <https://github.com/OpenFAST/openfast/blob/main/openfast_python/README.md>`_.
+
+
+.. _compile_from_source:
 
 Compile from source
 ~~~~~~~~~~~~~~~~~~~
-For compiling from source code, the NREL OpenFAST team has developed an
+To compile from source code, the NLR OpenFAST team has developed an
 approach that uses CMake to generate build files for all platforms. Currently,
 CMake support for Visual Studio while doing active development
-is not well supported, so OpenFAST maintains a Visual Studio solution
-giving Windows developers a better option for developing code, compiling
+is not well supported, so OpenFAST maintains a Visual Studio Solution
+giving Windows developers another option for writing code, compiling
 and debugging in a streamlined manner. See :ref:`vs_windows`
-for more information.
+for more information. If Visual Studio is not a requirement in Windows
+development, CMake is adequate. Background on CMake is given in
+:ref:`understanding_cmake`, and procedures for configuring and
+compiling are given in :ref:`cmake_unix` and :ref:`cmake_windows`.
+
+For a guide to compiling on Windows with the linux subsystem, cmake, and VS code, see
+:ref:`OFcompile_WSL_VScode`.
+
+Generally, the steps required to compile are:
+
+1. Install Dependencies (Section :numref:`dependencies`)
+2. Configure the build system (Visual Studio: :numref:`vs_windows`, CMake: :numref:`understanding_cmake`)
+3. Compile and test binaries (Visual Studio: :numref:`vs_windows`,  CMake: :numref:`cmake_unix` and :numref:`cmake_windows` )
+
+.. _dependencies:
 
 Dependencies
 ------------
 Compiling OpenFAST from source requires additional libraries and tools that
-are not distributed with the OpenFAST repository. In many cases, these tools
-can be installed with a system's package manager (e.g. ``homebrew`` for macOS,
-``yum`` for CentOS/Red Hat, or ``apt`` for Debian-based systems like Ubuntu).
-If binaries are downloaded or compiled manually, be sure they are
-installed in a standard location for your system so that the other components
-of the OpenFAST build system can find the dependencies.
+are not distributed with the OpenFAST repository. Each of the following
+components are required for the minimum OpenFAST compilation.
+
+- C++, C, and Fortran compiler
+- BLAS and LAPACK math library
+- Build system
+
+In many cases, these tools can be installed with a system's package
+manager (e.g. ``homebrew`` for macOS, ``yum`` for CentOS/Red Hat, or
+``apt`` for Debian-based systems like Ubuntu). For Ubuntu and macOS,
+the following commands install all required dependencies.
+
+============== ================================
+ System         Dependency Installation Command
+============== ================================
+ Ubuntu 20.04   ``apt install git cmake libblas-dev liblapack-dev gfortran-10 g++``
+ macOS 10.15    ``brew install git cmake make openblas gcc``
+============== ================================
+
+If dependencies are downloaded from vendors directly, they must be
+installed in a standard location for your system so that the OpenFAST
+build systems can find them.
+
+Compilers
++++++++++
+Compiling OpenFAST requires a C, C++, and Fortran compiler. Though many
+options exist, the most common and best supported compilers are listed
+below.
+
+============================================== ==================== ================= =======
+ Vendor / Compiler                              Applicable systems   Minimum version   Link
+============================================== ==================== ================= =======
+ GNU Compiler Collection (gfortran, gcc, g++)   macOS, Linux         4.6.0             https://gcc.gnu.org
+ Intel Compilers (ifort, icc)                   All                  2013              https://software.intel.com/content/www/us/en/develop/tools/oneapi/hpc-toolkit.html
+============================================== ==================== ================= =======
+
+Other compiler packages may work and can be well suited to a particular
+hardware, but their mileage may vary with OpenFAST. For instance, MinGW,
+CygWin, and LLVM are options for obtaining compilers on various systems.
+It is highly recommended to use the latest version of one of the above.
+
+Math libraries
+++++++++++++++
+Math libraries with the BLAS and LAPACK interfaces are also required. All major
+options can be obtained as free downloads. The most common options are listed
+in the table below.
+
+============ ============= ============== ======
+Library       Distributor   Open Source?   Link
+============ ============= ============== ======
+BLAS/LAPACK   NetLib        Yes            http://www.netlib.org/blas/, http://www.netlib.org/lapack/
+BLAS/LAPACK   OpenBLAS      Yes            https://www.openblas.net
+MKL           Intel         No             https://software.intel.com/content/www/us/en/develop/tools/oneapi/components/onemkl.html
+============ ============= ============== ======
 
 Build tools
 +++++++++++
-
-An environment-specific build system is required and will consist of a
+An environment-specific build system is required and may consist of a
 combination of the packages listed in the table below.
 
 ============================================== ==================== ================= =======
  Package                                        Applicable systems   Minimum version   Link
 ============================================== ==================== ================= =======
- CMake                                          All                  3.0               https://cmake.org
+ CMake                                          All                  3.12              https://cmake.org
  GNU Make                                       macOS, Linux         1.8               https://www.gnu.org/software/make/
  Visual Studio                                  Windows              2015              https://visualstudio.microsoft.com>
- GNU Compiler Collection (gfortran, gcc, g++)   macOS, Linux         4.6.0             https://gcc.gnu.org
- Intel Parallel Studio (ifort, icc)             All                  2013              https://software.intel.com/en-us/parallel-studio-xe/
 ============================================== ==================== ================= =======
 
-Math libraries
-++++++++++++++
+For Windows, CMake may be used to generate a Visual Studio Solution that
+can then be used to compile OpenFAST. OpenFAST also contains a standalone
+Visual Studio project, see :ref:`vs_windows`.
 
-Math libraries with the BLAS and LAPACK interfaces are also required. These can
-be obtained as free, open source libraries or paid, closed source versions.
-Some packages contain separate libraries for each interface while others have
-the interfaces bundles into a single binary. The most common options are listed
-in the table below.
-
-============ ============ =========== ============== ======
-Library       Maintainer   Paid/Free   Open Source?   Link
-============ ============ =========== ============== ======
-BLAS          NetLib       Free        Yes            http://www.netlib.org/blas/
-LAPACK        NetLib       Free        Yes            http://www.netlib.org/lapack/
-BLAS/LAPACK   OpenBLAS     Free        Yes            https://www.openblas.net
-MKL           Intel        Paid        No             https://software.intel.com/en-us/mkl
-============ ============ =========== ============== ======
-
-Dependencies for the test suite
-+++++++++++++++++++++++++++++++
-
-The following packages are required to run the test suite:
-
-- `Python 3 <https://www.python.org/downloads/>`__
-- `MatPlotLib <https://matplotlib.org>`__ - used for generating error plots
-
-Dependencies for the C++ API
-++++++++++++++++++++++++++++
-
-When using the C++ API, the following packages are required:
-
-- `HDF5 <https://support.hdfgroup.org/HDF5/>`_ (provided by ``HDF5_ROOT``)
-- `yaml-cpp <https://github.com/jbeder/yaml-cpp>`_ (provided by ``YAML_ROOT``)
+For macOS and Linux, the recommended tools are CMake and GNU Make. CMake is
+used to generate Makefiles that are inputs to the GNU Make program. Other
+build tools exist for both Linux and macOS (Xcode, Ninja), but these
+are not well supported by the OpenFAST system.
 
 Get the code
 ------------
@@ -124,7 +361,7 @@ via the command line:
 
 An archive of the source code can also be downloaded directly from these links:
 
-- `"master" branch <https://github.com/OpenFAST/openfast/archive/master.zip>`__ - Stable release
+- `"main" branch <https://github.com/OpenFAST/openfast/archive/main.zip>`__ - Stable release
 - `"dev" branch <https://github.com/OpenFAST/openfast/archive/dev.zip>`__ - Latest updates
 
 .. _vs_windows:
@@ -132,13 +369,29 @@ An archive of the source code can also be downloaded directly from these links:
 Visual Studio Solution for Windows
 ----------------------------------
 A complete Visual Studio solution is maintained for working with the OpenFAST
-on Windows systems. The procedure for configuring the system and proceding
-with the build process are documentated in the following section:
+on Windows systems. The procedure for configuring the system and proceeding
+with the build process are documented in the following section:
 
 .. toctree::
    :maxdepth: 1
 
    install_vs_windows.rst
+
+.. _OFcompile_WSL_VScode:
+
+Windows with the linux subsystem and VS code
+--------------------------------------------
+
+This guide provides step-by-step instructions for compiling OpenFAST from source
+on Windows using WSL (Windows Subsystem for Linux), setting up a Python
+environment with pyOpenFAST, and configuring VS Code for development and testing
+with Jupyter notebooks.
+
+.. toctree::
+   :maxdepth: 1
+
+   OFcompile_WSL_VScode.rst
+
 
 .. _understanding_cmake:
 
@@ -171,7 +424,7 @@ changes to the settings will be updated and stored there.
 
 CMake can be executed in a few ways:
 
-- Command line interace: ``cmake``
+- Command line interface: ``cmake``
 - Command line curses interface: ``ccmake``
 - Official CMake GUI
 
@@ -224,19 +477,28 @@ The CMake options specific to OpenFAST and their default settings are:
 ::
 
     BUILD_DOCUMENTATION            - Build documentation (Default: OFF)
+    BUILD_FASTFARM                 - Enable FAST.Farm capabilities (Default: OFF)
     BUILD_OPENFAST_CPP_API         - Enable building OpenFAST - C++ API (Default: OFF)
-    BUILD_OPENFAST_SIMULINK_API    - Enable building OpenFAST for use with Simulink
+    BUILD_OPENFAST_CPP_DRIVER      - Enable building OpenFAST C++ driver using C++ CFD API (Default: OFF)
+    BUILD_OPENFAST_LIB_DRIVER      - Enable building OpenFAST driver using C++ Library API (Default: OFF)
+    BUILD_OPENFAST_SIMULINK_API    - Enable building OpenFAST for use with Simulink (Default: OFF)
     BUILD_SHARED_LIBS              - Enable building shared libraries (Default: OFF)
     BUILD_TESTING                  - Build the testing tree (Default: OFF)
+    BUILD_UNIT_TESTING             - Enable unit testing (Default: ON)
     CMAKE_BUILD_TYPE               - Choose the build type: Debug Release (Default: Release)
     CMAKE_Fortran_MODULE_DIRECTORY - Set the Fortran Modules directory
     CMAKE_INSTALL_PREFIX           - Install path prefix, prepended onto install directories.
+    CMAKE_MACOSX_RPATH             - Use RPATH runtime linking (Default: ON)
+    CODECOVERAGE                   - Enable infrastructure for measuring code coverage (Default: OFF)
     DOUBLE_PRECISION               - Treat REAL as double precision (Default: ON)
     FPE_TRAP_ENABLED               - Enable Floating Point Exception (FPE) trap in compiler options (Default: OFF)
-    GENERATE_TYPES                 - Use the openfast-regsitry to autogenerate types modules
-    ORCA_DLL_LOAD                  - Enable OrcaFlex library load (Default: OFF)
+    GENERATE_TYPES                 - Use the openfast-registry to autogenerate types modules (Default: OFF)
+    OPENMP                         - Enable OpenMP support (Default: OFF)
+    WIN_DLL_LOAD                   - Enable loading of Windows DLLs for OrcaFlex and SoilDyn (Default: ON)
     USE_DLL_INTERFACE              - Enable runtime loading of dynamic libraries (Default: ON)
-    OPENMP                         - Enable OpenMP parallelization in FVW (Default: OFF)
+    USE_LOCAL_STATIC_LAPACK        - Enable downloading and building static LAPACK and BLAS libs (Default: OFF)
+    VARIABLE_TRACKING              - Enables variable tracking for better runtime debugging output. May increase compile time. Valid only for GNU. (Default: ON)
+
 
 Additional system-specific options may exist for a given system, but those
 should not impact the OpenFAST configuration. As mentioned above, the
@@ -280,7 +542,7 @@ Use ``Debug`` during active development to add debug symbols for use with a
 debugger. This build type also adds flags for generating runtime checks that
 would otherwise result in undefined behavior. ``MinSizeRel`` adds basic
 optimizations and targets a minimal size for the generated executable. The next
-level, ``RelWithDebInfo``, enables vectorization and other more agressive
+level, ``RelWithDebInfo``, enables vectorization and other more aggressive
 optimizations. It also adds debugging symbols and results in a larger
 executable size. Finally, use ``Release`` for best performance at the cost
 of increased compile time.
@@ -362,15 +624,21 @@ not to the libraries themselves.
 
 CMake with Make for Linux/macOS
 -------------------------------
-After reading :ref:`understanding_cmake`, proceed with
-configuring OpenFAST. The CMake project is well developed for Linux and
-macOS systems, so the default settings should work as given. These settings
-should only be changed when a custom build is required.
+After installing all dependencies and reading :ref:`understanding_cmake`,
+proceed with configuring OpenFAST. The CMake project is well developed for
+Linux and macOS systems, so the default settings should work as given.
+These settings should only be changed when a custom build is required.
 
-The procedure for configuring CMake and compiling with GNU Make on Linux
-and macOS systems is given below.
+The full procedure for installing dependencies, configuring CMake and 
+compiling with GNU Make on Linux and macOS systems is given below.
 
 .. code-block:: bash
+
+    # For Ubuntu Linux, this installs all dependencies
+    apt install git cmake libblas-dev liblapack-dev gfortran-10 g++
+
+    # For macOS using Homebrew, this installs all dependencies
+    brew install git cmake make openblas gcc
 
     # Clone the repository from GitHub using git
     git clone https://github.com/OpenFAST/OpenFAST.git
@@ -390,12 +658,24 @@ and macOS systems is given below.
     make help
 
     # Choose a particular target or give no target to compile everything
+    make hydrodyn_driver
+    # or
+    make openfast
+    # or
     make
+
+    # Test the compiled binary, for example
+    ./glue-codes/openfast/openfast -v
+    ./modules/hydrodyn/hydrodyn_driver -v
+
+    # Move the binaries and other run-time files to the install location
+    # The default is `openfast/install`
+    make install
 
 .. tip::
 
-    Compile in parallel by adding "-jN" where N is the number of parallel
-    processes to use
+    Compile in parallel by adding "-jN" to the ``make`` command where N is
+    the number of parallel processes to use; i.e. ``make -j4 openfast``.
 
 This will build the OpenFAST project in the ``build`` directory. Binaries are
 located in ``openfast/build/glue-codes/`` and ``openfast/build/modules/``. Since
@@ -407,15 +687,15 @@ again.
 
 CMake with Visual Studio for Windows
 ------------------------------------
-After reading :ref:`understanding_cmake`, proceed with
-configuring OpenFAST. The result of this configuration process will be
-a Visual Studio solution which will be fully functional for compiling
-any of the targets within OpenFAST. However, this method lacks support
-for continued active development. Specifically, any settings that are
-configured in the Visual Studio solution directly will be lost any time
-CMake is executed. Therefore, this method should only be used to compile
-binaries, and the procure described in :ref:`vs_windows` should be used
-for active OpenFAST development on Windows.
+After installing all dependencies and reading :ref:`understanding_cmake`,
+proceed with configuring OpenFAST. The result of this configuration
+process will be a Visual Studio solution which will be fully functional
+for compiling any of the targets within OpenFAST. However, this method
+lacks support for continued active development. Specifically, any settings
+that are configured in the Visual Studio solution directly will be lost
+any time CMake is executed. Therefore, this method should only be used to
+compile binaries, and the procure described in :ref:`vs_windows` should
+be used for active OpenFAST development on Windows.
 
 The procedure for configuring CMake and compiling with Visual Studio
 on Windows systems is given below.
@@ -436,7 +716,7 @@ on Windows systems is given below.
     # and build architecture. For a list of available CMake generators, run
     # ``cmake .. -G``.
     # This step creates the Visual Studio solution.
-    cmake .. -G "Visual Studio 14 2015 Win64"
+    cmake .. -G "Visual Studio 16 2019"
 
     # Open the generated Visual Studio solution
     start OpenFAST.sln
@@ -456,7 +736,70 @@ the structure of the file system or if the CMake configuration is changed. It
 is recommended that this method **not** be used for debugging or active
 development on Windows. Instead, see :ref:`vs_windows`.
 
+C++ API
+~~~~~~~
+When compiling the C++ API, the following additional dependencies are required:
+
+- `HDF5 <https://support.hdfgroup.org/HDF5/>`_
+- `yaml-cpp <https://github.com/jbeder/yaml-cpp>`_
+- `libxml++ <http://libxmlplusplus.sourceforge.net/docs/manual/html/>`_
+
+The C++ API is compiled only with CMake and it is possible to hint to CMake
+where to find some dependencies. The following commands configure CMake and
+compile the C++ interface.
+
+.. code-block:: bash
+
+    # Enable compiling the C++ API
+    cmake .. -DBUILD_OPENFAST_CPP_API:BOOL=ON -DBUILD_SHARED_LIBS:BOOL=ON
+
+    # If CMake doesn't find HDF5, provide a hint
+    cmake .. -DHDF5_ROOT:STRING=/usr/lib/
+
+    # Compile the C++ API
+    make openfastcpplib
+
+FAST.Farm
+~~~~~~~~~
+The FAST.Farm glue-code is included in the CMake project similar to the
+OpenFAST glue-code. See :ref:`compile_from_source` for a full description
+on installing dependencies, configuring the project, and compiling.
+FAST.Farm is enabled in the CMake project with an additional flag:
+
+.. code-block:: bash
+
+    # Enable compiling FAST.Farm
+    cmake .. -DBUILD_FASTFARM:BOOL=ON
+
+    # Compile FAST.Farm
+    make FAST.Farm
+
+OpenMP-Fortran is an additional dependency for FAST.Farm. These libraries
+can be installed with any package manager for macOS and Linux or
+through the Intel oneAPI distributions.
+
 .. _installation_appendix:
+
+Simulink
+~~~~~~~~
+To build the MEX function for coupling OpenFAST into Simulink, there are two
+options depending on platform.
+
+Windows with Visual Studio
+--------------------------
+For Windows, build with the `Release_Matlab` option from the Visual Studio
+project in `vs-build/FAST/FAST.sln`.  Then run
+`glue-codes/simulink/src/create_FAST_SFunc.m` from MATLAB (instructions at the
+top of this file).
+
+CMake
+-----
+For CMake builds on all platforms, enable the `-DBUILD_OPENFAST_SIMULINK_API=On`
+option in CMake and build the `FAST_SFunc` target.  This will place the
+resulting `FAST_SFunc.mexXXXX` in
+`<build-dir>/glue-codes/simulink/FAST_SFunc.mexXXXX` (and in the install
+directory at `install/bin/FAST_SFunc.mexXXXX` if `make install` was called).
+
 
 Appendix
 ~~~~~~~~

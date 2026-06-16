@@ -24,6 +24,8 @@ MODULE BeamDyn
 
    IMPLICIT NONE
 
+   INTEGER, PARAMETER  :: FEKi = R8Ki  ! Define the kind to be used for FEM/eigenanalysis
+
 #ifndef UNIT_TEST
    PRIVATE
 
@@ -48,9 +50,17 @@ MODULE BeamDyn
    PUBLIC :: BD_JacobianPConstrState           ! Routine to compute the Jacobians of the output(Y), continuous - (X), discrete -
                                                !   (Xd), and constraint - state(Z) functions all with respect to the constraint
                                                !   states(z)
-   PUBLIC :: BD_GetOP                          !< Routine to pack the operating point values (for linearization) into arrays
 
+   PUBLIC :: BD_UpdateGlobalRef      !< update the BeamDyn reference.  The reference for the calculations follows u%RootMotionMesh
+                                               !  and therefore x%q must be updated from T -> T+DT to include the root motion from T->T+DT
 
+   ! The original formulation kept all states in the inertial reference frame.  This has been leading to convergence issues
+   ! when there is a large rotational change from the reference frame (i.e. large turbine yaw, large blade pitch).  During
+   ! the development of the tight coupling algorithm for OpenFAST, we decided to try changing all the states in BeamDyn to
+   ! follow the moving BladeRootMotion mesh.  This requires changing the states after an UpdateStates call to be relative to
+   ! the new BladeRootMotion mesh orientation and position.
+   ! Update the reference frame after each State update (or use the old method)?
+   LOGICAL, PARAMETER :: ChangeRefFrame = .true.
 
 CONTAINS
 
@@ -82,10 +92,7 @@ SUBROUTINE BD_Init( InitInp, u, p, x, xd, z, OtherState, y, MiscVar, Interval, I
 
    ! local variables
    TYPE(BD_InputFile)      :: InputFileData     ! Data stored in the module's input file
-   REAL(BDKi)              :: temp_CRV(3)
    REAL(BDKi),ALLOCATABLE  :: GLL_nodes(:)
-   REAL(BDKi)              :: TmpDCM(3,3)
-   REAL(BDKi)              :: denom
    LOGICAL                 :: QuasiStaticInitialized      !< True if quasi-static solution was found
 
 
@@ -109,157 +116,64 @@ SUBROUTINE BD_Init( InitInp, u, p, x, xd, z, OtherState, y, MiscVar, Interval, I
 
    CALL DispNVD( BeamDyn_Ver )
 
-   CALL BD_ReadInput(InitInp%InputFile,InputFileData,InitInp%RootName,Interval,ErrStat2,ErrMsg2)
-      CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
-      if (ErrStat >= AbortErrLev) then
-         call cleanup()
-         return
-      end if
+   CALL BD_ReadInput(InitInp%InputFile,InputFileData,InitInp%RootName,Interval,ErrStat2,ErrMsg2); if (Failed()) return
+   CALL BD_ValidateInputData( InitInp, InputFileData, ErrStat2, ErrMsg2 ); if (Failed()) return
 
-   CALL BD_ValidateInputData( InitInp, InputFileData, ErrStat2, ErrMsg2 )
-      CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
-      if (ErrStat >= AbortErrLev) then
-         call cleanup()
-         return
-      end if
 
+      ! The reference frame is set by the root motion mesh initial position
+   call InitRefFrame( InitInp, OtherState, ErrStat2, ErrMsg2 ); if (Failed()) return
 
       ! this routine sets *some* of the parameters (basically the "easy" ones)
-   call SetParameters(InitInp, InputFileData, p, ErrStat2, ErrMsg2)
-      CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
-      if (ErrStat >= AbortErrLev) then
-         call cleanup()
-         return
-      end if
+   call SetParameters(InitInp, InputFileData, p, OtherState, ErrStat2, ErrMsg2); if (Failed()) return
 
 
    ! Temporary GLL point intrinsic coordinates array
-   CALL BD_GenerateGLL(p%nodes_per_elem,GLL_nodes,ErrStat2,ErrMsg2)
-      CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
-      if (ErrStat >= AbortErrLev) then
-         call cleanup()
-         return
-      end if
+   CALL BD_GenerateGLL(p%nodes_per_elem,GLL_nodes,ErrStat2,ErrMsg2); if (Failed()) return
+
+   ! In the following, trapezoidalpointweight should be generalized to multi-element; likewise for gausspointweight
 
    IF(p%quadrature .EQ. GAUSS_QUADRATURE) THEN
 
-       CALL BD_GaussPointWeight(p%nqp,p%QPtN,p%QPtWeight,ErrStat2,ErrMsg2) !calculates p%QPtN and p%QPtWeight
-          CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
-          if (ErrStat >= AbortErrLev) then
-             call cleanup()
-             return
-          end if
+       CALL BD_GaussPointWeight(p%nqp,p%QPtN,p%QPtWeight,ErrStat2,ErrMsg2); if (Failed()) return !calculates p%QPtN and p%QPtWeight
 
    ELSEIF(p%quadrature .EQ. TRAP_QUADRATURE) THEN
 
-      CALL BD_TrapezoidalPointWeight(p, InputFileData)        ! computes p%QPtN and p%QPtWeight
+      CALL BD_TrapezoidalPointWeight(p,  InputFileData%InpBl%station_eta, InputFileData%InpBl%station_total) ! computes p%QPtN and p%QPtWeight
 
    ENDIF
 
       ! compute physical distances to set positions of p%uuN0 (FE GLL_Nodes) (depends on p%SP_Coef):
-   call InitializeNodalLocations(InputFileData, p, GLL_nodes, InitOut, ErrStat2,ErrMsg2)
-      CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
-      if (ErrStat >= AbortErrLev) then
-         call cleanup()
-         return
-      end if
+   call InitializeNodalLocations(InputFileData%member_total,InputFileData%kp_member,InputFileData%kp_coordinate,p,GLL_nodes,ErrStat2,ErrMsg2); if (Failed()) return
 
       ! compute p%Shp, p%ShpDer, and p%Jacobian:
    CALL BD_InitShpDerJaco( GLL_Nodes, p )
 
       ! set mass and stiffness matrices: p%Stif0_QP and p%Mass0_QP
-   call InitializeMassStiffnessMatrices(InputFileData, p, ErrStat2,ErrMsg2)
-      CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
-      if (ErrStat >= AbortErrLev) then
-         call cleanup()
-         return
-      end if
+   call InitializeMassStiffnessMatrices(InputFileData, p, ErrStat2,ErrMsg2); if (Failed()) return
 
       ! Set the initial displacements: p%uu0, p%rrN0, p%E10
    CALL BD_QuadraturePointDataAt0(p)
-      if (ErrStat >= AbortErrLev) then
-         call cleanup()
-         return
-      end if
-
-!FIXME: shift mass stiffness matrices here from the keypoint line to the calculated curvature line in p%uu0
-!   CALL BD_KMshift2Ref(p)
 
 
-   call Initialize_FEweights(p,GLL_nodes,ErrStat2,ErrMsg2) ! set p%FEweight; needs p%uuN0 and p%uu0
-      CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
+   call Initialize_FEweights(p,GLL_nodes,ErrStat2,ErrMsg2); if (Failed()) return ! set p%FEweight; needs p%uuN0 and p%uu0
       
       ! compute blade mass, CG, and IN for summary file:
-   CALL BD_ComputeBladeMassNew( p, ErrStat2, ErrMsg2 )  !computes p%blade_mass,p%blade_CG,p%blade_IN
-      CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
-
-
-      ! Actuator
-   p%UsePitchAct = InputFileData%UsePitchAct
-
-   if (p%UsePitchAct) then
-
-      p%pitchK = InputFileData%pitchK
-      p%pitchC = InputFileData%pitchC
-      p%pitchJ = InputFileData%pitchJ
-
-         ! calculate (I-hA)^-1
-
-      p%torqM(1,1) =  p%pitchJ + p%pitchC*p%dt
-      p%torqM(2,1) = -p%pitchK * p%dt
-      p%torqM(1,2) =  p%pitchJ * p%dt
-      p%torqM(2,2) =  p%pitchJ
-      denom        =  p%pitchJ + p%pitchC*p%dt + p%pitchK*p%dt**2
-      if (EqualRealNos(denom,0.0_BDKi)) then
-         call SetErrStat(ErrID_Fatal,"Cannot invert matrix for pitch actuator: J+c*dt+k*dt^2 is zero.",ErrStat,ErrMsg,RoutineName)
-      else
-         p%torqM(:,:) =  p%torqM / denom
-      end if
-
-         ! Calculate the pitch angle
-      TmpDCM(:,:) = MATMUL(u%RootMotion%Orientation(:,:,1),TRANSPOSE(u%HubMotion%Orientation(:,:,1)))
-      temp_CRV(:) = EulerExtract(TmpDCM)
-      xd%thetaP = -temp_CRV(3)
-      xd%thetaPD = 0.0_BDKi
-   end if
-
+   CALL BD_ComputeBladeMassNew( p, ErrStat2, ErrMsg2 ); if (Failed()) return !computes p%blade_mass,p%blade_CG,p%blade_IN
 
       ! Define and initialize system inputs (set up and initialize input meshes) here:
-   call Init_u(InitInp, p, u, ErrStat2, ErrMsg2)
-      CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
+   call Init_u(InitInp, p, OtherState, u, ErrStat2, ErrMsg2); if (Failed()) return
 
-      if (ErrStat >= AbortErrLev) then
-         call cleanup()
-         return
-      end if
+      ! allocate and initialize other states:  Also sets the GlbRot for the displaced position (needed for x%q initialization)
+   call Init_OtherStates(u, p, OtherState, ErrStat2, ErrMsg2); if (Failed()) return
 
       ! allocate and initialize continuous states (need to do this after initializing inputs):
-   call Init_ContinuousStates(p, u, x, ErrStat2, ErrMsg2)
-      CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
-
-      if (ErrStat >= AbortErrLev) then
-         call cleanup()
-         return
-      end if
-
-      ! allocate and initialize other states:
-   call Init_OtherStates(p, OtherState, ErrStat2, ErrMsg2)
-      CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
+   call Init_ContinuousStates(p, u, x, OtherState, ErrStat2, ErrMsg2); if (Failed()) return
 
       ! initialize outputs (need to do this after initializing inputs and parameters (p%nnu0))
-   call Init_y(p, u, y, ErrStat2, ErrMsg2)
-      call SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
-
-      if (ErrStat >= AbortErrLev) then
-         call cleanup()
-         return
-      end if
-
+   call Init_y(p, OtherState, u, y, ErrStat2, ErrMsg2); if (Failed()) return
 
       ! allocate and initialize misc vars (do this after initializing input and output meshes):
-   call Init_MiscVars(p, u, y, MiscVar, ErrStat2, ErrMsg2)
-      CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
-
+   call Init_MiscVars(p, u, y, MiscVar, ErrStat2, ErrMsg2); if (Failed()) return
 
 
       ! Now that we have the initial conditions, we can run a quasi-steady-state solve
@@ -269,15 +183,19 @@ SUBROUTINE BD_Init( InitInp, u, p, x, xd, z, OtherState, y, MiscVar, Interval, I
          ! This will set m%qp%aaa, OtherState%Acc, x%q, and x%dqdt
          ! (note that we won't ramp loads as there are no loads provided yet.)
          ! if this is not successful, it restores the values of x and sets OtherState%Acc=0
-      CALL BD_QuasiStatic(u,p,x,OtherState,MiscVar,ErrStat2,ErrMsg2, RampLoad=.false.)
-         CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
+      CALL BD_QuasiStatic(u,p,x,OtherState,MiscVar,ErrStat2,ErrMsg2, RampLoad=.false.); if (Failed()) return
 
       QuasiStaticInitialized = ErrStat2 == ErrID_None      ! We have now run the quasi-static initialization once, so don't run again.
    ELSE
       QuasiStaticInitialized = .FALSE.
    ENDIF
 
-      
+   !.................................
+   ! Calculation of modal damping here
+
+   IF(p%damp_flag .EQ. 2) THEN
+      call Init_ModalDamping(InitInp, x, OtherState, p, MiscVar, ErrStat2, ErrMsg2); if (Failed()) return
+   ENDIF
 
       !.................................
       ! initialization of output mesh values (used for initial guess to AeroDyn)
@@ -292,7 +210,7 @@ SUBROUTINE BD_Init( InitInp, u, p, x, xd, z, OtherState, y, MiscVar, Interval, I
       
    end if
          
-   CALL Set_BldMotion_NoAcc(p, x, MiscVar, y)
+   CALL Set_BldMotion_NoAcc(p, x, OtherState, MiscVar, y)
 
    IF(QuasiStaticInitialized) THEN
       ! Set the BldMotion mesh acceleration but only if quasistatic succeeded
@@ -305,43 +223,45 @@ SUBROUTINE BD_Init( InitInp, u, p, x, xd, z, OtherState, y, MiscVar, Interval, I
       !.................................
    
       ! set initialization outputs
-   call SetInitOut(p, InitOut, errStat2, errMsg2)
-      call SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
+   call SetInitOut(p, InitOut, errStat2, errMsg2); if (Failed()) return
 
 
    !...............................................
 
        ! Print the summary file if requested:
    if (InputFileData%SumPrint) then
-      call BD_PrintSum( p, x, MiscVar, InitInp, ErrStat2, ErrMsg2 )
-      call SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
+      call BD_PrintSum( p, x, OtherState, MiscVar, InitInp, ErrStat2, ErrMsg2 ); if (Failed()) return
    end if
 
    !...............................................
 
    z%DummyConstrState = 0.0_BDKi
 
-   ! copy data for BeamDyn driver:
-   call move_alloc ( InputFileData%kp_coordinate, InitOut%kp_coordinate)
-   InitOut%kp_total = InputFileData%kp_total
 
       !............................................................................................
-      ! Initialize Jacobian:
+      ! Module Variables
       !............................................................................................
-   if (InitInp%Linearize) then
-      call Init_Jacobian( p, u, y, MiscVar, InitOut, ErrStat2, ErrMsg2)
+
+   ! call BD_InitVars(u, p, x, y, MiscVar, InitOut, InitInp%Linearize, ErrStat2, ErrMsg2)
+   call BD_InitVars(u, p, x, y, MiscVar, InitOut, .true., ErrStat2, ErrMsg2)
       call SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
-   end if
 
-   
+      !............................................................................................
+      ! Summary and cleanup
+      !............................................................................................
+
    call Cleanup()
 
-   return
 CONTAINS
-      SUBROUTINE Cleanup()
-         if (allocated(GLL_nodes )) deallocate(GLL_nodes )
-         CALL BD_DestroyInputFile( InputFileData, ErrStat2, ErrMsg2)
-      END SUBROUTINE Cleanup
+   SUBROUTINE Cleanup()
+      if (allocated(GLL_nodes )) deallocate(GLL_nodes )
+      CALL BD_DestroyInputFile( InputFileData, ErrStat2, ErrMsg2)
+   END SUBROUTINE Cleanup
+   logical function Failed()
+      CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
+      Failed = ErrStat >= AbortErrLev
+      if (Failed)    call Cleanup()
+   end function Failed
 END SUBROUTINE BD_Init
 
 !-----------------------------------------------------------------------------------------------------------------------------------
@@ -495,26 +415,44 @@ CONTAINS
 end subroutine InitializeMassStiffnessMatrices
 !-----------------------------------------------------------------------------------------------------------------------------------
 !> This subroutine computes the positions and rotations stored in p%uuN0 (output GLL nodes) and p%QuadPt (input quadrature nodes).  p%QPtN must be already set.
-subroutine InitializeNodalLocations(InputFileData,p,GLL_nodes,InitOut,ErrStat, ErrMsg)
-   type(BD_InputFile),           intent(in   )  :: InputFileData     !< data from the input file
+subroutine InitializeNodalLocations(member_total,kp_member,kp_coordinate,p,GLL_nodes,ErrStat, ErrMsg)
+
+   INTEGER(IntKi),INTENT(IN   ):: member_total
+   INTEGER(IntKi),INTENT(IN   ):: kp_member(:)        !< Number of key points of each member, InputFileData%kp_member from BD input file
+   REAL(BDKi),    INTENT(IN   ):: kp_coordinate(:,:)  !< Keypoints coordinates, from BD input file InputFileData%kp_coordinate(member key points,1:4);
    type(BD_ParameterType),       intent(inout)  :: p                 !< Parameters
    REAL(BDKi),                   INTENT(IN   )  :: GLL_nodes(:)      !< GLL_nodes(p%nodes_per_elem): location of the (p%nodes_per_elem) p%GLL points
-   type(BD_InitOutputType),      intent(inout)  :: InitOut           !< initialization output type (for setting z_coordinate variable)
+   !type(BD_InitOutputType),      intent(inout)  :: InitOut           !< initialization output type (for setting z_coordinate variable)
    integer(IntKi),               intent(  out)  :: ErrStat           !< Error status of the operation
    character(*),                 intent(  out)  :: ErrMsg            !< Error message if ErrStat /= ErrID_None
 
    REAL(BDKi),PARAMETER    :: EPS = 1.0D-10
 
-
+   ! ----------------------------------------
    ! local variables
-   INTEGER(IntKi)          :: i                ! do-loop counter
-   INTEGER(IntKi)          :: j                ! do-loop counter
-   INTEGER(IntKi)          :: member_first_kp
-   INTEGER(IntKi)          :: member_last_kp
-   REAL(BDKi)              :: eta
+   INTEGER(IntKi)             :: elem             ! do-loop counter
+   INTEGER(IntKi)             :: i                ! do-loop counter
+   INTEGER(IntKi)             :: j                ! do-loop counter
+   INTEGER(IntKi)             :: k                ! do-loop counter
+   INTEGER(IntKi)             :: kp               ! do-loop counter
+   integer(IntKi)             :: nkp ! number keypoints for an element
+   integer(IntKi)             :: qfit ! polynomial order used for first fit
+   REAL(BDKi),allocatable     :: least_sq_mat(:,:) 
+   REAL(BDKi),allocatable     :: least_sq_rhs(:,:) ! RHS for X,Y,Z,Twist
+   integer(IntKi),allocatable :: least_sq_indx(:) 
+   REAL(BDKi),allocatable     :: least_sq_gll(:) 
+   REAL(BDKi)                 :: twist 
+   REAL(BDKi)                 :: tangent(3)
+
+   REAL(BDKi),allocatable     :: least_sq_shp(:,:) 
+   REAL(BDKi),allocatable     :: least_sq_shpder(:,:) 
+
+   REAL(BDKi),allocatable     :: kp_param(:) 
+  
+   INTEGER(IntKi)          :: first_kp
+   INTEGER(IntKi)          :: last_kp
    REAL(BDKi)              :: temp_POS(3)
    REAL(BDKi)              :: temp_CRV(3)
-
 
    integer(intKi)                               :: ErrStat2          ! temporary Error status
    character(ErrMsgLen)                         :: ErrMsg2           ! temporary Error message
@@ -523,88 +461,146 @@ subroutine InitializeNodalLocations(InputFileData,p,GLL_nodes,InitOut,ErrStat, E
    ErrStat = ErrID_None
    ErrMsg  = ""
 
-   ! Compute segment length ratio w.r.t. member length
-   CALL BD_SegmentEta(InputFileData%member_total,InputFileData%kp_member,InputFileData%kp_coordinate,p%SP_Coef,p%segment_eta)
+   !MIKE
 
    !-------------------------------------------------
    ! p%uuN0 contains the initial (physical) positions and orientations of the (FE) GLL nodes
    !-------------------------------------------------
    p%uuN0(:,:,:) = 0.0_BDKi
 
-   member_first_kp = 1 !first key point on member (element)
-   DO i=1,p%elem_total
+   first_kp = 1 !first key point on member (element)
+   DO elem=1,p%elem_total
 
-       member_last_kp  = member_first_kp + InputFileData%kp_member(i) - 1 !last key point of member (element)
-       DO j=1,p%nodes_per_elem
+       last_kp  = first_kp + kp_member(elem) - 1 !last key point of member (element)
 
-           eta = (GLL_nodes(j) + 1.0_BDKi)/2.0_BDKi ! relative location where we are on the member (element), in range [0,1]
+       nkp = kp_member(elem)  ! number of keypoints in this element
 
-           call Find_IniNode(InputFileData%kp_coordinate, p, member_first_kp, member_last_kp, eta, temp_POS, temp_CRV, ErrStat2, ErrMsg2)
-           CALL SetErrStat(ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName)
-           if (ErrStat >= AbortErrLev) return
-           p%uuN0(1:3,j,i) = temp_POS
-           p%uuN0(4:6,j,i) = temp_CRV
-       ENDDO
+       if (p%nodes_per_elem .le. nkp) then
+          qfit = p%nodes_per_elem  ! if LSFE points-per-element is less than number of keypoints fit to final poly
+       else
+          qfit = nkp ! if points-per-element more that number of keypoints, fit to LSFE with order (nkp-1)
+       endif 
+       
+       if (qfit .gt. 7) qfit = 7
 
-         ! set for next element:
-      member_first_kp = member_last_kp
+       call AllocAry(least_sq_gll, qfit, "least-squares GLL nodes",ErrStat2, ErrMsg2)
+
+       call BD_GenerateGLL(qfit,least_sq_gll,ErrStat2,ErrMsg2)
+
+       CALL AllocAry(least_sq_Shp,qfit,nkp,'least-squares fit shp',ErrStat2,ErrMsg2)
+           CALL SetErrStat(ErrStat2,ErrMsg2,ErrStat,ErrMsg,RoutineName)
+       CALL AllocAry(least_sq_ShpDer,qfit,nkp,'ShpDer',ErrStat2,ErrMsg2)
+           CALL SetErrStat(ErrStat2,ErrMsg2,ErrStat,ErrMsg,RoutineName)
+
+       CALL AllocAry(kp_param,nkp,'parameterization of keypoints',ErrStat2,ErrMsg2)
+           CALL SetErrStat(ErrStat2,ErrMsg2,ErrStat,ErrMsg,RoutineName)
+
+       ! parameterize the keypoint data to [-1,1] based on z-coordinate
+       kp = first_kp
+       do j = 1, nkp
+          kp_param(j) = 2._BDki*(kp_coordinate(kp,3)-kp_coordinate(first_kp,3))/(kp_coordinate(last_kp,3)-kp_coordinate(first_kp,3)) - 1._BDKi
+          kp = kp + 1
+       enddo
+
+       ! Create shape functions evaluated at the kp positions
+       call BD_diffmtc(qfit,least_sq_gll,kp_param,nkp,least_sq_Shp,least_sq_ShpDer)
+
+       CALL AllocAry(least_sq_mat,qfit,qfit,'matrix for least-squares fit',ErrStat2,ErrMsg2)
+           CALL SetErrStat(ErrStat2,ErrMsg2,ErrStat,ErrMsg,RoutineName)
+       CALL AllocAry(least_sq_indx,qfit,'indx solving least-squares fit',ErrStat2,ErrMsg2)
+           CALL SetErrStat(ErrStat2,ErrMsg2,ErrStat,ErrMsg,RoutineName)
+       CALL AllocAry(least_sq_rhs,qfit,4,'indx solving least-squares fit',ErrStat2,ErrMsg2)
+           CALL SetErrStat(ErrStat2,ErrMsg2,ErrStat,ErrMsg,RoutineName)
+
+       ! build the least-squares-fit matrix and RHS vectors
+       least_sq_mat = 0._BDKi
+       do i = 1, qfit
+          do j = 1, qfit
+             do k = 1, nkp
+                least_sq_mat(i,j) = least_sq_mat(i,j) + least_sq_shp(i,k)*least_sq_shp(j,k)
+             enddo
+          enddo  
+       enddo  
+
+       least_sq_rhs = 0._BDKi
+       do j = 1, 4 
+          do i = 1, qfit
+            kp = first_kp
+            do k = 1, nkp
+               least_sq_rhs(i,j) = least_sq_rhs(i,j) + least_sq_shp(i,k)*kp_coordinate(kp,j)
+               kp = kp+1
+            enddo
+         enddo  
+       enddo
+   
+      ! modify linear system so that fitted function captures keypoint endpoints
+      do i = 1, qfit
+        least_sq_mat(1,i) = 0._BDKi
+        least_sq_mat(qfit,i) = 0._BDKi
+      enddo 
+      least_sq_mat(1,1) = 1._BDKi
+      least_sq_mat(qfit,qfit) = 1._BDKi
+
+      do j = 1,4
+         least_sq_rhs(1,j) = kp_coordinate(first_kp,j)
+         least_sq_rhs(qfit,j) = kp_coordinate(last_kp,j)
+      enddo
+
+      ! factor matrix system
+
+       CALL LAPACK_getrf( qfit, qfit, least_sq_mat, least_sq_indx, ErrStat2, ErrMsg2)
+          CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
+
+      ! solve the linear system
+      CALL LAPACK_getrs( 'N', qfit, least_sq_mat, least_sq_indx, least_sq_rhs, ErrStat2, ErrMsg2)
+         CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
+
+      ! we now have qfit LSFE coefficent that are a least squares fit to the keypoint data for XYZT
+      ! next, we calculate the coefficent of the p%nodes_per_elem LSFE for this element
+
+      ! need to re-evalate qfit-node shape functions at the p%nodes_per_elem GLL points
+      deallocate(least_sq_shp)
+      deallocate(least_sq_shpder)
+      CALL AllocAry(least_sq_Shp,qfit,p%nodes_per_elem,'least-squares fit shp',ErrStat2,ErrMsg2)
+          CALL SetErrStat(ErrStat2,ErrMsg2,ErrStat,ErrMsg,RoutineName)
+      CALL AllocAry(least_sq_ShpDer,qfit,p%nodes_per_elem,'ShpDer',ErrStat2,ErrMsg2)
+          CALL SetErrStat(ErrStat2,ErrMsg2,ErrStat,ErrMsg,RoutineName)
+
+          ! BD_diffmtc( nodes_per_elem,GLL_nodes,QPtN,nqp,Shp,ShpDer )
+      call BD_diffmtc(qfit,least_sq_gll,gll_nodes,p%nodes_per_elem,least_sq_Shp,least_sq_ShpDer)
+
+      do i = 1, p%nodes_per_elem
+
+        ! start with XYZ
+        twist = 0._BDKi
+        tangent = 0._BDKi
+        do k = 1, qfit    
+           do j = 1, 3 
+               p%uuN0(j,i,elem) = p%uuN0(j,i,elem) + least_sq_rhs(k,j)*least_sq_shp(k,i)
+               tangent(j) = tangent(j) + least_sq_rhs(k,j)*least_sq_shpder(k,i)
+           enddo
+           twist = twist + least_sq_rhs(k,4)*least_sq_shp(k,i)
+        enddo
+
+        tangent = tangent / TwoNorm(tangent)
+
+        CALL BD_ComputeIniNodalCrv(tangent, twist, temp_CRV, ErrStat, ErrMsg)
+        p%uuN0(4:6,i,elem) = temp_CRV
+
+      enddo
+
+      ! set for next element:
+      first_kp = last_kp
+
+      deallocate(least_sq_gll)
+      deallocate(least_sq_Shp)
+      deallocate(least_sq_ShpDer)
+      deallocate(kp_param)
+      deallocate(least_sq_mat)
+      deallocate(least_sq_indx)
+      deallocate(least_sq_rhs)
 
    ENDDO
-
-
-   !!-------------------------------------------------
-   !! InitOut%z_coordinate contains the z coordinate (in meters) along the blade and will be used for naming output channels
-   !!-------------------------------------------------
-   !
-   !   
-   !SELECT CASE(p%BldMotionNodeLoc)
-   !CASE (BD_MESH_FE)
-   !   CALL AllocAry( InitOut%z_coordinate, p%nodes_per_elem*p%elem_total,'InitOut%z_coordinate',ErrStat2,ErrMsg2) ! same size as y%BldMotion%NNodes
-   !      CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
-   !      if (ErrStat2 >= AbortErrLev) return
-   !
-   !   member_first_kp = 1 !first key point on member (element)
-   !   DO i=1,p%elem_total
-   !
-   !       member_last_kp  = member_first_kp + InputFileData%kp_member(i) - 1 !last key point of member (element)
-   !       DO j=1,p%nodes_per_elem
-   !
-   !           eta = (GLL_nodes(j) + 1.0_BDKi)/2.0_BDKi ! relative location where we are on the member (element), in range [0,1]
-   !           InitOut%z_coordinate( (i-1)*p%nodes_per_elem + j ) = Find_InitZ(InputFileData%kp_coordinate, member_first_kp, member_last_kp, eta)
-   !       ENDDO
-   !
-   !         ! set for next element:
-   !      member_first_kp = member_last_kp
-   !
-   !   ENDDO
-   !
-   !
-   !CASE (BD_MESH_QP)
-   !   CALL AllocAry( InitOut%z_coordinate, size(p%NdIndx),'InitOut%z_coordinate',ErrStat2,ErrMsg2) ! same size as y%BldMotion%NNodes
-   !      CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
-   !      if (ErrStat2 >= AbortErrLev) return
-   !
-   !   member_first_kp = 1
-   !
-   !   DO i=1,p%elem_total
-   !      member_last_kp  = member_first_kp + InputFileData%kp_member(i) - 1
-   !
-   !      DO idx_qp=1,p%nqp(i)
-   !         eta = (p%QPtN(idx_qp,i) + 1.0_BDKi)/2.0_BDKi  ! translate quadrature points in [-1,1] to eta in [0,1]
-   !         temp_ID = SUM(p%nqp(0:i-1)) + idx_qp + p%qp_indx_offset - (i - 1)*p%qp_overlap_offset    ! indx_offset=0, overlap_offset=1 for trap
-   !         InitOut%z_coordinate( temp_ID ) = Find_InitZ(InputFileData%kp_coordinate, member_first_kp, member_last_kp, eta)
-   !      ENDDO
-   !
-   !         ! set for next element:
-   !      member_first_kp = member_last_kp
-   !   ENDDO
-   !
-   !   IF (p%quadrature .EQ. GAUSS_QUADRATURE) THEN
-   !      InitOut%z_coordinate( 1                          ) = InputFileData%kp_coordinate(1,3)
-   !      InitOut%z_coordinate( size(InitOut%z_coordinate) ) = InputFileData%kp_coordinate(InputFileData%kp_total,3)
-   !   ENDIF
-   !   
-   !END SELECT
 
    return
 
@@ -814,18 +810,71 @@ subroutine SetInitOut(p, InitOut, ErrStat, ErrMsg)
 
    InitOut%Ver = BeamDyn_Ver
 
-
       ! Set the info in WriteOutputHdr and WriteOutputUnt for BldNd sections.
    CALL BldNdOuts_InitOut( InitOut, p, ErrStat2, ErrMsg2 )
       call SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
 
 end subroutine SetInitOut
+
+!-----------------------------------------------------------------------------------------------------------------------------------
+!> Set the global rotation information -- stored in OtherStates
+subroutine InitRefFrame( InitInp, OtherState, ErrStat, ErrMsg )
+   type(BD_InitInputType),       intent(in   )  :: InitInp           !< Input data for initialization routine
+   type(BD_OtherStateType),      intent(inout)  :: OtherState        !< Global rotations are stored in otherstate
+   integer(IntKi),               intent(  out)  :: ErrStat           !< Error status of the operation
+   character(*),                 intent(  out)  :: ErrMsg            !< Error message if ErrStat /= ErrID_None
+   integer(intKi)                               :: ErrStat2          ! temporary Error status
+   character(ErrMsgLen)                         :: ErrMsg2           ! temporary Error message
+   character(*), parameter                      :: RoutineName = 'InitRefFrame'
+
+   ErrStat = ErrID_None
+   ErrMsg  = ""
+
+      ! Global position vector
+   OtherState%GlbPos = InitInp%GlbPos
+
+      ! Global rotation tensor.  What comes from the driver may not be a properly formed
+      ! DCM (may have roundoff), so recalculate it from the extracted WM parameters.
+   OtherState%GlbRot = TRANSPOSE(InitInp%GlbRot) ! matrix that now transfers from local to global (FAST's DCMs convert from global to local)
+   CALL BD_CrvExtractCrv(OtherState%GlbRot,OtherState%Glb_crv, ErrStat2, ErrMsg2)
+   CALL SetErrStat(ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName)
+   if (ErrStat >= AbortErrLev) return
+   CALL BD_CrvMatrixR(OtherState%Glb_crv,OtherState%GlbRot) ! ensure that the rotation matrix is a DCM in double precision (this should be the same as TRANSPOSE(InitInp%GlbRot))
+end subroutine InitRefFrame
+
+!-----------------------------------------------------------------------------------------------------------------------------------
+!> Set the global rotation information -- stored in OtherStates
+!! This only works for u in the global frame!!!!
+subroutine SetRefFrame( u, GlbPos, GlbRot, Glb_Crv, ErrStat, ErrMsg )
+   type(BD_InputType),           intent(in   )  :: u                 !< Inputs
+   real(R8Ki),                   intent(  out)  :: GlbPos(3)
+   real(R8Ki),                   intent(  out)  :: GlbRot(3,3)
+   real(R8Ki),                   intent(  out)  :: Glb_crv(3)
+   integer(IntKi),               intent(  out)  :: ErrStat           !< Error status of the operation
+   character(*),                 intent(  out)  :: ErrMsg            !< Error message if ErrStat /= ErrID_None
+   integer(intKi)                               :: ErrStat2          ! temporary Error status
+   character(ErrMsgLen)                         :: ErrMsg2           ! temporary Error message
+   character(*), parameter                      :: RoutineName = 'SetRefFrame'
+
+   ErrStat = ErrID_None
+   ErrMsg  = ""
+
+   ! Calculate new global position, rotation, and WM from root motion.  Note that this is similar to the InitRefFrame routine
+   GlbPos = u%RootMotion%Position(:, 1) + &
+            u%RootMotion%TranslationDisp(:, 1)
+   GlbRot = transpose(u%RootMotion%Orientation(:, :, 1))
+   CALL BD_CrvExtractCrv(GlbRot, Glb_crv, ErrStat2, ErrMsg2)
+      CALL SetErrStat(ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName)
+   CALL BD_CrvMatrixR(Glb_crv, GlbRot)
+end subroutine SetRefFrame
+
 !-----------------------------------------------------------------------------------------------------------------------------------
 !> This subroutine allocates and initializes most (not all) of the parameters used in BeamDyn.
-subroutine SetParameters(InitInp, InputFileData, p, ErrStat, ErrMsg)
+subroutine SetParameters(InitInp, InputFileData, p, OtherState, ErrStat, ErrMsg)
    type(BD_InitInputType),       intent(in   )  :: InitInp           !< Input data for initialization routine
    type(BD_InputFile),           intent(inout)  :: InputFileData     !< data from the input file  [we may need to shift the keypoint to match a MK matrix eta for trap multi-element]
    type(BD_ParameterType),       intent(inout)  :: p                 !< Parameters  ! intent(out) only because it changes p%NdIndx
+   type(BD_OtherStateType),      intent(in   )  :: OtherState        !< Global rotations are stored in otherstate
    integer(IntKi),               intent(  out)  :: ErrStat           !< Error status of the operation
    character(*),                 intent(  out)  :: ErrMsg            !< Error message if ErrStat /= ErrID_None
 
@@ -834,7 +883,6 @@ subroutine SetParameters(InitInp, InputFileData, p, ErrStat, ErrMsg)
    INTEGER(IntKi)                               :: i, j              ! generic counter index
    INTEGER(IntKi)                               :: indx              ! counter into index array (p%NdIndx)
    INTEGER(IntKi)                               :: nUniqueQP         ! number of unique quadrature points (not double-counting nodes at element boundaries)
-
    integer(intKi)                               :: ErrStat2          ! temporary Error status
    character(ErrMsgLen)                         :: ErrMsg2           ! temporary Error message
    character(*), parameter                      :: RoutineName = 'SetParameters'
@@ -844,21 +892,10 @@ subroutine SetParameters(InitInp, InputFileData, p, ErrStat, ErrMsg)
    ErrStat = ErrID_None
    ErrMsg  = ""
 
-
-      ! Global position vector
-   p%GlbPos = InitInp%GlbPos
-
-
-      ! Global rotation tensor.  What comes from the driver may not be a properly formed
-      ! DCM (may have roundoff), so recalculate it from the extracted WM parameters.
-   p%GlbRot = TRANSPOSE(InitInp%GlbRot) ! matrix that now transfers from local to global (FAST's DCMs convert from global to local)
-   CALL BD_CrvExtractCrv(p%GlbRot,p%Glb_crv, ErrStat2, ErrMsg2)
-   CALL SetErrStat(ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName)
-   if (ErrStat >= AbortErrLev) return
-   CALL BD_CrvMatrixR(p%Glb_crv,p%GlbRot) ! ensure that the rotation matrix is a DCM in double precision (this should be the same as TRANSPOSE(InitInp%GlbRot))
-
-      ! Gravity vector
-   p%gravity = MATMUL(InitInp%gravity,p%GlbRot)
+   p%CompAeroMaps = InitInp%CompAeroMaps
+   
+      ! Gravity vector -- inertial frame!  This must be multiplied by OtherState%GlbRot to get into the BD rotating reference frame
+   p%gravity = InitInp%gravity
 
 
    !....................
@@ -879,7 +916,6 @@ subroutine SetParameters(InitInp, InputFileData, p, ErrStat, ErrMsg)
 
 
    p%RotStates      = InputFileData%RotStates      ! Rotate states in linearization?
-   p%RelStates      = InputFileData%RelStates      ! Define states relative to root motion in linearization?
    
    p%rhoinf         = InputFileData%rhoinf         ! Numerical damping coefficient: [0,1].  No numerical damping if rhoinf = 1; maximum numerical damping if rhoinf = 0.
    p%dt             = InputFileData%DTBeam         ! Time step size
@@ -959,6 +995,14 @@ subroutine SetParameters(InitInp, InputFileData, p, ErrStat, ErrMsg)
    if (ErrStat >= AbortErrLev) return
 
 
+   if (p%CompAeroMaps) then
+      if (p%BldMotionNodeLoc /= BD_MESH_FE) then
+!         call SetErrStat(ErrID_Warn, "BeamDyn aero maps must have outputs at FEA nodes; this is different than time-series behavior.", ErrStat, ErrMsg, RoutineName )
+         p%BldMotionNodeLoc = BD_MESH_FE
+         call SetErrStat(ErrID_Fatal, "BeamDyn aero maps must have outputs at FEA nodes, which requires Gaussian quadrature. Update the input file.", ErrStat, ErrMsg, RoutineName )
+         return
+      end if
+   end if
 
    !...............................................
    ! Set start and end node index for each elements
@@ -986,6 +1030,7 @@ subroutine SetParameters(InitInp, InputFileData, p, ErrStat, ErrMsg)
          if (ErrStat >= AbortErrLev) return
 
       p%NdIndx(1) = 1
+      p%NdIndxInverse(1) = 1
       p%OutNd2NdElem(:,1) = 1 ! note this is an array
       indx = 2
       DO i=1,p%elem_total
@@ -1043,6 +1088,7 @@ subroutine SetParameters(InitInp, InputFileData, p, ErrStat, ErrMsg)
             if (ErrStat >= AbortErrLev) return
          
          p%NdIndx(1) = 1
+         p%NdIndxInverse(1) = 1
          p%OutNd2NdElem(:,1) = 1 ! note this is an array 
          indx = 2   
          DO i=1,p%elem_total
@@ -1063,22 +1109,16 @@ subroutine SetParameters(InitInp, InputFileData, p, ErrStat, ErrMsg)
    ! Physical damping flag and 6 damping coefficients
    !...............................................
    p%damp_flag  = InputFileData%InpBl%damp_flag
-   p%beta       = InputFileData%InpBl%beta
-
-   !...............................................
-   ! set parameters for pitch actuator:
-   !...............................................
-
-
-   !...............................................
-   ! Compute p%SP_Coef, coefficients for cubic spline fit, clamped at two ends
-   !...............................................
-
-   call ComputeSplineCoeffs(InputFileData, p%SP_Coef, ErrStat2, ErrMsg2)
-      CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
-      if (ErrStat >= AbortErrLev) then
-         return
-      end if
+   select case (p%damp_flag)
+   case (0) ! No damping
+   case (1) ! Stiffness-proportional damping
+      p%beta = InputFileData%InpBl%beta
+   case (2) ! Modal damping
+      p%zeta = InputFileData%InpBl%zeta
+   case default
+      call SetErrStat(ErrID_Fatal, "Invalid value for physical damping flag in input file.", ErrStat, ErrMsg, RoutineName )
+      return
+   end select
 
    !...............................................
    ! set parameters for File I/O data:
@@ -1091,7 +1131,7 @@ subroutine SetParameters(InitInp, InputFileData, p, ErrStat, ErrMsg)
 
    p%OutInputs = .false.  ! will get set to true in SetOutParam if we request the inputs as output values
 
-   call SetOutParam(InputFileData%OutList, p, ErrStat2, ErrMsg2 ) ! requires: p%NumOuts, p%NNodeOuts, p%UsePitchAct; sets: p%OutParam.
+   call SetOutParam(InputFileData%OutList, p, ErrStat2, ErrMsg2 ) ! requires: p%NumOuts, p%NNodeOuts; sets: p%OutParam.
       call setErrStat(ErrStat2,ErrMsg2,ErrStat,ErrMsg,RoutineName)
       if (ErrStat >= AbortErrLev) return
 
@@ -1103,9 +1143,10 @@ subroutine SetParameters(InitInp, InputFileData, p, ErrStat, ErrMsg)
 end subroutine SetParameters
 !-----------------------------------------------------------------------------------------------------------------------------------
 !> this routine initializes the outputs, y, that are used in the BeamDyn interface for coupling in the FAST framework.
-subroutine Init_y( p, u, y, ErrStat, ErrMsg)
+subroutine Init_y( p, OtherState, u, y, ErrStat, ErrMsg)
 
    type(BD_ParameterType),       intent(inout)  :: p                 !< Parameters  -- intent(out) only because it changes p%NdIndx
+   type(BD_OtherStateType),      intent(in   )  :: OtherState        !< Global rotations are stored in otherstate
    type(BD_InputType),           intent(inout)  :: u                 !< Inputs
    type(BD_OutputType),          intent(inout)  :: y                 !< Outputs
    integer(IntKi),               intent(  out)  :: ErrStat           !< Error status of the operation
@@ -1173,10 +1214,10 @@ subroutine Init_y( p, u, y, ErrStat, ErrMsg)
 
               temp_id = (j-1)*p%dof_node
 
-              Pos = p%GlbPos + MATMUL(p%GlbRot,p%uuN0(1:3,j,i))
+              Pos = OtherState%GlbPos + MATMUL(OtherState%GlbRot,p%uuN0(1:3,j,i))
 
                   ! possible type conversions here:
-              DCM = BDrot_to_FASTdcm(p%uuN0(4:6,j,i),p)
+              DCM = BDrot_to_FASTdcm(p%uuN0(4:6,j,i),p,OtherState)
 
                   ! set the reference position and orientation for each node.
               temp_id = (i-1)*p%nodes_per_elem+j
@@ -1251,10 +1292,11 @@ subroutine Init_y( p, u, y, ErrStat, ErrMsg)
 end subroutine Init_y
 !-----------------------------------------------------------------------------------------------------------------------------------
 !> this routine initializes the inputs, u, that are used in the BeamDyn interface for coupling in the FAST framework.
-subroutine Init_u( InitInp, p, u, ErrStat, ErrMsg )
+subroutine Init_u( InitInp, p, OtherState, u, ErrStat, ErrMsg )
 
    type(BD_InitInputType),       intent(in   )  :: InitInp           !< Input data for initialization routine
    type(BD_ParameterType),       intent(in   )  :: p                 !< Parameters
+   type(BD_OtherStateType),      intent(in   )  :: OtherState        !< Global rotations are stored in otherstate
    type(BD_InputType),           intent(inout)  :: u                 !< Inputs
    integer(IntKi),               intent(  out)  :: ErrStat           !< Error status of the operation
    character(*),                 intent(  out)  :: ErrMsg            !< Error message if ErrStat /= ErrID_None
@@ -1274,44 +1316,6 @@ subroutine Init_u( InitInp, p, u, ErrStat, ErrMsg )
    ErrStat = ErrID_None
    ErrMsg  = ""
 
-   !.................................
-   ! u%HubMotion (from ElastoDyn for pitch actuator)
-   !.................................
-
-   CALL MeshCreate( BlankMesh        = u%HubMotion        &
-                   ,IOS              = COMPONENT_INPUT    &
-                   ,NNodes           = 1                  &
-                   , TranslationDisp = .TRUE.             &
-                   , Orientation     = .TRUE.             &
-                   ,ErrStat          = ErrStat2           &
-                   ,ErrMess          = ErrMsg2            )
-      CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
-      if (ErrStat>=AbortErrLev) return
-
-      ! possible type conversions here:
-   DCM = InitInp%HubRot
-   Pos = InitInp%HubPos
-   CALL MeshPositionNode ( Mesh    = u%HubMotion          &
-                         , INode   = 1                    &
-                         , Pos     = Pos                  &
-                         , ErrStat = ErrStat2             &
-                         , ErrMess = ErrMsg2              &
-                         , Orient  = DCM                  )
-      CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
-
-   CALL MeshConstructElement ( Mesh = u%HubMotion         &
-                             , Xelement = ELEMENT_POINT   &
-                             , P1       = 1               &
-                             , ErrStat  = ErrStat2        &
-                             , ErrMess  = ErrMsg2         )
-      CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
-
-   CALL MeshCommit(u%HubMotion, ErrStat2, ErrMsg2)
-      CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
-
-      ! initial guesses
-   u%HubMotion%TranslationDisp(1:3,1) = 0.0_ReKi
-   u%HubMotion%Orientation(1:3,1:3,1) = InitInp%HubRot
 
    !.................................
    ! u%RootMotion (for coupling with ElastoDyn)
@@ -1332,8 +1336,8 @@ subroutine Init_u( InitInp, p, u, ErrStat, ErrMsg )
       if (ErrStat>=AbortErrLev) return
 
 
-   DCM = TRANSPOSE(p%GlbRot)
-   Pos = p%GlbPos
+   DCM = TRANSPOSE(OtherState%GlbRot)
+   Pos = OtherState%GlbPos
    CALL MeshPositionNode ( Mesh    = u%RootMotion &
                          , INode   = 1            &
                          , Pos     = Pos          &
@@ -1379,11 +1383,11 @@ subroutine Init_u( InitInp, p, u, ErrStat, ErrMsg )
 
    DO i=1,p%elem_total
        DO j=1,p%nodes_per_elem
-           POS = p%GlbPos(1:3) + MATMUL(p%GlbRot,p%uuN0(1:3,j,i))
+           POS = OtherState%GlbPos(1:3) + MATMUL(OtherState%GlbRot,p%uuN0(1:3,j,i))
 
             ! Note:  Here we can use this subroutine to get the DCM.  This is under the assumption
             !        that there is no rotational displacement yet, so x%q is zero
-           DCM = BDrot_to_FASTdcm(p%uuN0(4:6,j,i),p)
+           DCM = BDrot_to_FASTdcm(p%uuN0(4:6,j,i),p,OtherState)
 
            temp_id = (i-1)*(p%nodes_per_elem-1)+j
            CALL MeshPositionNode ( Mesh    = u%PointLoad  &
@@ -1436,11 +1440,11 @@ subroutine Init_u( InitInp, p, u, ErrStat, ErrMsg )
    DO i=1,p%elem_total
       DO j=1,p%nqp      !NOTE: if we add multi-element to trap, we will need to change this.
          temp_id = (i-1)*p%nqp + j + p%qp_indx_offset            ! Index to a node within element i
-         Pos(1:3) = p%GlbPos(1:3) + MATMUL(p%GlbRot,p%uu0(1:3,j,i))
+         Pos(1:3) = OtherState%GlbPos(1:3) + MATMUL(OtherState%GlbRot,p%uu0(1:3,j,i))
 
             ! Note:  Here we can use this subroutine to get the DCM.  This is under the assumption
             !        that there is no rotational displacement yet, so m%qp%uuu is zero
-         DCM = BDrot_to_FASTdcm(p%uu0(4:6,j,i),p)
+         DCM = BDrot_to_FASTdcm(p%uu0(4:6,j,i),p,OtherState)
 
          CALL MeshPositionNode ( Mesh    = u%DistrLoad  &
                                 ,INode   = temp_id     &
@@ -1455,8 +1459,8 @@ subroutine Init_u( InitInp, p, u, ErrStat, ErrMsg )
       ! For Gauss quadrature, an additional node is added to the end.
    IF (p%quadrature .EQ. GAUSS_QUADRATURE) THEN
          ! First node
-      Pos(1:3) = p%GlbPos(1:3) + MATMUL(p%GlbRot,p%uuN0(1:3,1,1))
-      DCM = BDrot_to_FASTdcm(p%uuN0(4:6,1,1),p)
+      Pos(1:3) = OtherState%GlbPos(1:3) + MATMUL(OtherState%GlbRot,p%uuN0(1:3,1,1))
+      DCM = BDrot_to_FASTdcm(p%uuN0(4:6,1,1),p,OtherState)
       CALL MeshPositionNode ( Mesh    = u%DistrLoad  &
                              ,INode   = 1            &
                              ,Pos     = Pos          &
@@ -1466,8 +1470,8 @@ subroutine Init_u( InitInp, p, u, ErrStat, ErrMsg )
         CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
   
          ! Last node 
-      Pos(1:3) = p%GlbPos(1:3) + MATMUL(p%GlbRot,p%uuN0(1:3,p%nodes_per_elem,p%elem_total))
-      DCM = BDrot_to_FASTdcm(p%uuN0(4:6,p%nodes_per_elem,p%elem_total),p)
+      Pos(1:3) = OtherState%GlbPos(1:3) + MATMUL(OtherState%GlbRot,p%uuN0(1:3,p%nodes_per_elem,p%elem_total))
+      DCM = BDrot_to_FASTdcm(p%uuN0(4:6,p%nodes_per_elem,p%elem_total),p,OtherState)
       CALL MeshPositionNode ( Mesh    = u%DistrLoad  &
                              ,INode   = NNodes       &
                              ,Pos     = Pos          &
@@ -1588,7 +1592,7 @@ subroutine Init_MiscVars( p, u, y, m, ErrStat, ErrMsg )
 
          ! Array for storing the position information for the quadrature points.
       CALL AllocAry(m%qp%uuu,              p%dof_node  ,p%nqp,p%elem_total,                  'm%qp%uuu displacement at quadrature point',ErrStat2,ErrMsg2); CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
-      CALL AllocAry(m%qp%uup,              p%dof_node/2,p%nqp,p%elem_total,                  'm%qp%uup displacement prime at quadrature point',ErrStat2,ErrMsg2); CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
+      CALL AllocAry(m%qp%uup,              p%dof_node  ,p%nqp,p%elem_total,                  'm%qp%uup displacement prime at quadrature point',ErrStat2,ErrMsg2); CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
       CALL AllocAry(m%qp%vvv,              p%dof_node  ,p%nqp,p%elem_total,                  'm%qp%vvv velocity at quadrature point',ErrStat2,ErrMsg2); CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
       CALL AllocAry(m%qp%vvp,              p%dof_node  ,p%nqp,p%elem_total,                  'm%qp%vvp velocity prime at quadrature point',ErrStat2,ErrMsg2); CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
       CALL AllocAry(m%qp%aaa,              p%dof_node  ,p%nqp,p%elem_total,                  'm%qp%aaa acceleration at quadrature point',ErrStat2,ErrMsg2); CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
@@ -1598,6 +1602,7 @@ subroutine Init_MiscVars( p, u, y, m, ErrStat, ErrMsg )
          ! E1, kappa -- used in force calculations
       CALL AllocAry(m%qp%E1,               p%dof_node/2,p%nqp,p%elem_total,                  'm%qp%E1    at quadrature point',ErrStat2,ErrMsg2); CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
       CALL AllocAry(m%qp%kappa,            p%dof_node/2,p%nqp,p%elem_total,                  'm%qp%kappa at quadrature point',ErrStat2,ErrMsg2); CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
+      CALL AllocAry(m%qp%strain,           p%dof_node  ,p%nqp,p%elem_total,                  'm%qp%strain at quadrature point',ErrStat2,ErrMsg2); CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
       CALL AllocAry(m%qp%RR0,              3,3,         p%nqp,p%elem_total,                  'm%qp%RR0 at quadrature point',ErrStat2,ErrMsg2); CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
       CALL AllocAry(m%qp%Stif,             6,6,         p%nqp,p%elem_total,                  'm%qp%Stif at quadrature point',ErrStat2,ErrMsg2); CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
 
@@ -1617,7 +1622,7 @@ subroutine Init_MiscVars( p, u, y, m, ErrStat, ErrMsg )
          ! Inertial force terms
       CALL AllocAry(m%qp%Gi,               6,6,         p%nqp,p%elem_total,                  'm%qp%Gi gyroscopic at quadrature point',ErrStat2,ErrMsg2); CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
       CALL AllocAry(m%qp%Ki,               6,6,         p%nqp,p%elem_total,                  'm%qp%Ki stiffness at quadrature point',ErrStat2,ErrMsg2); CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
-      CALL AllocAry(m%qp%Mi,               6,6,         p%nqp,p%elem_total,                  'm%qp%Mi mass at quadrature point',ErrStat2,ErrMsg2); CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
+      CALL AllocAry(m%qp%Mi,    p%nqp,     6,6,               p%elem_total,                  'm%qp%Mi mass at quadrature point',ErrStat2,ErrMsg2); CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
 
          ! Elastic force terms: \f$ \underline{\underline{\mathcal{O}}} \f$, etc. from equation (19-21) of NREL CP-2C00-60759.
       CALL AllocAry(m%qp%Oe,               6,6,         p%nqp,p%elem_total,                  'm%qp%Oe term at quadrature point',ErrStat2,ErrMsg2); CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
@@ -1678,16 +1683,35 @@ subroutine Init_MiscVars( p, u, y, m, ErrStat, ErrMsg )
    CALL BD_CopyInput(u, m%u, MESH_NEWCOPY, ErrStat2, ErrMsg2)
       CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
 
-   CALL BD_CopyInput(u, m%u2, MESH_NEWCOPY, ErrStat2, ErrMsg2)
-      CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
+   ! compute mapping of applied distributed loads to the root location
+   ! NOTE: PtLoads are not handled at present. See comments in BeamDyn_IO.f90 for changes required.
+   if (p%CompAppliedLdAtRoot .and. p%BldMotionNodeLoc == BD_MESH_QP) then
+      ! create point mesh at root (cousin of rootmotion) 
+      CALL MeshCopy( SrcMesh   = u%RootMotion     &
+                    , DestMesh = m%LoadsAtRoot    &
+                    , CtrlCode = MESH_COUSIN      &
+                    , IOS      = COMPONENT_OUTPUT &
+                    , Force    = .TRUE.           &
+                    , Moment   = .TRUE.           &
+                    , ErrStat  = ErrStat2         &
+                    , ErrMess  = ErrMsg2          )
+         CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
+         if (ErrStat>=AbortErrLev) RETURN
 
+      ! mapping of distributed loads to LoadsAtRoot
+      CALL MeshMapCreate( u%DistrLoad, m%LoadsAtRoot, m%Map_u_DistrLoad_to_R, ErrStat2, ErrMsg2 )
+         CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
+      m%LoadsAtRoot%remapFlag = .false.
+
+   endif
 
 end subroutine Init_MiscVars
 !-----------------------------------------------------------------------------------------------------------------------------------
 !> this subroutine initializes the other states.
-subroutine Init_OtherStates( p, OtherState, ErrStat, ErrMsg )
+subroutine Init_OtherStates( u, p, OtherState, ErrStat, ErrMsg )
+   type(BD_InputType),           intent(in   )  :: u                 !< inputs (need new root location)
    type(BD_ParameterType),       intent(in   )  :: p                 !< Parameters
-   type(BD_OtherStateType),      intent(inout)  :: OtherState        !< Other states
+   type(BD_OtherStateType),      intent(inout)  :: OtherState        !< Other states (inout since reference info from GlbRot is stored here)
    integer(IntKi),               intent(  out)  :: ErrStat           !< Error status of the operation
    character(*),                 intent(  out)  :: ErrMsg            !< Error message if ErrStat /= ErrID_None
 
@@ -1718,13 +1742,17 @@ subroutine Init_OtherStates( p, OtherState, ErrStat, ErrMsg )
    ! BJJ: not sure this should be used in CalcOutput when we are calculating Jacobians (this will alter the operating point of the continuous state)
    OtherState%RunQuasiStaticInit = .FALSE.
    
+   ! set the global position information -- u must be in the global frame for the SetRefFrame routine
+   call SetRefFrame(u, OtherState%GlbPos, OtherState%GlbRot, OtherState%Glb_Crv, ErrStat2,ErrMsg2);  CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
+
 end subroutine Init_OtherStates
 !-----------------------------------------------------------------------------------------------------------------------------------
 !> this subroutine initializes the continuous states.
-subroutine Init_ContinuousStates( p, u, x, ErrStat, ErrMsg )
+subroutine Init_ContinuousStates( p, u, x, OtherState, ErrStat, ErrMsg )
    type(BD_ParameterType),       intent(inout)  :: p                 !< Parameters !sets the copy-of-state values
    type(BD_InputType),           intent(inout)  :: u                 !< Inputs  !intent(out) because of mesh copy, otherwise not changed
    type(BD_ContinuousStateType), intent(inout)  :: x                 !< Continuous states
+   type(BD_OtherStateType),      intent(in   )  :: OtherState        !< Other states (contains refrence frame info)
    integer(IntKi),               intent(  out)  :: ErrStat           !< Error status of the operation
    character(*),                 intent(  out)  :: ErrMsg            !< Error message if ErrStat /= ErrID_None
 
@@ -1759,11 +1787,11 @@ subroutine Init_ContinuousStates( p, u, x, ErrStat, ErrMsg )
       end if
 
       ! convert to BeamDyn-internal system inputs, u_tmp:
-   CALL BD_InputGlobalLocal(p,u_tmp)
+   CALL BD_InputGlobalLocal(p,OtherState,u_tmp)
 
 
       ! initialize states, given parameters and initial inputs (in BD coordinates)
-   CALL BD_CalcIC_Position(u_tmp,p,x, ErrStat2, ErrMsg2)
+   CALL BD_CalcIC_Position(u_tmp,p,x,OtherState, ErrStat2, ErrMsg2)
      CALL SetErrStat(ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName)
    CALL BD_CalcIC_Velocity(u_tmp,p,x)
    CALL Cleanup()
@@ -1774,6 +1802,188 @@ CONTAINS
       END SUBROUTINE cleanup
 END SUBROUTINE Init_ContinuousStates
 
+
+!-----------------------------------------------------------------------------------------------------------------------------------
+!> This routine initializes modal damping.
+SUBROUTINE Init_ModalDamping(InitInp, x, OtherState, p, m, ErrStat, ErrMsg)
+
+   TYPE(BD_InitInputType),          INTENT(IN   )  :: InitInp     !< Input data for initialization routine
+   TYPE(BD_ContinuousStateType),    INTENT(IN   )  :: x           !< Continuous states at t on input at t + dt on output
+   type(BD_OtherStateType),         INTENT(IN   )  :: OtherState        !< Global rotations are stored in otherstate
+   TYPE(BD_ParameterType),          INTENT(INOUT)  :: p           !< Parameters, output modal damping matrix in original frame here
+   TYPE(BD_MiscVarType),            INTENT(INOUT)  :: m           !< misc/optimization variables
+   INTEGER(IntKi),                  INTENT(  OUT)  :: ErrStat
+   CHARACTER(*),                    INTENT(  OUT)  :: ErrMsg
+
+   CHARACTER(*), PARAMETER                   :: RoutineName = 'Init_ModalDamping'
+   INTEGER(IntKi)                            :: ErrStat2
+   CHARACTER(ErrMsgLen)                      :: ErrMsg2
+   INTEGER(IntKi)                            :: nDOF
+   INTEGER(IntKi)                            :: j, k                 ! looping indexing variable
+   INTEGER(IntKi)                            :: numZeta              ! number of damping values
+   REAL(R8Ki)                                :: Zj                   ! diagonal element of the modal damping matrix
+   REAL(R8Ki), ALLOCATABLE                   :: eigenvectors(:, :)   ! mode shapes
+   REAL(R8Ki), ALLOCATABLE                   :: omega(:)             ! modal frequencies (rad/s)
+   REAL(R8Ki), ALLOCATABLE                   :: phiT_M(:, :)         ! mode shapes transpose times mass matrix
+   REAL(R8Ki), ALLOCATABLE                   :: phi0T_M_phi0(:, :)   ! normalization calculation of mass matrix
+   REAL(R8Ki), ALLOCATABLE                   :: StifK(:,:)           ! Copy of stiffness matrix for eigenanalysis (modified during solve)
+   REAL(R8Ki), ALLOCATABLE                   :: MassM(:,:)           ! Copy of mass matrix for eigenanalysis (modified during solve)
+   real(R8Ki)                                :: NodeRot(3, 3)
+
+   ErrStat = ErrID_None
+   ErrMsg  = ''
+
+   numZeta = size(p%zeta)
+
+   ! 0. Setup quadrature points
+   CALL BD_QuadraturePointData(p, x, m)
+
+   ! 1. Generates K, M Matrices
+   ! These go into 'm%StifK' and 'm%MassM'
+   CALL BD_GenerateDynamicElementGA2( x, OtherState, p, m, .TRUE.)
+
+   ! 2. Copy lines from 'BD_CalcForceAcc' for M, K -> 2D and apply Boundary conditions
+   ! Full mass matrix (n_dof, n_dof)
+   m%LP_MassM = reshape(m%MassM, [p%dof_total, p%dof_total])
+
+   ! Mass matrix for free nodes
+   m%LP_MassM_LU = m%LP_MassM(7:p%dof_total, 7:p%dof_total)
+
+   ! Full stiffness matrix (n_dof, n_dof)
+   m%LP_StifK = reshape(m%StifK, [p%dof_total, p%dof_total])
+
+   ! Stiffness matrix for free nodes
+   m%LP_StifK_LU = m%LP_StifK(7:p%dof_total, 7:p%dof_total)
+
+   ! 3. Do eigenanalysis
+   ! For now, calculate all eigenpairs
+   nDOF = p%dof_total - 6
+
+   ! Allocate eigenvector matrix and eigenvalue arrays
+   call AllocAry(eigenvectors, nDOF, nDOF, 'eigenvectors', ErrStat2, ErrMsg2); if (Failed()) return
+   call AllocAry(omega, nDOF, 'omega', ErrStat2, ErrMsg2); if (Failed()) return
+   call AllocAry(StifK, nDOF, nDOF, 'StifK', ErrStat2, ErrMsg2); if (Failed()) return
+   call AllocAry(MassM, nDOF, nDOF, 'MassM', ErrStat2, ErrMsg2); if (Failed()) return
+
+   ! EigenSolve modifies the input matrices, so make copies before calling
+   StifK = m%LP_StifK_LU
+   MassM = m%LP_MassM_LU
+   call EigenSolve(StifK, MassM, nDOF, .TRUE., eigenvectors, omega, ErrStat2, ErrMsg2); if (Failed()) return
+
+   ! Mass-normalize the mode shapes
+   call AllocAry(phi0T_M_phi0, nDOF, nDOF, 'phi0T_M_phi0', ErrStat2, ErrMsg2); if (Failed()) return
+
+   phi0T_M_phi0 = matmul(transpose(eigenvectors), matmul(m%LP_MassM_LU, eigenvectors))
+
+   do j = 1, nDOF
+      eigenvectors(:, j) = eigenvectors(:, j) / sqrt(phi0T_M_phi0(j, j))
+   end do
+
+   ! 4. Generate damping matrix in original frame
+   call AllocAry(phiT_M, nDOF, nDOF, 'phiT_M', ErrStat2, ErrMsg2); if (Failed()) return
+
+   phiT_M = matmul(transpose(eigenvectors), m%LP_MassM_LU) ! after normalization
+
+   call AllocAry(p%ModalDampingMat, nDOF, nDOF, 'p%ModalDampingMat', ErrStat2, ErrMsg2); if (Failed()) return
+
+   do j = 1, nDOF
+
+      if( j <= numZeta) then
+         Zj = 2.0_R8Ki * omega(j) * p%zeta(j)
+      else
+         ! Stiffness proportional damping is used past the last prescribed value
+         ! at a rate equal to the last prescribed value.
+         Zj = 2.0_R8Ki * omega(j) * (p%zeta(numZeta) * omega(j) / omega(numZeta))
+      endif
+
+      p%ModalDampingMat(j, :) = Zj * phiT_M(j, :)
+   end do
+
+   p%ModalDampingMat = matmul(transpose(phiT_M), p%ModalDampingMat)
+
+   ! Apply the rotation of q here. When the actual dynamics are at the same position
+   ! as this, then this cancels with a rotation applied at the modal damping force.
+   ! Transforms as a tensor, so pre and post multiply by nodal rotations.
+   do j = 2, p%node_total
+
+      ! Loop over the nodes that apply to the damping matrix, so don't include the root node.
+      call BD_CrvMatrixR(x%q(4:6, j), NodeRot)
+      
+      k = (j-2)*6
+      p%ModalDampingMat(:, k+1:k+3) = matmul(p%ModalDampingMat(:, k+1:k+3), NodeRot)
+      p%ModalDampingMat(:, k+4:k+6) = matmul(p%ModalDampingMat(:, k+4:k+6), NodeRot)
+   end do
+   do j = 2, p%node_total
+
+      ! Loop over the nodes that apply to the damping matrix, so don't include the root node.
+      call BD_CrvMatrixR(x%q(4:6, j), NodeRot)
+      
+      k = (j-2)*6
+      p%ModalDampingMat(k+1:k+3, :) = matmul(transpose(NodeRot), p%ModalDampingMat(k+1:k+3, :))
+      p%ModalDampingMat(k+4:k+6, :) = matmul(transpose(NodeRot), p%ModalDampingMat(k+4:k+6, :))
+   end do
+
+   call CalcModalParticipation()
+
+   ! Allocate memory for the velocity vector that will be multiplied by the modal damping matrix
+   call AllocAry(m%DampedVelocities, nDOF, 'DampedVelocities', ErrStat2, ErrMsg2); if (Failed()) return
+
+   ! Allocate memory for the velocity vector that will be multiplied by the modal damping matrix
+   call AllocAry(m%ModalDampingF, nDOF, 'ModalDampingF', ErrStat2, ErrMsg2); if (Failed()) return
+
+   call AllocAry(m%RotatedDamping, nDOF, nDOF, 'RotatedDamping', ErrStat2, ErrMsg2); if (Failed()) return
+
+contains
+
+   logical function Failed()
+      call SetErrStat(ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName)
+      Failed =  ErrStat >= AbortErrLev
+   end function Failed
+
+   subroutine CalcModalParticipation()
+
+      REAL(R8Ki), ALLOCATABLE                   :: modal_participation (:, :) ! Modal participation factor
+      INTEGER(IntKi)                            :: bdModesFile ! Unit numbers for file with BD modes
+
+      ! Theory based on Abaqus documentation
+      ! Only using rotational DOFs for rotations and not including
+      ! contributions from translations
+
+      CALL AllocAry(modal_participation, nDOF, 6, 'modal_participation', ErrStat2, ErrMsg2)
+      CALL SetErrStat(ErrStat2, ErrMsg2, ErrStat, ErrMsg, 'Init_ModalDamping')
+
+      do j = 1, 6
+         modal_participation(:, j) = sum(phiT_M(:, j::6)*phiT_M(:, j::6), dim=2)
+      end do
+
+      ! Write to a file
+      CALL GetNewUnit(bdModesFile)
+      open(unit=bdModesFile, file=TRIM( InitInp%RootName )//'.modes.csv')
+
+      write(bdModesFile,*) '#Frequency [Hz], Zeta [Frac. Critical],'// &
+                           'Participation X, Participation Y, Participation Z,'// &
+                           'Participation RX, Participation RY, Participation RZ'
+
+      ! Loop over modes to output
+      do j = 1, nDOF
+
+         if( j <= numZeta) then
+            Zj = p%zeta(j)
+         else
+            ! Stiffness proportional damping is used past the last prescribed value
+            ! at a rate equal to the last prescribed value.
+            Zj = (p%zeta(numZeta) * omega(j) / omega(numZeta))
+         endif
+
+         write(bdModesFile, ' (1F12.4,1F12.8,6E14.5) ') omega(j)/TwoPi_D, &
+            Zj, modal_participation(j, :) / sum(modal_participation(j, :))
+      end do
+
+      close(bdModesFile)
+
+   END SUBROUTINE
+
+END SUBROUTINE
 
 !-----------------------------------------------------------------------------------------------------------------------------------
 !> This routine is called at the end of the simulation.
@@ -1849,17 +2059,22 @@ SUBROUTINE BD_UpdateStates( t, n, u, utimes, p, x, xd, z, OtherState, m, ErrStat
    INTEGER(IntKi),                  INTENT(  OUT) :: ErrStat    !< Error status of the operation
    CHARACTER(*),                    INTENT(  OUT) :: ErrMsg     !< Error message if ErrStat /= ErrID_None
 
-
+   INTEGER(IntKi)                                 :: ErrStat2   ! Temporary Error status
+   CHARACTER(ErrMsgLen)                           :: ErrMsg2    ! Temporary Error message
 
    ! Initialize ErrStat
-
    ErrStat = ErrID_None
    ErrMsg  = ""
 
    IF(p%analysis_type /= BD_STATIC_ANALYSIS) THEN ! dynamic analysis
-       CALL BD_GA2( t, n, u, utimes, p, x, xd, z, OtherState, m, ErrStat, ErrMsg )
+      CALL BD_GA2( t, n, u, utimes, p, x, xd, z, OtherState, m, ErrStat2, ErrMsg2 )
+      call SetErrStat(ErrStat2,ErrMsg2,ErrStat,ErrMsg,'');  if (ErrStat >= AbortErrLev) return
+
+      ! change reference frame to root motion at t=T+DT (u(1)%RootMotionMesh)
+      call BD_UpdateGlobalRef(u(1),p,x,OtherState,ErrStat2,ErrMsg2)
+      call SetErrStat(ErrStat2,ErrMsg2,ErrStat,ErrMsg,'')
    ELSE !IF(p%analysis_type == BD_STATIC_ANALYSIS) THEN
-       CALL BD_Static( t, u, utimes, p, x, OtherState, m, ErrStat, ErrMsg )
+      CALL BD_Static( t, u, utimes, p, x, OtherState, m, ErrStat, ErrMsg )
    ENDIF
 
 END SUBROUTINE BD_UpdateStates
@@ -1891,45 +2106,31 @@ SUBROUTINE BD_CalcOutput( t, u, p, x, xd, z, OtherState, y, m, ErrStat, ErrMsg, 
    INTEGER(IntKi)                               :: ErrStat2                     ! Temporary Error status
    CHARACTER(ErrMsgLen)                         :: ErrMsg2                      ! Temporary Error message
    CHARACTER(*), PARAMETER                      :: RoutineName = 'BD_CalcOutput'
-   LOGICAL                                      :: CalcWriteOutput
+   LOGICAL                                      :: IsFullLin
 
-   
    ! Initialize ErrStat
-
    ErrStat = ErrID_None
    ErrMsg  = ""
    AllOuts = 0.0_ReKi
    
    if (present(NeedWriteOutput)) then
-      CalcWriteOutput = NeedWriteOutput
+      IsFullLin = NeedWriteOutput
    else
-      CalcWriteOutput = .true. ! by default, calculate WriteOutput unless told that we do not need it
+      IsFullLin = .true. ! by default, calculate WriteOutput unless told that we do not need it
    end if
 
       ! Since x is passed in, but we need to update it, we must work with a copy.
    CALL BD_CopyContState(x, x_tmp, MESH_NEWCOPY, ErrStat2, ErrMsg2)
       CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
 
-      ! we may change the inputs (u) by applying the pitch actuator, so we will use m%u in this routine
+      ! We need to convert the inputs (u) to BD coordinates, so we will use m%u in this routine
    CALL BD_CopyInput(u, m%u, MESH_UPDATECOPY, ErrStat2, ErrMsg2)
-      CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
-
-   ! Actuator
-   IF( p%UsePitchAct ) THEN
-       CALL PitchActuator_SetBC(p, m%u, xd, AllOuts)
-   ENDIF
-   ! END Actuator
-
-
-   CALL BD_CopyInput(m%u, m%u2, MESH_UPDATECOPY, ErrStat2, ErrMsg2) ! this is a copy of the inputs after the pitch actuator has been applied, but before converting to BD coordinates. will use this for computing WriteOutput values.
       CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
 
       if (ErrStat >= AbortErrLev) then
          call cleanup()
          return
       end if
-
-
 
       ! We are trying to use quasistatic solve with loads, but do not know the input loads during initialization (no mesh yet).
       ! So, we need to rerun the solve routine to set the states at T=0 for the outputs to make sense.
@@ -1954,14 +2155,15 @@ SUBROUTINE BD_CalcOutput( t, u, p, x, xd, z, OtherState, y, m, ErrStat, ErrMsg, 
 
 
       ! convert to BD coordinates and apply boundary conditions 
-   CALL BD_InputGlobalLocal(p,m%u)
+   CALL BD_InputGlobalLocal(p,OtherState,m%u)
 
       ! Copy over the DistrLoads
    CALL BD_DistrLoadCopy( p, m%u, m )
 
       ! Incorporate boundary conditions (note that we are doing this because the first node isn't really a state. should fix x so we don't need a temp copy here.)
-   x_tmp%q(   1:3,1) = m%u%RootMotion%TranslationDisp(:,1)
-   CALL ExtractRelativeRotation(m%u%RootMotion%Orientation(:,:,1),p, x_tmp%q(   4:6,1), ErrStat2, ErrMsg2)
+   x_tmp%q(1:3,1) = m%u%RootMotion%TranslationDisp(:,1) + &
+                    matmul(m%u%RootMotion%Position(:,1) - OtherState%GlbPos, OtherState%GlbRot)
+   CALL ExtractRelativeRotation(m%u%RootMotion%Orientation(:,:,1), p, OtherState, x_tmp%q(   4:6,1), ErrStat2, ErrMsg2)
       CALL SetErrStat(ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName)
       if (ErrStat >= AbortErrLev) return
    x_tmp%dqdt(1:3,1) = m%u%RootMotion%TranslationVel(:,1)
@@ -1977,39 +2179,39 @@ SUBROUTINE BD_CalcOutput( t, u, p, x, xd, z, OtherState, y, m, ErrStat, ErrMsg, 
       CALL BD_QPDataVelocity( p, x_tmp, m )           ! x%dqdt --> m%qp%vvv, m%qp%vvp
 
       ! calculate accelerations and reaction loads (in m%RHS):
-      CALL BD_CalcForceAcc(m%u, p, m, ErrStat2,ErrMsg2)
+      CALL BD_CalcForceAcc(m%u, p, x, OtherState, m, ErrStat2,ErrMsg2)
           CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
 
    ELSE
          ! Calculate the elastic forces for the static case.
       DO nelem=1,p%elem_total
-         CALL BD_StaticElementMatrix( nelem, p%gravity, p, m )
+         CALL BD_StaticElementMatrix( nelem, MATMUL(p%gravity,OtherState%GlbRot), p, m )
       ENDDO
 
    ENDIF
 
       ! Calculate internal forces and moments
-   CALL BD_InternalForceMoment( x, p, m )
+   CALL BD_InternalForceMoment( x_tmp, OtherState, p, m )
 
       ! Transfer the FirstNodeReaction forces to the output ReactionForce
-   y%ReactionForce%Force(:,1)    =  MATMUL(p%GlbRot,m%FirstNodeReactionLclForceMoment(1:3))
-   y%ReactionForce%Moment(:,1)   =  MATMUL(p%GlbRot,m%FirstNodeReactionLclForceMoment(4:6))
+   y%ReactionForce%Force(:,1)    =  MATMUL(OtherState%GlbRot,m%FirstNodeReactionLclForceMoment(1:3))
+   y%ReactionForce%Moment(:,1)   =  MATMUL(OtherState%GlbRot,m%FirstNodeReactionLclForceMoment(4:6))
 
 
        ! set y%BldMotion fields:
-   CALL Set_BldMotion_Mesh( p, m%u2, x, m, y)
+   CALL Set_BldMotion_Mesh( p, u, x_tmp, OtherState, m, y)
 
    !-------------------------------------------------------
    !  compute RootMxr and RootMyr for ServoDyn and
    !  get values to output to file:
    !-------------------------------------------------------
-   call Calc_WriteOutput( p, AllOuts, y, m, ErrStat2, ErrMsg2, CalcWriteOutput )  !uses m%u2
+   call Calc_WriteOutput( u, p, AllOuts, y, m, ErrStat2, ErrMsg2, IsFullLin )
       CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
 
    y%RootMxr = AllOuts( RootMxr )
    y%RootMyr = AllOuts( RootMyr )
 
-   if (CalcWriteOutput) then
+   if (IsFullLin) then
       !...............................................................................................................................
       ! Place the selected output channels into the WriteOutput(:) array with the proper sign:
       !...............................................................................................................................
@@ -2024,7 +2226,7 @@ SUBROUTINE BD_CalcOutput( t, u, p, x, xd, z, OtherState, y, m, ErrStat, ErrMsg, 
          y%WriteOutput(p%NumOuts+1:) = 0.0_ReKi
 
             ! Now we need to populate the blade node outputs here
-         call Calc_WriteBldNdOutput( p, m, y, ErrStat2, ErrMsg2 )   ! Call after normal writeoutput.  Will just postpend data on here.
+          call Calc_WriteBldNdOutput( u, p, OtherState, m, y, ErrStat2, ErrMsg2 )   ! Call after normal writeoutput.  Will just postpend data on here.
             CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
       ENDIF
    end if
@@ -2072,14 +2274,8 @@ SUBROUTINE BD_CalcContStateDeriv( t, u, p, x, xd, z, OtherState, m, dxdt, ErrSta
       CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
       if (ErrStat >= AbortErrLev) return
 
-   ! Actuator
-   !!!IF( p%UsePitchAct ) THEN
-   !!!    CALL PitchActuator_SetBC(p, m%u, xd, AllOuts)
-   !!!ENDIF
-   ! END Actuator
-
       ! convert to BD coordinates and apply boundary conditions 
-   CALL BD_InputGlobalLocal(p,m%u)
+   CALL BD_InputGlobalLocal(p,OtherState,m%u)
 
       ! Copy over the DistrLoads
    CALL BD_DistrLoadCopy( p, m%u, m )
@@ -2089,11 +2285,13 @@ SUBROUTINE BD_CalcContStateDeriv( t, u, p, x, xd, z, OtherState, m, dxdt, ErrSta
    CALL BD_CopyContState(x, dxdt, MESH_UPDATECOPY, ErrStat2, ErrMsg2)
       CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
       
-   dxdt%q(   1:3,1) = m%u%RootMotion%TranslationDisp(:,1)
-   CALL ExtractRelativeRotation(m%u%RootMotion%Orientation(:,:,1),p, dxdt%q(   4:6,1), ErrStat2, ErrMsg2)
+   ! Root displacement is relative to the GlbPos at time T, which is simply the difference between
+   ! the previous root position (GlbPos) and the new extrapolated position (Pos+TransDisp)
+   dxdt%q(1:3,1) = m%u%RootMotion%TranslationDisp(:,1) + &
+                    matmul(m%u%RootMotion%Position(:,1) - OtherState%GlbPos, OtherState%GlbRot)
+   CALL ExtractRelativeRotation(m%u%RootMotion%Orientation(:,:,1), p, OtherState, dxdt%q(4:6,1), ErrStat2, ErrMsg2)
       CALL SetErrStat(ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName)
       if (ErrStat >= AbortErrLev) return
-  !dxdt%q(   4:6,1) = ExtractRelativeRotation(m%u%RootMotion%Orientation(:,:,1),p)
    dxdt%dqdt(1:3,1) = m%u%RootMotion%TranslationVel(:,1)
    dxdt%dqdt(4:6,1) = m%u%Rootmotion%RotationVel(:,1)
 
@@ -2105,7 +2303,7 @@ SUBROUTINE BD_CalcContStateDeriv( t, u, p, x, xd, z, OtherState, m, dxdt, ErrSta
    CALL BD_QPDataVelocity( p, dxdt, m )           ! x%dqdt --> m%qp%vvv, m%qp%vvp
 
    ! calculate accelerations and reaction loads (in m%RHS):
-   CALL BD_CalcForceAcc(m%u, p, m, ErrStat2,ErrMsg2)
+   CALL BD_CalcForceAcc(m%u, p, x, OtherState, m, ErrStat2,ErrMsg2)
       CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
       if (ErrStat >= AbortErrLev) return
       
@@ -2138,9 +2336,6 @@ SUBROUTINE BD_UpdateDiscState( t, n, u, p, x, xd, z, OtherState, m, ErrStat, Err
    CHARACTER(*),                      INTENT(  OUT)  :: ErrMsg      !< Error message if ErrStat /= ErrID_None
 
    ! local variables
-   REAL(BDKi)                                        :: temp_R(3,3)
-   REAL(BDKi)                                        :: Hub_theta_Root(3)
-   REAL(BDKi)                                        :: u_theta_pitch
 
       ! Initialize ErrStat
 
@@ -2148,20 +2343,6 @@ SUBROUTINE BD_UpdateDiscState( t, n, u, p, x, xd, z, OtherState, m, ErrStat, Err
       ErrMsg  = ""
 
       ! Update discrete states here:
-
-! Actuator
-   IF( p%UsePitchAct ) THEN
-      !bjj: note that we've cheated a bit here because we have inputs at t+dt
-       temp_R = MATMUL(u%RootMotion%Orientation(:,:,1),TRANSPOSE(u%HubMotion%Orientation(:,:,1)))
-       Hub_theta_Root = EulerExtract(temp_R)
-       u_theta_pitch = -Hub_theta_Root(3)
-
-       xd%thetaP  = p%torqM(1,1)*xd%thetaP + p%torqM(1,2)*xd%thetaPD + p%torqM(1,2)*(p%pitchK*p%dt/p%pitchJ)*(-Hub_theta_Root(3))
-       xd%thetaPD = p%torqM(2,1)*xd%thetaP + p%torqM(2,2)*xd%thetaPD + p%torqM(2,2)*(p%pitchK*p%dt/p%pitchJ)*(-Hub_theta_Root(3))
-
-
-   ENDIF
-! END Actuator
 
 END SUBROUTINE BD_UpdateDiscState
 
@@ -2204,7 +2385,7 @@ SUBROUTINE BD_QuadraturePointDataAt0( p )
 
    DO nelem = 1,p%elem_total
        DO idx_qp = 1,p%nqp
-            !> ### Calculate the the initial displacement fields in an element
+            !> ### Calculate the initial displacement fields in an element
             !! Initial displacement field \n
             !!    \f$   \underline{u_0}\left( \xi \right) =
             !!                \sum_{k=1}^{p+1} h^k\left( \xi \right) \underline{\hat{u}_0}^k
@@ -2287,48 +2468,44 @@ SUBROUTINE BD_DisplacementQP( nelem, p, x, m )
    TYPE(BD_ContinuousStateType), INTENT(IN   )  :: x                 !< Continuous states at t
    TYPE(BD_MiscVarType),         INTENT(INOUT)  :: m                 !< misc/optimization variables
 
+   INTEGER(IntKi)                :: ErrStat           !< index to current element
+   CHARACTER(ErrMsgLen)          :: ErrMsg            !< index to current element
    INTEGER(IntKi)                :: idx_qp            !< index to the current quadrature point
    INTEGER(IntKi)                :: elem_start        !< Node point of first node in current element
-   INTEGER(IntKi)                :: idx_node
-   CHARACTER(*), PARAMETER       :: RoutineName = 'BD_DisplacementQP'
 
+   !> ### Calculate the displacement fields in an element
+   !! Using equations (27) and (28) \n
+   !!    \f$   \underline{u}\left( \xi \right) =
+   !!                \sum_{i=1}^{p+1} h^i\left( \xi \right) \underline{\hat{u}}^i
+   !!    \f$ \n
+   !! and \n
+   !!    \f$   \underline{u}^\prime \left( \xi \right) =
+   !!                \sum_{k=1}^{p+1} h^{k\prime} \left( \xi \right) \underline{\hat{u}}^i
+   !!    \f$
+   !!
+   !! |  Variable                               |  Value                                                                      |
+   !! | :---------:                             |  :------------------------------------------------------------------------- |
+   !! | \f$ \xi \f$                             |  Element natural coordinate \f$ \in [-1,1] \f$                              |
+   !! | \f$ k \f$                               |  Node number of a \f$ p^\text{th} \f$ order Langrangian-interpolant         |
+   !! | \f$ h^i \left( \xi \right ) \f$         |  Component of the shape function matrix, \f$ \underline{\underline{N}} \f$  |
+   !! | \f$ h^{k\prime} \left( \xi \right ) \f$ |  \f$ \frac{\mathrm{d}}{\mathrm{d}x_1} h^i \left( \xi \right) \f$            |
+   !! | \f$ \underline{\hat{u}}^i \f$           |  \f$ k^\text{th} \f$ nodal value                                            |
 
-   DO idx_qp=1,p%nqp
-            ! Node point before start of this element
-         elem_start = p%node_elem_idx( nelem,1 )
+   ! Node point before start of this element
+   elem_start = p%node_elem_idx(nelem,1)
 
+   ! Use matrix multiplication to interpolate position and position derivative to quadrature points
+   call LAPACK_DGEMM('N','N', 1.0_BDKi, x%q(1:3,elem_start:elem_start+p%nodes_per_elem-1), p%Shp, 0.0_BDKi,  m%qp%uuu(1:3,:,nelem), ErrStat, ErrMsg)
+   call LAPACK_DGEMM('N','N', 1.0_BDKi, x%q(1:3,elem_start:elem_start+p%nodes_per_elem-1), p%ShpDer, 0.0_BDKi,  m%qp%uup(1:3,:,nelem), ErrStat, ErrMsg)
 
-            !> ### Calculate the the displacement fields in an element
-            !! Using equations (27) and (28) \n
-            !!    \f$   \underline{u}\left( \xi \right) =
-            !!                \sum_{i=1}^{p+1} h^i\left( \xi \right) \underline{\hat{u}}^i
-            !!    \f$ \n
-            !! and \n
-            !!    \f$   \underline{u}^\prime \left( \xi \right) =
-            !!                \sum_{k=1}^{p+1} h^{k\prime} \left( \xi \right) \underline{\hat{u}}^i
-            !!    \f$
-            !!
-            !! |  Variable                               |  Value                                                                      |
-            !! | :---------:                             |  :------------------------------------------------------------------------- |
-            !! | \f$ \xi \f$                             |  Element natural coordinate \f$ \in [-1,1] \f$                              |
-            !! | \f$ k \f$                               |  Node number of a \f$ p^\text{th} \f$ order Langrangian-interpolant         |
-            !! | \f$ h^i \left( \xi \right ) \f$         |  Component of the shape function matrix, \f$ \underline{\underline{N}} \f$  |
-            !! | \f$ h^{k\prime} \left( \xi \right ) \f$ |  \f$ \frac{\mathrm{d}}{\mathrm{d}x_1} h^i \left( \xi \right) \f$            |
-            !! | \f$ \underline{\hat{u}}^i \f$           |  \f$ k^\text{th} \f$ nodal value                                            |
+   ! Apply Jacobian to get position derivative with respect to X-axis
+   do idx_qp = 1, p%nqp
+      m%qp%uup(1:3,idx_qp,nelem) = m%qp%uup(1:3,idx_qp,nelem) / p%Jacobian(idx_qp,nelem)
+   end do
 
-            ! Initialize values for summation
-         m%qp%uuu(:,idx_qp,nelem) = 0.0_BDKi    ! displacement field \f$ \underline{u}        \left( \xi \right) \f$
-         m%qp%uup(:,idx_qp,nelem) = 0.0_BDKi    ! displacement field \f$ \underline{u}^\prime \left( \xi \right) \f$
+   !> Calculate \f$ \underline{E}_1 = x_0^\prime + u^\prime \f$ (equation 23).  Note E_1 is along the z direction.
+   m%qp%E1(1:3,:,nelem) = p%E10(1:3,:,nelem) + m%qp%uup(1:3,:,nelem)
 
-         DO idx_node=1,p%nodes_per_elem
-            m%qp%uuu(1:3,idx_qp,nelem) = m%qp%uuu(1:3,idx_qp,nelem)  + p%Shp(idx_node,idx_qp)                            *x%q(1:3,elem_start - 1 + idx_node)
-            m%qp%uup(1:3,idx_qp,nelem) = m%qp%uup(1:3,idx_qp,nelem)  + p%ShpDer(idx_node,idx_qp)/p%Jacobian(idx_qp,nelem)*x%q(1:3,elem_start - 1 + idx_node)
-         ENDDO
-
-            !> Calculate \f$ \underline{E}_1 = x_0^\prime + u^\prime \f$ (equation 23).  Note E_1 is along the z direction.
-         m%qp%E1(1:3,idx_qp,nelem) = p%E10(1:3,idx_qp,nelem) + m%qp%uup(1:3,idx_qp,nelem)
-
-   ENDDO
 END SUBROUTINE  BD_DisplacementQP
 
 
@@ -2345,6 +2522,8 @@ SUBROUTINE BD_RotationalInterpQP( nelem, p, x, m )
    TYPE(BD_ContinuousStateType), INTENT(IN   )  :: x                 !< Continuous states at t
    TYPE(BD_MiscVarType),         INTENT(INOUT)  :: m                 !< misc/optimization variables
 
+   INTEGER(IntKi)                :: ErrStat           !< Ignored error handling for LAPACK_GEMM
+   CHARACTER(ErrMsgLen)          :: ErrMsg            !< Ignored error handling for LAPACK_GEMM
    INTEGER(IntKi)                :: idx_qp            !< index to the current quadrature point
    INTEGER(IntKi)                :: elem_start        !< Node point of first node in current element
    INTEGER(IntKi)                :: idx_node          !< index to current GLL point in element
@@ -2353,8 +2532,6 @@ SUBROUTINE BD_RotationalInterpQP( nelem, p, x, m )
    REAL(BDKi)                    :: cc(3)
    REAL(BDKi)                    :: temp33(3,3)
    REAL(BDKi)                    :: DCM_root(3,3)       !< DCM for first node
-   CHARACTER(*), PARAMETER       :: RoutineName = 'BD_RotationalInterpQP'
-
 
             !> ## Calculate the interpolated rotational displacements
             !! To calculate this, the algorithm given in http://www.nrel.gov/docs/fy14osti/60759.pdf
@@ -2409,6 +2586,15 @@ SUBROUTINE BD_RotationalInterpQP( nelem, p, x, m )
    ENDDO
 
 
+      ! Use matrix multiplication to interpolate rotation and rotation derivative to quadrature points
+      ! These rotations do not include the root node rotation at this point (added later in function)
+   call LAPACK_DGEMM('N','N', 1.0_BDKi, m%Nrrr(:,:,nelem), p%Shp, 0.0_BDKi, m%qp%uuu(4:6,:,nelem), ErrStat, ErrMsg)
+   call LAPACK_DGEMM('N','N', 1.0_BDKi, m%Nrrr(:,:,nelem), p%ShpDer, 0.0_BDKi, m%qp%uup(4:6,:,nelem), ErrStat, ErrMsg)
+
+      ! Apply Jacobian to get rotation derivative with respect to X-axis
+   do idx_qp = 1, p%nqp
+      m%qp%uup(4:6,idx_qp,nelem) = m%qp%uup(4:6,idx_qp,nelem) / p%Jacobian(idx_qp,nelem)
+   end do
 
       ! QP rotational interpolation
    DO idx_qp=1,p%nqp
@@ -2434,16 +2620,9 @@ SUBROUTINE BD_RotationalInterpQP( nelem, p, x, m )
             !! | \f$ h^{k\prime} \left( \xi \right ) \f$ |  \f$ \frac{\mathrm{d}}{\mathrm{d}x_1} h^i \left( \xi \right) \f$            |
             !! | \f$ \underline{\hat{r}}^i \f$           |  \f$ k^\text{th} \f$ nodal value                                            |
 
-
-            ! Initialize values for summations
-         rrr = 0.0_BDKi    ! intermediate rotation field for calculation
-         rrp = 0.0_BDKi
-
-               ! Note: `m%Nrrr` is \f$ \underline{\hat{r}}^i \f$
-         DO idx_node=1,p%nodes_per_elem
-            rrr(1:3) = rrr(1:3) + p%Shp(idx_node,idx_qp)                            *m%Nrrr(1:3,idx_node,nelem)
-            rrp(1:3) = rrp(1:3) + p%ShpDer(idx_node,idx_qp)/p%Jacobian(idx_qp,nelem)*m%Nrrr(1:3,idx_node,nelem)
-         ENDDO
+            ! Get rotation and rotation derivative at quadrature point (root rotation is not included)
+         rrr = m%qp%uuu(4:6,idx_qp,nelem)
+         rrp = m%qp%uup(4:6,idx_qp,nelem)
 
             !> **Step 3:** Restore the rigid body rotation at node \f$ \xi \f$ with \n
             !! \f$ \underline{c}(\xi) = \underline{\hat{c}}^1 \oplus \underline{r}(\xi) \f$ \n
@@ -2491,30 +2670,53 @@ SUBROUTINE BD_StifAtDeformedQP( nelem, p, m )
    TYPE(BD_MiscVarType),         INTENT(INOUT)  :: m           !< misc/optimization variables
 
    INTEGER(IntKi)                :: idx_qp         !< index counter for quadrature point
-   INTEGER(IntKi)                :: temp_id2       !< Index to last node of previous element
-   INTEGER(IntKi)                :: i,j            !< generic counters
-   REAL(BDKi)                    :: tempR6(6,6)
-   REAL(BDKi)                    :: tempBeta6(6,6)
+   INTEGER(IntKi)                :: idx_Stif0       !< Index to last node of previous element
+   
+   ! Initial stiffness matrix index
+   idx_Stif0 = (nelem-1)*p%nqp
 
+   ! Loop through quadrature points
+   do idx_qp = 1, p%nqp
 
-   ! see Bauchau 2011 Flexible Multibody Dynamics p 692-693, section 17.7.2
+      ! Initial stiffness matrix index
+      idx_Stif0 = idx_Stif0 + 1
 
-         ! extract the mass and stiffness matrices for the current element
-   temp_id2 = (nelem-1)*p%nqp
+      ! Calculate stiffness and damping matrices for this quadrature point
+      call Calc_Stif_betaC(m%qp%RR0(:,:,idx_qp,nelem), &
+                           p%Stif0_QP(:,:,idx_Stif0), &
+                           m%qp%Stif(:,:,idx_qp,nelem), &
+                           m%qp%betaC(:,:,idx_qp,nelem))
+   end do
 
-   DO idx_qp=1,p%nqp
+contains
+   subroutine Calc_Stif_betaC(RR0, Stif0, Stif, betaC)
+      REAL(BDKi), intent(in)        :: RR0(:,:), Stif0(:,:)
+      REAL(BDKi), intent(inout)     :: Stif(:,:), betaC(:,:)
+      REAL(BDKi)                    :: tempR6(6,6)
+      REAL(BDKi)                    :: tempR6_T(6,6)
+      REAL(BDKi)                    :: tempBeta6(6,6)
+      REAL(BDKi)                    :: tempBeta_diag(6)
+      INTEGER(IntKi)                :: i, j
+
+      ! see Bauchau 2011 Flexible Multibody Dynamics p 692-693, section 17.7.2
       !> RR0 is the rotation tensor at quadrature point \f$ \left(\underline{\underline{R}}\underline{\underline{R}}_0\right) \f$ (3x3)
-
-         ! Setup the temporary matrix for modifying the stiffness matrix. RR0 is changing with time.
+      
+      ! Setup the temporary matrix for modifying the stiffness matrix. RR0 is changing with time.
       tempR6 = 0.0_BDKi
-      tempBeta6 = 0.0_BDKi
-      tempR6(1:3,1:3) = m%qp%RR0(:,:,idx_qp,nelem)       ! upper left   -- translation
-      tempR6(4:6,4:6) = m%qp%RR0(:,:,idx_qp,nelem)       ! lower right  -- rotation
-         !NOTE: Bauchau has the lower right corner multiplied by H
+      tempR6(1:3,1:3) = RR0       ! upper left   -- translation
+      tempR6(4:6,4:6) = RR0       ! lower right  -- rotation
+      !NOTE: Bauchau has the lower right corner multiplied by H
 
-         ! Move damping ratio from material frame to the calculation reference frame
-         !     This is the following:
-         !        tempBEta6=matmul(tempR6,matmul(diag(p%beta),transpose(tempR6)))
+      ! Compute the transpose of tempR6
+      tempR6_T = TRANSPOSE(tempR6)
+      
+      ! Move damping ratio from material frame to the calculation reference frame
+      !     This is the following:
+      !        tempBeta6 = matmul(tempR6, matmul(diag(p%beta), transpose(tempR6)))
+
+      ! Move damping ratio from material frame to the calculation reference frame
+      !     This is the following:
+      !        tempBEta6=matmul(tempR6,matmul(diag(p%beta),transpose(tempR6)))
       do j=1,6
          do i=1,6
                ! diagonal of p%beta * TRANSPOSE(tempR6)
@@ -2523,23 +2725,21 @@ SUBROUTINE BD_StifAtDeformedQP( nelem, p, m )
       enddo
       tempBeta6 = matmul(tempR6,tempBeta6)
 
+      !> Modify the Mass matrix so it is in the calculation reference frame
+      !! \f$ \begin{bmatrix}
+      !!        \left(\underline{\underline{R}} \underline{\underline{R}}_0\right)      &  0             \\
+      !!                      0  &  \left(\underline{\underline{R}} \underline{\underline{R}}_0\right)
+      !!     \end{bmatrix}
+      !! \underline{\underline{C}}
+      !!     \begin{bmatrix}
+      !!        \left(\underline{\underline{R}} \underline{\underline{R}}_0\right)^T    &  0             \\
+      !!                      0  &  \left(\underline{\underline{R}} \underline{\underline{R}}_0\right)^T
+      !!     \end{bmatrix} \f$
+      Stif = matmul(tempR6, matmul(Stif0, tempR6_T))
 
-         !> Modify the Mass matrix so it is in the calculation reference frame
-         !! \f$ \begin{bmatrix}
-         !!        \left(\underline{\underline{R}} \underline{\underline{R}}_0\right)      &  0             \\
-         !!                      0  &  \left(\underline{\underline{R}} \underline{\underline{R}}_0\right)
-         !!     \end{bmatrix}
-         !! \underline{\underline{C}}
-         !!     \begin{bmatrix}
-         !!        \left(\underline{\underline{R}} \underline{\underline{R}}_0\right)^T    &  0             \\
-         !!                      0  &  \left(\underline{\underline{R}} \underline{\underline{R}}_0\right)^T
-         !!     \end{bmatrix} \f$
-      m%qp%Stif(:,:,idx_qp,nelem) = MATMUL(tempR6,MATMUL(p%Stif0_QP(1:6,1:6,temp_id2+idx_qp),TRANSPOSE(tempR6)))
-
-         ! Now apply the damping
-      m%qp%betaC(:,:,idx_qp,nelem) = matmul(tempBeta6,m%qp%Stif(:,:,idx_qp,nelem))
-   ENDDO
-
+      ! Now apply the damping
+      betaC = matmul(tempBeta6, Stif)
+   end subroutine
 END SUBROUTINE BD_StifAtDeformedQP
 
 
@@ -2557,23 +2757,36 @@ SUBROUTINE BD_QPData_mEta_rho( p, m )
    TYPE(BD_MiscVarType),         INTENT(INOUT)  :: m                 !< misc/optimization variables
 
    INTEGER(IntKi)                               :: nelem             !< index to current element number
+   INTEGER(IntKi)                               :: qp_start          !< index to start qp indexing for element
    INTEGER(IntKi)                               :: idx_qp            !< index to the current quadrature point
 
-   DO nelem=1,p%elem_total
-      DO idx_qp=1,p%nqp
+   do nelem = 1, p%elem_total
+      qp_start = (nelem-1)*p%nqp
+      do idx_qp = 1, p%nqp
+         call Calc_RR0mEta_rho(p%qp%mEta(:,idx_qp,nelem), &
+                               m%qp%RR0(:,:,idx_qp,nelem), &
+                               p%Mass0_QP(:,:,qp_start+idx_qp), &
+                               m%qp%RR0mEta(:,idx_qp,nelem), &
+                               m%qp%rho(:,:,idx_qp,nelem))
+      end do
+   end do
+
+contains
+   subroutine Calc_RR0mEta_rho(mEta, RR0, Mass0, RR0mEta, rho)
+      real(BDKi), intent(in)  :: mEta(:), RR0(:,:), Mass0(:,:)
+      real(BDKi), intent(out)  :: RR0mEta(:), rho(:,:)
+
          !> Calculate the new center of mass times mass at the deflected location
          !! as \f$ \left(\underline{\underline{R}}\underline{\underline{R}}_0\right) m \underline{\eta} \f$
-         m%qp%RR0mEta(:,idx_qp,nelem)  =  MATMUL(m%qp%RR0(:,:,idx_qp,nelem),p%qp%mEta(:,idx_qp,nelem))
+         RR0mEta(:) = MATMUL(RR0, mEta)
 
          !> Calculate \f$ \rho = \left(\underline{\underline{R}}\underline{\underline{R}}_0\right)
          !!                      \underline{\underline{M}}_{2,2}
          !!                      \left(\underline{\underline{R}}\underline{\underline{R}}_0\right)^T \f$ where
          !! \f$ \underline{\underline{M}}_{2,2} \f$ is the inertial terms of the undeflected mass matrix at this quadrature point
-         m%qp%rho(:,:,idx_qp,nelem) =  p%Mass0_QP(4:6,4:6,(nelem-1)*p%nqp+idx_qp)
-         m%qp%rho(:,:,idx_qp,nelem) =  MATMUL(m%qp%RR0(:,:,idx_qp,nelem),MATMUL(m%qp%rho(:,:,idx_qp,nelem),TRANSPOSE(m%qp%RR0(:,:,idx_qp,nelem))))
-      ENDDO
-   ENDDO
+         rho = MATMUL(RR0, MATMUL(Mass0(4:6,4:6), TRANSPOSE(RR0)))
 
+   end subroutine
 END SUBROUTINE BD_QPData_mEta_rho
 
 
@@ -2590,97 +2803,126 @@ SUBROUTINE BD_ElasticForce(nelem,p,m,fact)
    TYPE(BD_MiscVarType),         INTENT(INOUT)  :: m           !< Misc/optimization variables.
    LOGICAL,                      INTENT(IN   )  :: fact        !< Boolean to calculate the Jacobian
 
-   REAL(BDKi)                                   :: cet         !< for storing the \f$ I_{yy} + I_{zz} \f$ inertia term
-   REAL(BDKi)                                   :: k1s
-   REAL(BDKi)                                   :: Wrk33(3,3)
-   REAL(BDKi)                                   :: tildeE(3,3)
-   REAL(BDKi)                                   :: C21(3,3)
-   REAL(BDKi)                                   :: epsi(3,3)
-   REAL(BDKi)                                   :: mu(3,3)
-
-   INTEGER(IntKi)                               :: idx_qp      !< Index to quadrature point currently being calculated
+   REAL(BDKi)                 :: cet_t       !< for storing the \f$ I_{yy} + I_{zz} \f$ inertia term
+   REAL(BDKi)                 :: k1s_t
+   INTEGER(IntKi)             :: idx_qp      !< Index to quadrature point currently being calculated
 
    
    if (.not. fact) then
-   
       do idx_qp=1,p%nqp
-         call Calc_Fc_Fd()
+         call Calc_Fc_Fd(m%qp%RR0(:,:,idx_qp,nelem), &
+                         m%qp%uuu(:,idx_qp,nelem), &
+                         p%E10(:,idx_qp,nelem), &
+                         m%qp%E1(:,idx_qp,nelem), &
+                         m%qp%kappa(1:3,idx_qp,nelem), &
+                         m%qp%strain(:,idx_qp,nelem), &
+                         p%Stif0_QP(:,:,(nelem-1)*p%nqp+idx_qp), &
+                         m%qp%Stif(:,:,idx_qp,nelem), &
+                         m%qp%Fc(:,idx_qp,nelem), &
+                         m%qp%Fd(:,idx_qp,nelem), &
+                         cet_t, k1s_t)
       end do 
-      
    else
-   
       do idx_qp=1,p%nqp
-      
-         call Calc_Fc_Fd()
+         call Calc_Fc_Fd(m%qp%RR0(:,:,idx_qp,nelem), &
+                         m%qp%uuu(:,idx_qp,nelem), &
+                         p%E10(:,idx_qp,nelem), &
+                         m%qp%E1(:,idx_qp,nelem), &
+                         m%qp%kappa(1:3,idx_qp,nelem), &
+                         m%qp%strain(:,idx_qp,nelem), &
+                         p%Stif0_QP(:,:,(nelem-1)*p%nqp+idx_qp), &
+                         m%qp%Stif(:,:,idx_qp,nelem), &
+                         m%qp%Fc(:,idx_qp,nelem), &
+                         m%qp%Fd(:,idx_qp,nelem), &
+                         cet_t, k1s_t)
 
-
-            !> ###Calculate the \f$ \underline{\underline{\mathcal{O}}} \f$ from equation (19)
-            !!
-            !! \f$ \underline{\underline{\mathcal{O}}} =
-            !!        \begin{bmatrix}
-            !!          \underline{\underline{0}}        &     \underline{\underline{C}}_{11} \tilde{E}_1 - \tilde{F}  \\
-            !!          \underline{\underline{0}}        &     \underline{\underline{C}}_{21} \tilde{E}_1 - \tilde{M}
-            !!       \end{bmatrix}
-            !!    =  \begin{bmatrix}
-            !!          \underline{\underline{0}}        &     \psi_E   - \tilde{F}    \\
-            !!          \underline{\underline{0}}        &     \mu      - \tilde{M}
-            !!       \end{bmatrix}
-            !! \f$
-         Wrk33(:,:) = OuterProduct(m%qp%RR0(1:3,3,idx_qp,nelem), m%qp%RR0(1:3,3,idx_qp,nelem))     ! z-direction in IEC coords
-         C21(:,:)   = m%qp%Stif(4:6,1:3,idx_qp,nelem) + cet*k1s*Wrk33(:,:)
-
-         tildeE     = SkewSymMat(m%qp%E1(:,idx_qp,nelem))
-         epsi(:,:)  = MATMUL(m%qp%Stif(1:3,1:3,idx_qp,nelem),tildeE)    ! Stif is RR0 * p%Stif0_QP * RR0^T
-         mu(:,:)    = MATMUL(C21,tildeE)
-
-         m%qp%Oe(:,:,idx_qp,nelem)     = 0.0_BDKi
-         m%qp%Oe(1:3,4:6,idx_qp,nelem) = epsi(1:3,1:3) - SkewSymMat(m%qp%Fc(1:3,idx_qp,nelem))
-         m%qp%Oe(4:6,4:6,idx_qp,nelem) =   mu(1:3,1:3) - SkewSymMat(m%qp%Fc(4:6,idx_qp,nelem))
-
-
-            !> ###Calculated \f$ \underline{\underline{\mathcal{P}}} \f$ from equation (20)
-            !!
-            !! \f$ \underline{\underline{\mathcal{P}}} =
-            !!     \begin{bmatrix}
-            !!          \underline{\underline{0}}        &     \underline{\underline{0}}     \\
-            !!          \left(\underline{\underline{\bar{C}}}_{11} \tilde{E}_1 \right)^T + \tilde{F}
-            !!          \left(\underline{\underline{\bar{C}}}_{11} \tilde{E}_1 \right)^T
-            !!    \end{bmatrix}
-            !! =  \begin{bmatrix}
-            !!          \underline{\underline{0}}        &     \underline{\underline{0}}     \\
-            !!          \psi_E^T + \tilde{F}             &     \mu^T
-            !!    \end{bmatrix}  \f$
-         m%qp%Pe(:,:,idx_qp,nelem)     = 0.0_BDKi
-         m%qp%Pe(4:6,1:3,idx_qp,nelem) = TRANSPOSE(epsi) + SkewSymMat(m%qp%Fc(1:3,idx_qp,nelem))
-         m%qp%Pe(4:6,4:6,idx_qp,nelem) = TRANSPOSE(mu)
-
-            !> ###Calculated \f$ \underline{\underline{\mathcal{Q}}} \f$ from equation (21)
-            !!
-            !! \f{eqnarray*}{
-            !!    \underline{\underline{\mathcal{Q}}}
-            !!  & =& \underline{\underline{\Upsilon}} \underline{\underline{\mathcal{O}}}
-            !!    =  \begin{bmatrix}   0                 &  0  \\
-            !!                         \tilde{E}_1^T     &  0  \end{bmatrix}
-            !!       \underline{\underline{\mathcal{O}}}       \\
-            !!    \begin{bmatrix}   0        &  0  \\
-            !!                      0        &  \underline{\underline{\mathcal{Q}}}_{22} \end{bmatrix}
-            !!  & =&    \tilde{E}_1^T \underline{\underline{\mathcal{O}}}_{12}
-            !!    =   - \tilde{E}_1   \underline{\underline{\mathcal{O}}}_{12}
-            !! \f}\n
-            !! Note: \f$ \tilde{E}_1^T = - \tilde{E}_1 \f$
-         m%qp%Qe(:,:,idx_qp,nelem)     = 0.0_BDKi
-         m%qp%Qe(4:6,4:6,idx_qp,nelem) = -MATMUL(tildeE,m%qp%Oe(1:3,4:6,idx_qp,nelem))
+         call Calc_Oe_Pe_Qe(m%qp%RR0(:,:,idx_qp,nelem), &
+                           m%qp%Stif(:,:,idx_qp,nelem), &
+                           m%qp%E1(:,idx_qp,nelem), &
+                           m%qp%Fc(:,idx_qp,nelem), &
+                           cet_t, k1s_t, &
+                           m%qp%Oe(:,:,idx_qp,nelem), &
+                           m%qp%Pe(:,:,idx_qp,nelem), &
+                           m%qp%Qe(:,:,idx_qp,nelem))
       end do
-      
-   ENDIF
+   end if
 
 contains
-   subroutine Calc_Fc_Fd()
-      REAL(BDKi)                                   :: e1s
-      REAL(BDKi)                                   :: eee(6)      !< intermediate array for calculation Strain and curvature terms of Fc
-      REAL(BDKi)                                   :: fff(6)      !< intermediate array for calculation of the elastic force, Fc
-     !REAL(BDKi)                                   :: Wrk(3)
-      
+   subroutine Calc_Oe_Pe_Qe(RR0, Stif, E1, Fc, cet, k1s, Oe, Pe, Qe)
+      REAL(BDKi), intent(in)     :: RR0(:,:), Stif(:,:), E1(:), Fc(:), cet, k1s
+      REAL(BDKi), intent(inout)  :: Oe(:,:), Pe(:,:), Qe(:,:)
+      REAL(BDKi)                 :: Wrk33(3,3)
+      REAL(BDKi)                 :: tildeE(3,3)
+      REAL(BDKi)                 :: C21(3,3)
+      REAL(BDKi)                 :: epsi(3,3)
+      REAL(BDKi)                 :: mu(3,3)
+
+      !> ###Calculate the \f$ \underline{\underline{\mathcal{O}}} \f$ from equation (19)
+      !!
+      !! \f$ \underline{\underline{\mathcal{O}}} =
+      !!        \begin{bmatrix}
+      !!          \underline{\underline{0}}        &     \underline{\underline{C}}_{11} \tilde{E}_1 - \tilde{F}  \\
+      !!          \underline{\underline{0}}        &     \underline{\underline{C}}_{21} \tilde{E}_1 - \tilde{M}
+      !!       \end{bmatrix}
+      !!    =  \begin{bmatrix}
+      !!          \underline{\underline{0}}        &     \psi_E   - \tilde{F}    \\
+      !!          \underline{\underline{0}}        &     \mu      - \tilde{M}
+      !!       \end{bmatrix}
+      !! \f$
+      Wrk33      = OuterProduct(RR0(1:3,3), RR0(1:3,3))     ! z-direction in IEC coords
+      C21        = Stif(4:6,1:3) + cet*k1s*Wrk33(:,:)
+
+      tildeE     = SkewSymMat(E1)
+      epsi       = MATMUL(Stif(1:3,1:3),tildeE)    ! Stif is RR0 * p%Stif0_QP * RR0^T
+      mu         = MATMUL(C21,tildeE)
+
+      Oe          = 0.0_BDKi
+      Oe(1:3,4:6) = epsi(1:3,1:3) - SkewSymMat(Fc(1:3))
+      Oe(4:6,4:6) =   mu(1:3,1:3) - SkewSymMat(Fc(4:6))
+
+
+      !> ###Calculated \f$ \underline{\underline{\mathcal{P}}} \f$ from equation (20)
+      !!
+      !! \f$ \underline{\underline{\mathcal{P}}} =
+      !!     \begin{bmatrix}
+      !!          \underline{\underline{0}}        &     \underline{\underline{0}}     \\
+      !!          \left(\underline{\underline{\bar{C}}}_{11} \tilde{E}_1 \right)^T + \tilde{F}
+      !!          \left(\underline{\underline{\bar{C}}}_{11} \tilde{E}_1 \right)^T
+      !!    \end{bmatrix}
+      !! =  \begin{bmatrix}
+      !!          \underline{\underline{0}}        &     \underline{\underline{0}}     \\
+      !!          \psi_E^T + \tilde{F}             &     \mu^T
+      !!    \end{bmatrix}  \f$
+      Pe          = 0.0_BDKi
+      Pe(4:6,1:3) = TRANSPOSE(epsi) + SkewSymMat(Fc(1:3))
+      Pe(4:6,4:6) = TRANSPOSE(mu)
+
+      !> ###Calculated \f$ \underline{\underline{\mathcal{Q}}} \f$ from equation (21)
+      !!
+      !! \f{eqnarray*}{
+      !!    \underline{\underline{\mathcal{Q}}}
+      !!  & =& \underline{\underline{\Upsilon}} \underline{\underline{\mathcal{O}}}
+      !!    =  \begin{bmatrix}   0                 &  0  \\
+      !!                         \tilde{E}_1^T     &  0  \end{bmatrix}
+      !!       \underline{\underline{\mathcal{O}}}       \\
+      !!    \begin{bmatrix}   0        &  0  \\
+      !!                      0        &  \underline{\underline{\mathcal{Q}}}_{22} \end{bmatrix}
+      !!  & =&    \tilde{E}_1^T \underline{\underline{\mathcal{O}}}_{12}
+      !!    =   - \tilde{E}_1   \underline{\underline{\mathcal{O}}}_{12}
+      !! \f}\n
+      !! Note: \f$ \tilde{E}_1^T = - \tilde{E}_1 \f$
+      Qe(:,:)     = 0.0_BDKi
+      Qe(4:6,4:6) = -MATMUL(tildeE,Oe(1:3,4:6))
+   end subroutine
+
+   subroutine Calc_Fc_Fd(RR0, uuu, E10, E1, kappa, strain, Stif0, Stif, Fc, Fd, cet, k1s)
+      REAL(BDKi), intent(in)     :: RR0(:,:), uuu(:), E10(:), E1(:), kappa(:), Stif0(:,:), Stif(:,:)
+      REAL(BDKi), intent(out)    :: strain(:), Fc(:), Fd(:), cet, k1s
+      REAL(BDKi)                 :: e1s
+      REAL(BDKi)                 :: fff(6)      !< intermediate array for calculation of the elastic force, Fc
+      REAL(BDKi)                 :: R(3,3)      !< rotation matrix at quatrature point
+      REAL(BDKi)                 :: Rx0p(3)     !< \f$ \underline{R} \underline{x}^\prime_0 \f$
+      REAL(BDKi)                 :: Wrk(3)
    
          !> ### Calculate the 1D strain, \f$ \underline{\epsilon} \f$, equation (5)
          !! \f$ \underline{\epsilon} = \underline{x}^\prime_0 + \underline{u}^\prime -
@@ -2692,8 +2934,10 @@ contains
          !!
          !! Note: \f$ \underline{\underline{R}}\underline{\underline{R}}_0 \f$ is used to go from the material basis into the inertial basis
          !!       and the transpose for the other direction.
-      eee(1:3) = m%qp%E1(1:3,idx_qp,nelem) - m%qp%RR0(1:3,3,idx_qp,nelem)     ! Using RR0 z direction in IEC coords
-
+      ! eee(1:3) = m%qp%E1(1:3,idx_qp,nelem) - m%qp%RR0(1:3,3,idx_qp,nelem)     ! Using RR0 z direction in IEC coords
+      call BD_CrvMatrixR(uuu(4:6), R)  ! Get rotation at QP as a matrix
+      Rx0p = matmul(R,E10)             ! Calculate rotated initial tangent
+      strain(1:3) = E1(1:3) - Rx0p     ! Use rotated initial tangent in place of RR0*i1 to eliminate likely mismatch between R0*i1 and x0'
       
          !> ### Set the 1D sectional curvature, \f$ \underline{\kappa} \f$, equation (5)
          !! \f$ \underline{\kappa} = \underline{k} + \underline{\underline{R}}\underline{k}_i \f$
@@ -2713,7 +2957,7 @@ contains
          !!    \f$
          !! In other words, \f$ \tilde{k} = \left(\underline{\underline{R}}^\prime\underline{\underline{R}}^T \right) \f$.
          !! Note: \f$ \underline{\kappa} \f$ was already calculated in the BD_DisplacementQP routine
-      eee(4:6) = m%qp%kappa(1:3,idx_qp,nelem)
+      strain(4:6) = kappa(1:3)
 
 
    !FIXME: note that the k_i terms may not be documented correctly here.
@@ -2745,7 +2989,7 @@ contains
          !!                \underline{k}
          !!          \end{array} \right\} \f$
          !!
-      fff(1:6) = MATMUL(m%qp%Stif(:,:,idx_qp,nelem),eee)
+      fff(1:6) = MATMUL(Stif,strain)
 
 
          !> ###Calculate the extension twist coupling.
@@ -2756,13 +3000,13 @@ contains
          !! \f$ \kappa_{m} = \left( \underline{\underline{R}}\underline{\underline{R}}_0 \right) ^T \underline{k}\f$ \n
 
          ! Strain into the material basis (eq (39) of Dymore manual)
-      !Wrk(:) = MATMUL(TRANSPOSE(m%qp%RR0(:,:,idx_qp,nelem)),eee(1:3))
+      !Wrk(:) = MATMUL(TRANSPOSE(m%qp%RR0(:,:,idx_qp,nelem)),strain(1:3))
       !e1s = Wrk(3)      !epsilon_{1} in material basis (for major axis of blade, which is z in the IEC formulation)
-      e1s = dot_product( m%qp%RR0(:,3,idx_qp,nelem), eee(1:3) )
+      e1s = dot_product( RR0(:,3), strain(1:3) )
 
-      !Wrk(:) = MATMUL(TRANSPOSE(m%qp%RR0(:,:,idx_qp,nelem)),eee(4:6))
+      !Wrk(:) = MATMUL(TRANSPOSE(m%qp%RR0(:,:,idx_qp,nelem)),strain(4:6))
       !k1s = Wrk(3)      !kappa_{1} in material basis (for major axis of blade, which is z in the IEC formulation)
-      k1s = dot_product( m%qp%RR0(:,3,idx_qp,nelem), eee(4:6) )
+      k1s = dot_product( RR0(:,3), strain(4:6) )
 
 
       !> Add extension twist coupling terms to the \f$ \underline{F}^c_{a} \f$\n
@@ -2780,9 +3024,9 @@ contains
       !! Note that with coverting to the FAST / IEC coordinate system, we now are using the Ixx and Iyy terms which are located at
       !! \f$  C_{et} = C_{4,4} + C_{5,5} \f$
       ! Refer Section 1.4 in "Dymore User's Manual - Formulation and finite element implementation of beam elements".
-      cet=  p%Stif0_QP(4,4,(nelem-1)*p%nqp+idx_qp) + p%Stif0_QP(5,5,(nelem-1)*p%nqp+idx_qp)     ! Dymore theory (22)
-      m%qp%Fc(1:3,idx_qp,nelem) = fff(1:3) + 0.5_BDKi*cet*k1s*k1s*m%qp%RR0(1:3,3,idx_qp,nelem)  ! Dymore theory (25a). Note z-axis is the length of blade.
-      m%qp%Fc(4:6,idx_qp,nelem) = fff(4:6) +          cet*e1s*k1s*m%qp%RR0(1:3,3,idx_qp,nelem)  ! Dymore theory (25b). Note z-axis is the length of blade.
+      cet =  Stif0(4,4) + Stif0(5,5)     ! Dymore theory (22)
+      Fc(1:3) = fff(1:3) + 0.5_BDKi*cet*k1s*k1s*RR0(1:3,3)  ! Dymore theory (25a). Note z-axis is the length of blade.
+      Fc(4:6) = fff(4:6) +          cet*e1s*k1s*RR0(1:3,3)  ! Dymore theory (25b). Note z-axis is the length of blade.
 
          !> ###Calculate \f$ \underline{\mathcal{F}}^d \f$, equation (16)
          !! \f$ \underline{F}^d =
@@ -2793,9 +3037,9 @@ contains
          !!    =  \begin{bmatrix}   \underline{0} \\
          !!                \left(\underline{\mathcal{F}}^c \times \underline{E}_1 \right)^T
          !!       \end{bmatrix}  \f$
-      m%qp%Fd(1:3,idx_qp,nelem)  = 0.0_BDKi
+      Fd(1:3)  = 0.0_BDKi
    ! ADP uu0 ref: If E1 is referenced against a different curve than Stif0_QP, there will be strange coupling terms here. 
-      m%qp%Fd(4:6,idx_qp,nelem)  = cross_product(m%qp%Fc(1:3,idx_qp,nelem), m%qp%E1(:,idx_qp,nelem))   
+      Fd(4:6)  = cross_product(Fc(1:3), E1(:))   
       
    end subroutine Calc_Fc_Fd
 END SUBROUTINE BD_ElasticForce
@@ -2816,32 +3060,29 @@ SUBROUTINE BD_QPDataVelocity( p, x, m )
    TYPE(BD_ContinuousStateType), INTENT(IN   )  :: x                 !< Continuous states at t
    TYPE(BD_MiscVarType),         INTENT(INOUT)  :: m                 !< Misc/optimization variables
 
+   INTEGER(IntKi)                               :: ErrStat           !< Ignored error handling for LAPACK_GEMM
+   CHARACTER(ErrMsgLen)                         :: ErrMsg            !< Ignored error handling for LAPACK_GEMM
    INTEGER(IntKi)                               :: nelem             !< index to current element
    INTEGER(IntKi)                               :: idx_qp            !< index to quadrature point
-   INTEGER(IntKi)                               :: idx_node          !< index to the GLL node
    INTEGER(IntKi)                               :: elem_start        !< Starting quadrature point of current element
 
-   DO nelem=1,p%elem_total
+   ! Calculate the velocity term, velocity prime (derivative of velocity with respect to X-axis), and acceleration terms
 
+   ! Loop through elements
+   do nelem = 1, p%elem_total
+
+      ! Get start index of quadrature points for given element
       elem_start = p%node_elem_idx(nelem,1)
 
-   DO idx_qp=1,p%nqp
+      ! Use matrix multiplication to interpolate velocity and velocity derivative to quadrature points
+      call LAPACK_DGEMM('N','N', 1.0_BDKi, x%dqdt(:,elem_start:elem_start+p%nodes_per_elem-1), p%Shp, 0.0_BDKi, m%qp%vvv(:,:,nelem), ErrStat, ErrMsg)
+      call LAPACK_DGEMM('N','N', 1.0_BDKi, x%dqdt(:,elem_start:elem_start+p%nodes_per_elem-1), p%ShpDer, 0.0_BDKi, m%qp%vvp(:,:,nelem), ErrStat, ErrMsg)
 
-      !> Calculate the values for the
-
-         ! Initialize to zero for summation
-      m%qp%vvv(:,idx_qp,nelem) = 0.0_BDKi
-      m%qp%vvp(:,idx_qp,nelem) = 0.0_BDKi
-
-         ! Calculate the velocity term, velocity prime (derivative of velocity with respect to X-axis), and acceleration terms
-      DO idx_node=1,p%nodes_per_elem
-         m%qp%vvv(:,idx_qp,nelem) = m%qp%vvv(:,idx_qp,nelem) + p%Shp(idx_node,idx_qp)                             * x%dqdt(:,elem_start-1+idx_node)
-         m%qp%vvp(:,idx_qp,nelem) = m%qp%vvp(:,idx_qp,nelem) + p%ShpDer(idx_node,idx_qp)/p%Jacobian(idx_qp,nelem) * x%dqdt(:,elem_start-1+idx_node)
-      ENDDO
-
-   ENDDO
-
-   ENDDO
+      ! Apply Jacobian to get velocity derivative with respect to X-axis
+      do idx_qp = 1, p%nqp
+         m%qp%vvp(:,idx_qp,nelem) = m%qp%vvp(:,idx_qp,nelem) / p%Jacobian(idx_qp,nelem)
+      end do
+   end do
 
 END SUBROUTINE BD_QPDataVelocity
 
@@ -2861,30 +3102,23 @@ SUBROUTINE BD_QPDataAcceleration( p, OtherState, m )
    TYPE(BD_OtherStateType),      INTENT(IN   )  :: OtherState        !< Other states at t on input; at t+dt on outputs
    TYPE(BD_MiscVarType),         INTENT(INOUT)  :: m                 !< Misc/optimization variables
 
+   INTEGER(IntKi)                               :: ErrStat           !< Ignored error handling for LAPACK_GEMM
+   CHARACTER(ErrMsgLen)                         :: ErrMsg            !< Ignored error handling for LAPACK_GEMM
    INTEGER(IntKi)                               :: nelem             !< index of current element
    INTEGER(IntKi)                               :: idx_qp            !< index of current quadrature point
    INTEGER(IntKi)                               :: idx_node
    INTEGER(IntKi)                               :: elem_start
 
-
-
-      ! Initialize to zero for summation
-   m%qp%aaa = 0.0_BDKi
-
-      ! Calculate the acceleration term at t+dt (OtherState%acc is at t+dt)
-   
-   DO nelem=1,p%elem_total
+   ! Loop through elements
+   do nelem = 1, p%elem_total
       
       elem_start = p%node_elem_idx(nelem,1)
 
-      DO idx_qp=1,p%nqp   
-         DO idx_node=1,p%nodes_per_elem
-            m%qp%aaa(:,idx_qp,nelem) = m%qp%aaa(:,idx_qp,nelem) + p%Shp(idx_node,idx_qp) * OtherState%acc(:,elem_start-1+idx_node)
-         END DO         
-      END DO   
+      ! Interpolate the acceleration term at t+dt (OtherState%acc is at t+dt) to quadrature points
+      ! NOTE: errors from LAPACK_GEMM can only be due to matrix size mismatch, so they can be safely ignored if matrices are correct size
+      call LAPACK_GEMM('N','N', 1.0_BDKi, OtherState%acc(:,elem_start:elem_start+p%nodes_per_elem-1), p%Shp, 0.0_BDKi,  m%qp%aaa(:,:,nelem), ErrStat, ErrMsg)
       
-   END DO
-   
+   end do
 
 END SUBROUTINE BD_QPDataAcceleration
 
@@ -2972,23 +3206,20 @@ SUBROUTINE BD_DissipativeForce( nelem, p, m,fact )
    TYPE(BD_MiscVarType),         INTENT(INOUT)  :: m           !< Misc/optimization variables
    LOGICAL,                      INTENT(IN   )  :: fact
 
-   REAL(BDKi)                  :: SS_ome(3,3)
-   REAL(BDKi)                  :: ffd(6)
-   REAL(BDKi)                  :: D11(3,3)
-   REAL(BDKi)                  :: D12(3,3)
-   REAL(BDKi)                  :: D21(3,3)
-   REAL(BDKi)                  :: D22(3,3)
-   REAL(BDKi)                  :: b11(3,3)
-   REAL(BDKi)                  :: b12(3,3)
-   REAL(BDKi)                  :: alpha(3,3)
-
    INTEGER(IntKi)              :: idx_qp      !< index of current quadrature point
-   
-   
+   REAL(BDKi)                  :: ffd_t(6)
+      
    IF (.NOT. fact) then ! skip all but Fc and Fd terms
    
-      DO idx_qp=1,p%nqp   
-         call Calc_FC_FD_ffd() ! this modifies m%qp%Fc and m%qp%Fd
+      DO idx_qp=1,p%nqp
+         ! this modifies m%qp%Fc and m%qp%Fd
+         CALL Calc_FC_FD_ffd(m%qp%E1(:,idx_qp,nelem), &
+                             m%qp%vvv(:,idx_qp,nelem), &
+                             m%qp%vvp(:,idx_qp,nelem), &
+                             m%qp%betaC(:,:,idx_qp,nelem), &
+                             m%qp%Fc(:,idx_qp,nelem), &
+                             m%qp%Fd(:,idx_qp,nelem), &
+                             ffd_t)
       END DO
       
    ! bjj: we don't use these values when fact is FALSE, so let's save time and ignore them here, too.
@@ -3001,72 +3232,101 @@ SUBROUTINE BD_DissipativeForce( nelem, p, m,fact )
    !    m%qp%Yd(:,:,:,nelem)    = 0.0_BDKi
       
   ELSE 
-!FIXME:  sometime we can condense this with vector arithmetic and removing some variables that aren't needed.
    
       DO idx_qp=1,p%nqp      
 
-         CALL Calc_FC_FD_ffd()  ! this sets local variable ffd and modifies m%qp%Fc and m%qp%Fd
-                  
-         D11 = m%qp%betaC(1:3,1:3,idx_qp,nelem)
-         D12 = m%qp%betaC(1:3,4:6,idx_qp,nelem)
-         D21 = m%qp%betaC(4:6,1:3,idx_qp,nelem)
-         D22 = m%qp%betaC(4:6,4:6,idx_qp,nelem)
-         
-         b11(1:3,1:3) = -MATMUL(SkewSymMat(m%qp%E1(:,idx_qp,nelem)),D11)
-         b12(1:3,1:3) = -MATMUL(SkewSymMat(m%qp%E1(:,idx_qp,nelem)),D12)
-         
-         SS_ome = SkewSymMat( m%qp%vvv(4:6,idx_qp,nelem) )
-
-         ! Compute stiffness matrix Sd
-         m%qp%Sd(1:3,1:3,idx_qp,nelem) = -MATMUL(D11,SS_ome)
-         m%qp%Sd(1:3,4:6,idx_qp,nelem) = -MATMUL(D12,SS_ome)
-         m%qp%Sd(4:6,1:3,idx_qp,nelem) = -MATMUL(D21,SS_ome)
-         m%qp%Sd(4:6,4:6,idx_qp,nelem) = -MATMUL(D22,SS_ome)
-
-         ! Compute stiffness matrix Pd
-         m%qp%Pd(:,:,idx_qp,nelem) = 0.0_BDKi
-         m%qp%Pd(4:6,1:3,idx_qp,nelem) = SkewSymMat(ffd(1:3)) - MATMUL(b11,SS_ome)
-         m%qp%Pd(4:6,4:6,idx_qp,nelem) = -MATMUL(b12,SS_ome)
-
-         ! Compute stiffness matrix Od
-         m%qp%Od(:,1:3,idx_qp,nelem) = 0.0_BDKi
-         alpha = SkewSymMat(m%qp%vvp(1:3,idx_qp,nelem)) - MATMUL(SS_ome,SkewSymMat(m%qp%E1(:,idx_qp,nelem)))
-         m%qp%Od(1:3,4:6,idx_qp,nelem) = MATMUL(D11,alpha) - SkewSymMat(ffd(1:3))
-         m%qp%Od(4:6,4:6,idx_qp,nelem) = MATMUL(D21,alpha) - SkewSymMat(ffd(4:6))
-
-         ! Compute stiffness matrix Qd
-         m%qp%Qd(:,:,idx_qp,nelem)    = 0.0_BDKi
-         m%qp%Qd(4:6,4:6,idx_qp,nelem) = -MATMUL(SkewSymMat(m%qp%E1(:,idx_qp,nelem)),m%qp%Od(1:3,4:6,idx_qp,nelem))
-         ! Compute gyroscopic matrix Gd
-         m%qp%Gd(:,1:3,idx_qp,nelem)   = 0.0_BDKi
-         m%qp%Gd(1:3,4:6,idx_qp,nelem) = TRANSPOSE(b11)
-         m%qp%Gd(4:6,4:6,idx_qp,nelem) = TRANSPOSE(b12)
-
-         ! Compute gyroscopic matrix Xd
-         m%qp%Xd(:,:,idx_qp,nelem)    = 0.0_BDKi
-         m%qp%Xd(4:6,4:6,idx_qp,nelem) = -MATMUL(SkewSymMat(m%qp%E1(:,idx_qp,nelem)),m%qp%Gd(1:3,4:6,idx_qp,nelem))
-
-         ! Compute gyroscopic matrix Yd
-         m%qp%Yd(1:3,:,idx_qp,nelem)   = 0.0_BDKi
-         m%qp%Yd(4:6,1:3,idx_qp,nelem) = b11
-         m%qp%Yd(4:6,4:6,idx_qp,nelem) = b12
+         ! this sets local variable ffd and modifies m%qp%Fc and m%qp%Fd
+         CALL Calc_FC_FD_ffd(m%qp%E1(:,idx_qp,nelem), &
+                             m%qp%vvv(:,idx_qp,nelem), &
+                             m%qp%vvp(:,idx_qp,nelem), &
+                             m%qp%betaC(:,:,idx_qp,nelem), &
+                             m%qp%Fc(:,idx_qp,nelem), &
+                             m%qp%Fd(:,idx_qp,nelem), &
+                             ffd_t)
+                     
+         call Calc_Sd_Pd_Od_Qd_Gd_Xd_Yd(m%qp%E1(:,idx_qp,nelem), &
+                                        m%qp%vvp(:,idx_qp,nelem), &
+                                        m%qp%betaC(:,:,idx_qp,nelem), &
+                                        ffd_t, &
+                                        m%qp%Sd(:,:,idx_qp,nelem), &
+                                        m%qp%Od(:,:,idx_qp,nelem), &
+                                        m%qp%Qd(:,:,idx_qp,nelem), &
+                                        m%qp%Gd(:,:,idx_qp,nelem), &
+                                        m%qp%Xd(:,:,idx_qp,nelem), &
+                                        m%qp%Yd(:,:,idx_qp,nelem), &
+                                        m%qp%Pd(:,:,idx_qp,nelem))
       END DO   
    ENDIF
 
 CONTAINS
-   SUBROUTINE Calc_FC_FD_ffd()
-      REAL(BDKi)  :: eed(6)
-   
+   subroutine Calc_Sd_Pd_Od_Qd_Gd_Xd_Yd(E1, vvp, betaC, ffd, Sd, Od, Qd, Gd, Xd, Yd, Pd)
+      REAL(BDKi), intent(in)     :: E1(:), vvp(:), betaC(:,:), ffd(:)
+      REAL(BDKi), intent(out)    :: Sd(:,:), Od(:,:), Qd(:,:), Gd(:,:), Xd(:,:), Yd(:,:), Pd(:,:)
+      REAL(BDKi)                 :: D11(3,3), D12(3,3), D21(3,3), D22(3,3)
+      REAL(BDKi)                 :: b11(3,3), b12(3,3)
+      REAL(BDKi)                 :: alpha(3,3)
+      REAL(BDKi)                 :: SS_ome(3,3)
+
+      D11 = betaC(1:3,1:3)
+      D12 = betaC(1:3,4:6)
+      D21 = betaC(4:6,1:3)
+      D22 = betaC(4:6,4:6)
+      
+      b11(1:3,1:3) = -MATMUL(SkewSymMat(E1),D11)
+      b12(1:3,1:3) = -MATMUL(SkewSymMat(E1),D12)
+      
+      SS_ome = SkewSymMat( m%qp%vvv(4:6,idx_qp,nelem) )
+
+      ! Compute stiffness matrix Sd
+      Sd(1:3,1:3) = -MATMUL(D11,SS_ome)
+      Sd(1:3,4:6) = -MATMUL(D12,SS_ome)
+      Sd(4:6,1:3) = -MATMUL(D21,SS_ome)
+      Sd(4:6,4:6) = -MATMUL(D22,SS_ome)
+
+      ! Compute stiffness matrix Pd
+      Pd = 0.0_BDKi
+      Pd(4:6,1:3) = SkewSymMat(ffd(1:3)) - MATMUL(b11,SS_ome)
+      Pd(4:6,4:6) = -MATMUL(b12,SS_ome)
+
+      ! Compute stiffness matrix Od
+      alpha = SkewSymMat(vvp(1:3)) - MATMUL(SS_ome,SkewSymMat(E1))
+      Od(:,1:3) = 0.0_BDKi
+      Od(1:3,4:6) = MATMUL(D11,alpha) - SkewSymMat(ffd(1:3))
+      Od(4:6,4:6) = MATMUL(D21,alpha) - SkewSymMat(ffd(4:6))
+
+      ! Compute stiffness matrix Qd
+      Qd          = 0.0_BDKi
+      Qd(4:6,4:6) = -MATMUL(SkewSymMat(E1),Od(1:3,4:6))
+      
+      ! Compute gyroscopic matrix Gd
+      Gd(:,1:3)   = 0.0_BDKi
+      Gd(1:3,4:6) = TRANSPOSE(b11)
+      Gd(4:6,4:6) = TRANSPOSE(b12)
+
+      ! Compute gyroscopic matrix Xd
+      Xd          = 0.0_BDKi
+      Xd(4:6,4:6) = -MATMUL(SkewSymMat(E1),Gd(1:3,4:6))
+
+      ! Compute gyroscopic matrix Yd
+      Yd(1:3,:)   = 0.0_BDKi
+      Yd(4:6,1:3) = b11
+      Yd(4:6,4:6) = b12
+   end subroutine
+
+   SUBROUTINE Calc_FC_FD_ffd(E1, vvv, vvp, betaC, Fc, Fd, ffd)
+      REAL(BDKi), intent(in)     :: E1(:), vvv(:), vvp(:), betaC(:,:)
+      REAL(BDKi), intent(out)    :: Fc(:), Fd(:), ffd(:)
+      REAL(BDKi)                 :: eed(6)
+
       ! Compute strain rates
-      eed      = m%qp%vvp(1:6,idx_qp,nelem)
-      eed(1:3) = eed(1:3) + cross_product(m%qp%E1(:,idx_qp,nelem),m%qp%vvv(4:6,idx_qp,nelem))
+      eed      = vvp
+      eed(1:3) = eed(1:3) + cross_product(E1,vvv(4:6))
 
       ! Compute dissipative force
-      ffd(1:6) = MATMUL(m%qp%betaC(:,:,idx_qp,nelem),eed)
+      ffd(1:6) = MATMUL(betaC(:,:),eed)
 
-      m%qp%Fc(1:6,idx_qp,nelem) = m%qp%Fc(1:6,idx_qp,nelem) + ffd
-      m%qp%Fd(4:6,idx_qp,nelem) = m%qp%Fd(4:6,idx_qp,nelem) + cross_product(ffd(1:3),m%qp%E1(:,idx_qp,nelem))
-   
+      Fc(1:6) = Fc(1:6) + ffd
+      Fd(4:6) = Fd(4:6) + cross_product(ffd(1:3),E1)
    END SUBROUTINE Calc_FC_FD_ffd
 END SUBROUTINE BD_DissipativeForce
 
@@ -3143,20 +3403,21 @@ END SUBROUTINE BD_AssembleRHS
 !-----------------------------------------------------------------------------------------------------------------------------------
 !> This subroutine total element forces and mass matrices
 !FIXME: note similarities with BD_ElementMatrixGA2
-SUBROUTINE BD_ElementMatrixAcc(  nelem, p, m )
+SUBROUTINE BD_ElementMatrixAcc(  nelem, p, OtherState, m )
 
    INTEGER(IntKi),               INTENT(IN   )  :: nelem       !< number of current element
    TYPE(BD_ParameterType),       INTENT(IN   )  :: p           !< Parameters
+   TYPE(BD_OtherStateType),      INTENT(IN   )  :: OtherState  !< other states -- includes the orientation
    TYPE(BD_MiscVarType),         INTENT(INOUT)  :: m           !< Misc/optimization variables
 
    CHARACTER(*), PARAMETER     :: RoutineName = 'BD_ElementMatrixAcc'
 
 
    CALL BD_ElasticForce( nelem, p, m, .FALSE. )                ! Calculate Fc, Fd only
-   IF(p%damp_flag .NE. 0) THEN
+   IF(p%damp_flag .EQ. 1) THEN
       CALL BD_DissipativeForce( nelem, p, m, .FALSE. )         ! Calculate dissipative terms on Fc, Fd
    ENDIF
-   CALL BD_GravityForce( nelem, p, m, p%gravity )              ! Calculate Fg      
+   CALL BD_GravityForce( nelem, p, m, MATMUL(p%gravity,OtherState%GlbRot) )              ! Calculate Fg      
    CALL BD_GyroForce( nelem, p, m )                            ! Calculate Fb  (velocity terms from InertialForce with aaa=0)
 
    CALL BD_InertialMassMatrix( nelem, p, m )                   ! Calculate Mi
@@ -3182,21 +3443,21 @@ SUBROUTINE BD_InertialMassMatrix( nelem, p, m )
    INTEGER(IntKi)              :: i
    INTEGER(IntKi)              :: idx_qp      !< index of current quadrature point
 
-   do idx_qp=1,p%nqp
+   m%qp%Mi(:,:,:,nelem) = 0.0_BDKi
 
-      m%qp%Mi(:,:,idx_qp,nelem) = 0.0_BDKi
+   do idx_qp=1,p%nqp
 
          ! Set diagonal values for mass
       DO i=1,3
-          m%qp%Mi(i,i,idx_qp,nelem) = p%qp%mmm(idx_qp,nelem)
+          m%qp%Mi(idx_qp,i,i,nelem) = p%qp%mmm(idx_qp,nelem)
       ENDDO
 
          ! set mass-inertia coupling terms
-      m%qp%Mi(1:3,4:6,idx_qp,nelem) = -SkewSymMat(m%qp%RR0mEta(:,idx_qp,nelem))
-      m%qp%Mi(4:6,1:3,idx_qp,nelem) =  SkewSymMat(m%qp%RR0mEta(:,idx_qp,nelem))
+      m%qp%Mi(idx_qp,1:3,4:6,nelem) = -SkewSymMat(m%qp%RR0mEta(:,idx_qp,nelem))
+      m%qp%Mi(idx_qp,4:6,1:3,nelem) =  SkewSymMat(m%qp%RR0mEta(:,idx_qp,nelem))
 
          ! Set inertia terms
-      m%qp%Mi(4:6,4:6,idx_qp,nelem) = m%qp%rho(:,:,idx_qp,nelem)
+      m%qp%Mi(idx_qp,4:6,4:6,nelem) = m%qp%rho(:,:,idx_qp,nelem)
 
    end do
    
@@ -3235,164 +3496,6 @@ END SUBROUTINE BD_GyroForce
 
 
 !-----------------------------------------------------------------------------------------------------------------------------------
-!> calculate Lagrangian interpolant tensor at ns points where basis
-!! functions are assumed to be associated with (np+1) GLL points on [-1,1]
-SUBROUTINE BD_diffmtc( nodes_per_elem,GLL_nodes,QPtN,nqp,Shp,ShpDer )
-
-   ! See Bauchau equations 17.1 - 17.5
-   
-   INTEGER(IntKi),         INTENT(IN   )  :: nodes_per_elem !< Nodes per elemenent
-   REAL(BDKi),             INTENT(IN   )  :: GLL_nodes(:)   !< GLL_nodes(p%nodes_per_elem): location of the (p%nodes_per_elem) p%GLL points
-   REAL(BDKi),             INTENT(IN   )  :: QPtN(:)        !< Locations of quadrature points ([-1 1])
-   INTEGER(IntKi),         INTENT(IN   )  :: nqp            !< number of quadrature points to consider. Should be size of 2nd index of Shp & ShpDer
-   REAL(BDKi),             INTENT(INOUT)  :: Shp(:,:)       !< p%Shp    (or another Shp array for when we add outputs at arbitrary locations)
-   REAL(BDKi),             INTENT(INOUT)  :: ShpDer(:,:)    !< p%ShpDer (or another Shp array for when we add outputs at arbitrary locations)
-
-   REAL(BDKi)                  :: dnum
-   REAL(BDKi)                  :: den
-   REAL(BDKi),        PARAMETER:: eps = SQRT(EPSILON(eps)) !1.0D-08
-   INTEGER(IntKi)              :: l
-   INTEGER(IntKi)              :: j
-   INTEGER(IntKi)              :: i
-   INTEGER(IntKi)              :: k
-
-   ! See Bauchau equations 17.1 - 17.5
-   
-   Shp(:,:)     = 0.0_BDKi
-   ShpDer(:,:)  = 0.0_BDKi
-   
-
-   do j = 1,nqp
-      do l = 1,nodes_per_elem
-
-       if ((abs(QPtN(j)-1.).LE.eps).AND.(l.EQ.nodes_per_elem)) then           !adp: FIXME: do we want to compare to eps, or EqualRealNos???
-         ShpDer(l,j) = REAL((nodes_per_elem)*(nodes_per_elem-1), BDKi)/4.0_BDKi
-       elseif ((abs(QPtN(j)+1.).LE.eps).AND.(l.EQ.1)) then
-         ShpDer(l,j) = -REAL((nodes_per_elem)*(nodes_per_elem-1), BDKi)/4.0_BDKi
-       elseif (abs(QPtN(j)-GLL_nodes(l)).LE.eps) then
-         ShpDer(l,j) = 0.0_BDKi
-       else
-         ShpDer(l,j) = 0.0_BDKi
-         den = 1.0_BDKi
-         do i = 1,nodes_per_elem
-           if (i.NE.l) then
-             den = den*(GLL_nodes(l)-GLL_nodes(i))
-           endif
-           dnum = 1.0_BDKi
-           do k = 1,nodes_per_elem
-             if ((k.NE.l).AND.(k.NE.i).AND.(i.NE.l)) then
-               dnum = dnum*(QPtN(j)-GLL_nodes(k))
-             elseif (i.EQ.l) then
-               dnum = 0.0_BDKi
-             endif
-           enddo
-           ShpDer(l,j) = ShpDer(l,j) + dnum
-         enddo
-         ShpDer(l,j) = ShpDer(l,j)/den
-       endif
-     enddo
-   enddo
-
-   do j = 1,nqp
-      do l = 1,nodes_per_elem
-
-       if(abs(QPtN(j)-GLL_nodes(l)).LE.eps) then
-         Shp(l,j) = 1.0_BDKi
-       else
-         dnum = 1.0_BDKi
-         den  = 1.0_BDKi
-         do k = 1,nodes_per_elem
-           if (k.NE.l) then
-             den  = den *(GLL_nodes(l) - GLL_nodes(k))
-             dnum = dnum*(QPtN(j) - GLL_nodes(k))
-           endif
-         enddo
-         Shp(l,j) = dnum/den
-       endif
-     enddo
-   enddo
-
-
- END SUBROUTINE BD_diffmtc
-
-
-!-----------------------------------------------------------------------------------------------------------------------------------
-!> This subroutine computes the segment ratio between the segment and member length.
-!! Segment: defined by two adjacent key points
-SUBROUTINE BD_SegmentEta(member_total, kp_member, kp_coordinate, SP_Coef, segment_eta)
-
-   INTEGER(IntKi),INTENT(IN   ):: member_total        !< number of total members that make up the beam, InputFileData%member_total from BD input file
-   INTEGER(IntKi),INTENT(IN   ):: kp_member(:)        !< Number of key points of each member, InputFileData%kp_member from BD input file
-   REAL(BDKi),    INTENT(IN   ):: kp_coordinate(:,:)  !< Keypoints coordinates, from BD input file InputFileData%kp_coordinate(member key points,1:4);
-                                                      !! The last index refers to [1=x;2=y;3=z;4=-twist] compared to what was entered in the input file
-   REAL(BDKi),    INTENT(IN   ):: SP_Coef(:,:,:)      !< cubic spline coefficients; index 1 = [1, kp_member-1];
-                                                      !! index 2 = [1,4] (index of cubic-spline coefficient 1=constant;2=linear;3=quadratic;4=cubic terms);
-                                                      !! index 3 = [1,4] (each column of kp_coord)
-   REAL(BDKi),    INTENT(  OUT):: segment_eta(:)      !< ratio of segment length to element length of a beam's member - computed based on Spline basis
-
-   REAL(BDKi)                  :: eta0
-   REAL(BDKi)                  :: eta1
-   REAL(BDKi)                  :: temp_pos0(3)
-   REAL(BDKi)                  :: temp_pos1(3)
-   REAL(BDKi)                  :: sample_step
-   REAL(BDKi)                  :: dist_to_member_start
-   REAL(BDKi)                  :: segment_length(size(kp_coordinate,1)-1) ! segment length using spline basis
-   REAL(BDKi)                  :: member_length(member_total) ! member length using spline basis or FE quadrature
-   INTEGER(IntKi), parameter   :: sample_total = 3
-
-   INTEGER(IntKi)              :: i
-   INTEGER(IntKi)              :: j
-   INTEGER(IntKi)              :: k
-   INTEGER(IntKi)              :: m
-   INTEGER(IntKi)              :: temp_id
-   INTEGER(IntKi)              :: id0
-   INTEGER(IntKi)              :: id1
-
-
-   member_length  = 0.0_BDKi ! initialize to zero
-   segment_length = 0.0_BDKi ! initialize to zero
-
-   temp_id = 0
-   DO i=1,member_total
-       IF(i .EQ. 1) THEN
-           id0 = 1
-           id1 = kp_member(i)
-       ELSE
-           id0 = id1
-           id1 = id0 + kp_member(i) - 1
-       ENDIF
-
-       DO m=1,kp_member(i)-1
-           temp_id = temp_id + 1
-           sample_step = (kp_coordinate(id0+m,3) - kp_coordinate(id0+m-1,3))/(sample_total-1)
-           DO j=1,sample_total-1
-               eta0 = kp_coordinate(temp_id,3) + (j-1)*sample_step
-               eta1 = kp_coordinate(temp_id,3) +     j*sample_step
-               DO k=1,3 ! x-y-z coordinate
-                   temp_pos0(k) = SP_Coef(temp_id,1,k) + SP_Coef(temp_id,2,k)*eta0 + SP_Coef(temp_id,3,k)*eta0**2 + SP_Coef(temp_id,4,k)*eta0**3
-                   temp_pos1(k) = SP_Coef(temp_id,1,k) + SP_Coef(temp_id,2,k)*eta1 + SP_Coef(temp_id,3,k)*eta1**2 + SP_Coef(temp_id,4,k)*eta1**3
-               ENDDO
-               temp_pos1 = temp_pos1 - temp_pos0 ! array of length 3
-               segment_length(temp_id) = segment_length(temp_id) + TwoNorm(temp_pos1)
-           ENDDO
-           member_length(i) = member_length(i) + segment_length(temp_id)
-       ENDDO
-   ENDDO
-
-   ! ratio of segment's length compared to member length
-   temp_id = 0
-   DO i=1,member_total
-       dist_to_member_start = 0.0_BDKi
-       DO j=1,kp_member(i)-1
-           temp_id = temp_id + 1
-           dist_to_member_start = dist_to_member_start + segment_length(temp_id)
-           segment_eta(temp_id) = dist_to_member_start/member_length(i)
-       ENDDO
-   ENDDO
-
-END SUBROUTINE BD_SegmentEta
-
-!-----------------------------------------------------------------------------------------------------------------------------------
 !> This subroutine computes the member length ratio w.r.t. length of a beam.
 !! It also computes the total length.
 !! Member: FE element
@@ -3414,7 +3517,7 @@ SUBROUTINE BD_MemberEta(member_total, QPtW, Jac, member_eta, total_length)
    member_eta    = 0.0_BDKi ! initialize to zero
 
    ! total beam length
-   DO i=1,member_total
+   DO i=1,member_total  ! mas: why not call these elements? 
        DO j=1,size(Jac,1) ! loop over number of quadrature points
            member_length(i) = member_length(i) + QPtW(j)*Jac(j,i)
        ENDDO
@@ -3425,176 +3528,6 @@ SUBROUTINE BD_MemberEta(member_total, QPtW, Jac, member_eta, total_length)
    member_eta = member_length/total_length
 
 END SUBROUTINE BD_MemberEta
-
-
-!-----------------------------------------------------------------------------------------------------------------------------------
-!> This subroutine computes the coefficients for cubic-spline fit of all members given key point locations.
-subroutine ComputeSplineCoeffs(InputFileData, SP_Coef, ErrStat, ErrMsg)
-   type(BD_InputFile),      intent(in   ) :: InputFileData   !< data from the input file
-   REAL(BDKi), ALLOCATABLE, INTENT(  OUT) :: SP_Coef(:,:,:)  !< Coefficients for cubic spline interpolation;
-                                                             !! index 1 = [1, kp_member-1];
-                                                             !! index 2 = [1,4] (index of cubic-spline coefficient 1=constant;2=linear;3=quadratic;4=cubic terms);
-                                                             !! index 3 = [1,4] (each column of kp_coord)
-   INTEGER(IntKi),          INTENT(  OUT) :: ErrStat         !< Error status of the operation
-   CHARACTER(*),            INTENT(  OUT) :: ErrMsg          !< Error message if ErrStat /= ErrID_None
-
-   INTEGER(IntKi)              :: i                          ! loop counter for members
-   INTEGER(IntKi)              :: MemberFirstKP              ! first key point in the member
-   INTEGER(IntKi)              :: MemberLastKP               ! last key point in the member
-
-   INTEGER(IntKi)              :: ErrStat2                   ! Temporary Error status
-   CHARACTER(ErrMsgLen)        :: ErrMsg2                    ! Temporary Error message
-   CHARACTER(*), PARAMETER     :: RoutineName = 'ComputeSplineCoeffs'
-
-
-
-   ErrStat = ErrID_None
-   ErrMsg  = ""
-
-   CALL AllocAry(SP_Coef,InputFileData%kp_total-1,4,4,'Spline coefficient matrix',ErrStat2,ErrMsg2)
-   CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
-   if (ErrStat >= AbortErrLev) return
-
-   ! compute the spline coefficients, SP_Coef
-   MemberFirstKP = 1
-   DO i=1,InputFileData%member_total
-       MemberLastKP = MemberFirstKP + InputFileData%kp_member(i) - 1
-       CALL BD_ComputeIniCoef(InputFileData%kp_member(i),InputFileData%kp_coordinate(MemberFirstKP:MemberLastKP,:),&
-                              SP_Coef(MemberFirstKP:MemberLastKP-1,:,:), ErrStat2, ErrMsg2)
-                              
-       CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
-       if (ErrStat >= AbortErrLev) return
-       
-       MemberFirstKP = MemberLastKP ! if we have multiple members, there is an overlapping key point, thus we start at the previous end point
-   ENDDO
-
-END SUBROUTINE ComputeSplineCoeffs
-
-
-!-----------------------------------------------------------------------------------------------------------------------------------
-!> This subroutine computes the coefficients for cubic-spline fit
-!! given key point locations of a single member. Clamped conditions are used at the
-!! two end nodes: f''(0) = f''(1) = 0
-SUBROUTINE BD_ComputeIniCoef(kp_member,kp_coordinate,SP_Coef,ErrStat,ErrMsg)
-
-   REAL(BDKi),    INTENT(IN   ):: kp_coordinate(:,:)  !< Keypoints coordinates, from BD input file InputFileData%kp_coordinate(member key points,1:4);
-                                                      !! The last index refers to [1=x;2=y;3=z;4=-twist] compared to what was entered in the input file
-   INTEGER(IntKi),INTENT(IN   ):: kp_member           !< Number of key points of each member, InputFileData%kp_member(i) from BD input file
-   REAL(BDKi),    INTENT(INOUT):: SP_Coef(:,:,:)      !< Coefficients for cubic spline interpolation (intent "inout" instead of "out" only because this is a portion of an allocatable array, which sometimes does weird stuff in gfortran);
-                                                      !! index 1 = [1, kp_member-1];
-                                                      !! index 2 = [1,4] (index of cubic-spline coefficient 1=constant;2=linear;3=quadratic;4=cubic terms);
-                                                      !! index 3 = [1,4] (each column of kp_coord)
-   INTEGER(IntKi),INTENT(  OUT):: ErrStat             !< Error status of the operation
-   CHARACTER(*),  INTENT(  OUT):: ErrMsg              !< Error message if ErrStat /= ErrID_None
-
-   REAL(BDKi),      ALLOCATABLE:: K(:,:)              ! coefficient matrix
-   REAL(BDKi),      ALLOCATABLE:: RHS(:)              ! right hand side of equation we're solving to get the cubic-spline coefficients
-   INTEGER(IntKi),  ALLOCATABLE:: indx(:)
-   INTEGER(IntKi)              :: i
-   INTEGER(IntKi)              :: j                   ! loop over key points in this member
-   INTEGER(IntKi)              :: m
-   INTEGER(IntKi)              :: n                   ! size of matrices = 4*(kp_member-1)
-   INTEGER(IntKi)              :: temp_id1
-   INTEGER(IntKi)              :: ErrStat2                     ! Temporary Error status
-   CHARACTER(ErrMsgLen)        :: ErrMsg2                      ! Temporary Error message
-   CHARACTER(*), PARAMETER     :: RoutineName = 'BD_ComputeIniCoef'
-
-   ErrStat = ErrID_None
-   ErrMsg  = ""
-
-   n = 4*(kp_member-1)
-   CALL AllocAry( K, n, n, 'Coefficient matrix', ErrStat2, ErrMsg2)
-      CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
-   CALL AllocAry( RHS, n,  'RHS', ErrStat2, ErrMsg2)
-      CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
-   CALL AllocAry( indx, n,  'IPIV', ErrStat2, ErrMsg2)
-      CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
-
-   if (ErrStat < AbortErrLev) then ! do these calculations only if we could allocate space
-     ! note that if we return here instead, we could have a memory leak unless we deallocate the local arrays
-   
-      ! compute K, the coefficient matrix, based on the z-component of the entered key points:
-      ! all of the coefficients will depend on kp_zr
-      K(:,:) = 0.0_BDKi
-
-      K(1,3) = 2.0_BDKi
-      K(1,4) = 6.0_BDKi*kp_coordinate(1,3)
-      DO j=1,kp_member-1
-         temp_id1 = (j-1)*4
-
-         K(temp_id1+2,temp_id1+1) = 1.0_BDKi
-         K(temp_id1+2,temp_id1+2) = kp_coordinate(j,3)
-         K(temp_id1+2,temp_id1+3) = kp_coordinate(j,3)**2
-         K(temp_id1+2,temp_id1+4) = kp_coordinate(j,3)**3
-
-         K(temp_id1+3,temp_id1+1) = 1.0_BDKi
-         K(temp_id1+3,temp_id1+2) = kp_coordinate(j+1,3)
-         K(temp_id1+3,temp_id1+3) = kp_coordinate(j+1,3)**2
-         K(temp_id1+3,temp_id1+4) = kp_coordinate(j+1,3)**3
-      END DO
-
-       DO j=1,kp_member-2
-          temp_id1 = (j-1)*4
-
-          K(temp_id1+4,temp_id1+2) = 1.0_BDKi
-          K(temp_id1+4,temp_id1+3) = 2.0_BDKi*kp_coordinate(j+1,3)
-          K(temp_id1+4,temp_id1+4) = 3.0_BDKi*kp_coordinate(j+1,3)**2
-
-          K(temp_id1+4,temp_id1+6) = -1.0_BDKi
-          K(temp_id1+4,temp_id1+7) = -2.0_BDKi*kp_coordinate(j+1,3)
-          K(temp_id1+4,temp_id1+8) = -3.0_BDKi*kp_coordinate(j+1,3)**2
-
-          K(temp_id1+5,temp_id1+3) = 2.0_BDKi
-          K(temp_id1+5,temp_id1+4) = 6.0_BDKi*kp_coordinate(j+1,3)
-
-          K(temp_id1+5,temp_id1+7) = -2.0_BDKi
-          K(temp_id1+5,temp_id1+8) = -6.0_BDKi*kp_coordinate(j+1,3)
-       ENDDO
-
-       temp_id1 = (kp_member-2)*4
-       K(n,temp_id1+3) = 2.0_BDKi
-       K(n,temp_id1+4) = 6.0_BDKi*kp_coordinate(kp_member,3)
-
-          ! compute the factored K matrix so we can use it to solve for the coefficients later
-
-       CALL LAPACK_getrf( n, n, K,indx, ErrStat2, ErrMsg2)
-          CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
-
-
-       DO i=1,4 ! one for each column of kp_coordinate
-
-             ! compute the right hand side for the cubic spline fit
-          RHS(:) = 0.0_BDKi
-          DO j=1,kp_member-1
-             temp_id1 = (j-1)*4
-
-             RHS(temp_id1+2) = kp_coordinate(j,i)
-             RHS(temp_id1+3) = kp_coordinate(j+1,i)
-          ENDDO
-
-             ! solve for the cubic-spline coefficients
-          CALL LAPACK_getrs( 'N', n, K, indx, RHS, ErrStat2, ErrMsg2)
-             CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
-
-             ! convert cubic-spline coefficients in RHS to output array, Coef
-          DO j=1,kp_member-1
-             DO m=1,4
-                SP_Coef(j,m,i) = RHS( (j-1)*4 + m )
-             ENDDO
-          ENDDO
-       ENDDO
-
-   end if ! temp arrays are allocated
-
-      ! this is the cleanup() routine:
-   if (allocated(K   )) deallocate(K)
-   if (allocated(RHS )) deallocate(RHS)
-   if (allocated(indx)) deallocate(indx)
-
-END SUBROUTINE BD_ComputeIniCoef
-
-
-
 !-----------------------------------------------------------------------------------------------------------------------------------
 SUBROUTINE BD_Static(t,u,utimes,p,x,OtherState,m,ErrStat,ErrMsg)
 
@@ -3652,7 +3585,7 @@ SUBROUTINE BD_Static(t,u,utimes,p,x,OtherState,m,ErrStat,ErrMsg)
 
       
       ! Transform quantities from global frame to local (blade in BD coords) frame
-   CALL BD_InputGlobalLocal(p,u_interp)
+   CALL BD_InputGlobalLocal(p,OtherState,u_interp)
 
 
       ! Incorporate boundary conditions
@@ -3680,7 +3613,7 @@ SUBROUTINE BD_Static(t,u,utimes,p,x,OtherState,m,ErrStat,ErrMsg)
    DO j=1,p%ld_retries
 
        CALL BD_DistrLoadCopy( p, u_interp, m, load_test ) ! move the input loads from u_interp into misc vars
-       gravity_temp(:) = p%gravity(:)*load_test
+       gravity_temp(:) = MATMUL(p%gravity,OtherState%GlbRot)*load_test
 
        CALL BD_StaticSolution(x, gravity_temp, p, m, piter, ErrStat2, ErrMsg2)
        call SetErrStat(ErrStat2,ErrMsg2,ErrStat, ErrMsg, RoutineName)  ! concerned about error reporting
@@ -4021,19 +3954,10 @@ SUBROUTINE Integrate_ElementForce(nelem, p, m)
    INTEGER(IntKi)              :: idx_dof1
    CHARACTER(*), PARAMETER     :: RoutineName = 'Integrate_ElementForce'
 
-   DO i=1,p%nodes_per_elem
-      DO idx_dof1=1,p%dof_node
-      
-         m%elf(idx_dof1,i) = 0.0_BDKi
-         
-         DO idx_qp = 1,p%nqp ! dot_product( m%qp%Fc  (idx_dof1,:,nelem), p%QPtw_ShpDer( :,i))
-            m%elf(idx_dof1,i) = m%elf(idx_dof1,i) - m%qp%Fc  (idx_dof1,idx_qp,nelem)*p%QPtw_ShpDer(idx_qp,i)
-         END DO
-         
-         DO idx_qp = 1,p%nqp ! dot_product(m%qp%Ftemp(idx_dof1,:,nelem), p%QPtw_Shp_Jac(:,i,nelem) )
-            m%elf(idx_dof1,i) = m%elf(idx_dof1,i) - m%qp%Ftemp(idx_dof1,idx_qp,nelem)*p%QPtw_Shp_Jac(idx_qp,i,nelem)
-         END DO
-         
+   DO i = 1, p%nodes_per_elem
+      DO idx_dof1 = 1, p%dof_node
+         m%elf(idx_dof1,i) = -(dot_product(m%qp%Fc(idx_dof1,:,nelem), p%QPtw_ShpDer(:,i)) + &
+                               dot_product(m%qp%Ftemp(idx_dof1,:,nelem), p%QPtw_Shp_Jac(:,i,nelem)))
       ENDDO
    ENDDO
    
@@ -4046,30 +3970,27 @@ SUBROUTINE Integrate_ElementMass(nelem, p, m)
    TYPE(BD_ParameterType),       INTENT(IN   )  :: p           !< Parameters
    TYPE(BD_MiscVarType),         INTENT(INOUT)  :: m           !< Misc/optimization variables
 
-   INTEGER(IntKi)              :: idx_qp
-   INTEGER(IntKi)              :: i
-   INTEGER(IntKi)              :: j
-   INTEGER(IntKi)              :: idx_dof1, idx_dof2
    CHARACTER(*), PARAMETER     :: RoutineName = 'Integrate_ElementMass'
+   INTEGER(IntKi)              :: ErrStat
+   CHARACTER(ErrMsgLen)        :: ErrMsg
+   INTEGER(IntKi)              :: j
+   INTEGER(IntKi)              :: idx_dof2
+   ! INTEGER(IntKi)              :: idx_qp
+   ! INTEGER(IntKi)              :: i
+   ! INTEGER(IntKi)              :: idx_dof1
 
-   DO j=1,p%nodes_per_elem
-      DO idx_dof2=1,p%dof_node
-      
-         DO i=1,p%nodes_per_elem
-            DO idx_dof1=1,p%dof_node
-            
-               m%elm(idx_dof1,i,idx_dof2,j) = 0.0_BDKi
-               
-               DO idx_qp = 1,p%nqp
-                  m%elm(idx_dof1,i,idx_dof2,j) = m%elm(idx_dof1,i,idx_dof2,j) + m%qp%Mi(idx_dof1,idx_dof2,idx_qp,nelem)*p%QPtw_Shp_Shp_Jac(idx_qp,i,j,nelem)
-               END DO
-               
-            END DO
-         END DO
-         
+   DO j = 1, p%nodes_per_elem
+      DO idx_dof2 = 1, p%dof_node
+         ! DO i = 1, p%nodes_per_elem
+         !    DO idx_dof1 = 1, p%dof_node
+         !       do idx_qp = 1, p%nqp
+         !          m%elm(idx_dof1,i,idx_dof2,j) = m%elm(idx_dof1,i,idx_dof2,j) + (m%qp%Mi(idx_qp,idx_dof1,idx_dof2,nelem),p%QPtw_Shp_Shp_Jac(idx_qp,i,j,nelem))
+         !       end do
+         !    END DO
+         ! END DO
+         call LAPACK_gemm('T', 'N', 1.0_R8Ki, m%qp%Mi(:,:,idx_dof2,nelem), p%QPtw_Shp_Shp_Jac(:,:,j,nelem), 0.0_R8Ki, m%elm(:,:,idx_dof2,j), ErrStat, ErrMsg)
       END DO
    END DO
-   
    
 END SUBROUTINE Integrate_ElementMass
 
@@ -4122,7 +4043,7 @@ SUBROUTINE BD_QuasiStatic(u,p,x,OtherState,m,ErrStat,ErrMsg, RampLoad)
 
 
       ! Transform quantities from global frame to local (blade in BD coords) frame
-   CALL BD_InputGlobalLocal(p,u_temp)
+   CALL BD_InputGlobalLocal(p,OtherState,u_temp)
 
       ! Incorporate boundary conditions
    CALL BD_BoundaryGA2(x,p,u_temp,OtherState, ErrStat2, ErrMsg2)
@@ -4375,7 +4296,7 @@ SUBROUTINE BD_GenerateQuasiStaticElement( x, OtherState, p, m )
 
    DO nelem=1,p%elem_total
 
-      CALL BD_QuasiStaticElementMatrix( nelem, p, m )
+      CALL BD_QuasiStaticElementMatrix( nelem, p, OtherState, m )
       CALL BD_AssembleStiffK(nelem,p,m%elk,m%StifK)
       CALL BD_AssembleRHS(nelem,p,m%elf,m%RHS)
 
@@ -4386,10 +4307,11 @@ END SUBROUTINE BD_GenerateQuasiStaticElement
 
 
 !-----------------------------------------------------------------------------------------------------------------------------------
-SUBROUTINE BD_QuasiStaticElementMatrix(  nelem, p, m )
+SUBROUTINE BD_QuasiStaticElementMatrix(  nelem, p, OtherState, m )
 
    INTEGER(IntKi),               INTENT(IN   )  :: nelem             !< current element number
    TYPE(BD_ParameterType),       INTENT(IN   )  :: p                 !< Parameters
+   TYPE(BD_OtherStateType),      INTENT(IN   )  :: OtherState        !< other states (contains global rotation to get gravity in correct orientation)
    TYPE(BD_MiscVarType),         INTENT(INOUT)  :: m                 !< misc/optimization variables
 
    INTEGER(IntKi)              :: i
@@ -4400,7 +4322,7 @@ SUBROUTINE BD_QuasiStaticElementMatrix(  nelem, p, m )
 
 
    CALL BD_ElasticForce(  nelem,p,m,.true. )    ! Calculate Fc, Fd  [and Oe, Pe, and Qe for N-R algorithm]
-   CALL BD_GravityForce(  nelem,p,m,p%gravity )   ! Calculate Fg
+   CALL BD_GravityForce(  nelem,p,m,MATMUL(p%gravity,OtherState%GlbRot) )   ! Calculate Fg
    
       ! NOTE: we only use Ki (not Gi or Mi as we are not calculating \delta{a} or \delta{v})
    CALL BD_InertialForce( nelem,p,m,.true. )    ! Calculate Fi      [and Mi, Gi, Ki]
@@ -4452,9 +4374,10 @@ END SUBROUTINE BD_QuasiStaticElementMatrix
 ! nodes along beam axis for the static case. This is more involved than in the dynamic case because m%EFint is not calculated beforehand.
 ! Nodal forces = K u
 !FIXME:  NOTE: if we go to multiple elements for trap quadrature, we will need to double check this routine.
-SUBROUTINE BD_InternalForceMoment( x, p, m )
+SUBROUTINE BD_InternalForceMoment( x, OtherState, p, m )
 
    TYPE(BD_ContinuousStateType), INTENT(IN   ) :: x            !< Continuous states at t
+   TYPE(BD_OtherStateType),      INTENT(IN   ) :: OtherState   !< Other states at t (contains blade reference frame)
    TYPE(BD_ParameterType),       INTENT(IN   ) :: p            !< Parameters
    TYPE(BD_MiscVarType),         INTENT(INOUT) :: m            !< misc/optimization variables
 
@@ -4566,8 +4489,8 @@ SUBROUTINE BD_InternalForceMoment( x, p, m )
 
       ! Rotate coords to global reference frame
    DO i=1,SIZE(m%BldInternalForceFE,DIM=2)
-      m%BldInternalForceFE(1:3,i) =  MATMUL(p%GlbRot,m%BldInternalForceFE(1:3,i))
-      m%BldInternalForceFE(4:6,i) =  MATMUL(p%GlbRot,m%BldInternalForceFE(4:6,i))
+      m%BldInternalForceFE(1:3,i) =  MATMUL(OtherState%GlbRot,m%BldInternalForceFE(1:3,i))
+      m%BldInternalForceFE(4:6,i) =  MATMUL(OtherState%GlbRot,m%BldInternalForceFE(4:6,i))
    ENDDO
    
 
@@ -4680,7 +4603,7 @@ SUBROUTINE BD_GA2(t,n,u,utimes,p,x,xd,z,OtherState,m,ErrStat,ErrMsg)
       !................
       
          ! Transform quantities from global frame to local (blade) frame
-      CALL BD_InputGlobalLocal(p,u_interp)
+      CALL BD_InputGlobalLocal(p,OtherState,u_interp)
 
          ! Copy over the DistrLoads
       CALL BD_DistrLoadCopy( p, u_interp, m )
@@ -4694,7 +4617,7 @@ SUBROUTINE BD_GA2(t,n,u,utimes,p,x,xd,z,OtherState,m,ErrStat,ErrMsg)
          end if
 
          ! initialize the accelerations in OtherState%Acc
-      CALL BD_InitAcc( u_interp, p, x, m, OtherState%Acc, ErrStat2, ErrMsg2)
+      CALL BD_InitAcc( u_interp, p, x, OtherState, m, OtherState%Acc, ErrStat2, ErrMsg2)
          call SetErrStat(ErrStat2,ErrMsg2,ErrStat,ErrMsg,RoutineName)
          if (ErrStat >= AbortErrLev) then
             call cleanup()
@@ -4733,16 +4656,8 @@ SUBROUTINE BD_GA2(t,n,u,utimes,p,x,xd,z,OtherState,m,ErrStat,ErrMsg)
    call BD_Input_extrapinterp( u, utimes, u_interp, t+p%dt, ErrStat2, ErrMsg2 )
       call SetErrStat(ErrStat2,ErrMsg2,ErrStat,ErrMsg,RoutineName)
 
-   CALL BD_UpdateDiscState( t, n, u_interp, p, x, xd, z, OtherState, m, ErrStat2, ErrMsg2 )
-      call SetErrStat(ErrStat2,ErrMsg2,ErrStat,ErrMsg,RoutineName)
-
-      ! Actuator
-   IF( p%UsePitchAct ) THEN
-      CALL PitchActuator_SetBC(p, u_interp, xd)
-   ENDIF
-
       ! Transform quantities from global frame to local (blade in BD coords) frame
-   CALL BD_InputGlobalLocal(p,u_interp)
+   CALL BD_InputGlobalLocal(p,OtherState,u_interp)
 
       ! Copy over the DistrLoads
    CALL BD_DistrLoadCopy( p, u_interp, m )
@@ -4863,21 +4778,24 @@ SUBROUTINE BD_BoundaryGA2(x,p,u,OtherState, ErrStat, ErrMsg)
    INTEGER(IntKi),               INTENT(  OUT)  :: ErrStat     !< Error status of the operation
    CHARACTER(*),                 INTENT(  OUT)  :: ErrMsg      !< Error message if ErrStat /= ErrID_None
 
-   INTEGER(IntKi)                                     :: ErrStat2    ! Temporary Error status
-   CHARACTER(ErrMsgLen)                               :: ErrMsg2     ! Temporary Error message
+   INTEGER(IntKi)                               :: ErrStat2    ! Temporary Error status
+   CHARACTER(ErrMsgLen)                         :: ErrMsg2     ! Temporary Error message
    CHARACTER(*), PARAMETER                      :: RoutineName = 'BD_BoundaryGA2'
 
    ! Initialize ErrStat
    ErrStat = ErrID_None
    ErrMsg  = ""
 
+   ! NOTE: u is in a BD local frame.  So cannot use SetRefFrame routine (note there are differences here)
+
       ! Root displacements
-   x%q(1:3,1) = u%RootMotion%TranslationDisp(1:3,1)
+   x%q(1:3,1) = u%RootMotion%TranslationDisp(1:3,1) + &
+                    matmul(u%RootMotion%Position(:,1) - OtherState%GlbPos, OtherState%GlbRot)
 
       ! Root rotations
-   CALL ExtractRelativeRotation(u%RootMotion%Orientation(:,:,1),p, x%q(4:6,1), ErrStat2, ErrMsg2)
-   CALL SetErrStat(ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName)
-   if (ErrStat >= AbortErrLev) return
+   CALL ExtractRelativeRotation(u%RootMotion%Orientation(:,:,1),p, OtherState, x%q(4:6,1), ErrStat2, ErrMsg2)
+      CALL SetErrStat(ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName)
+      if (ErrStat >= AbortErrLev) return
 
       ! Root velocities/angular velocities and accelerations/angular accelerations
    x%dqdt(1:3,1)         = u%RootMotion%TranslationVel(1:3,1)
@@ -4951,15 +4869,32 @@ SUBROUTINE BD_DynamicSolutionGA2( x, OtherState, p, m, ErrStat, ErrMsg)
          ! extract the unconstrained stifness matrix
          m%LP_StifK_LU  =  m%LP_StifK(7:p%dof_total,7:p%dof_total)
 
-         ! note m%LP_indx is allocated larger than necessary (to allow us to use it in multiple places)
-         CALL LAPACK_getrf( p%dof_total-6, p%dof_total-6, m%LP_StifK_LU, m%LP_indx, ErrStat2, ErrMsg2)
-         CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
-         if (ErrStat >= AbortErrLev) return
+         ! Factoring of the matrix is done below after modal damping is added (if applicable).
       ENDIF
 
          ! Reshape 2d array into 1d for the use with the LAPACK solver
       m%LP_RHS       =  RESHAPE(m%RHS(:,:), (/p%dof_total/))
       m%LP_RHS_LU    =  m%LP_RHS(7:p%dof_total)
+
+      ! Modal damping
+      IF(p%damp_flag .EQ. 2) THEN
+         CALL BD_AddModalDampingRHS(p, x, OtherState, m, fact)
+
+         IF ( (p%tngt_stf_fd .OR. p%tngt_stf_comp) .AND. fact ) then
+            ! FD does not get incorporated to everything else,
+            ! but this function prints the error comparison.
+            CALL BD_FD_GA2_DAMPING(p, x, OtherState, m)
+         end if
+      ENDIF
+
+      if (fact) then
+         ! Factor iteration matrix after the damping matrix from modal damping is added.
+         CALL LAPACK_getrf( p%dof_total-6, p%dof_total-6, m%LP_StifK_LU, m%LP_indx, ErrStat2, ErrMsg2)
+         CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
+
+         ! note m%LP_indx is allocated larger than necessary (to allow us to use it in multiple places)
+         if (ErrStat >= AbortErrLev) return
+      end if
 
          ! Solve for X in A*X=B to get the accelerations of blade
       CALL LAPACK_getrs( 'N',p%dof_total-6, m%LP_StifK_LU, m%LP_indx, m%LP_RHS_LU, ErrStat2, ErrMsg2)
@@ -5123,6 +5058,131 @@ SUBROUTINE BD_FD_GA2( x, OtherState, p, m )
 
 END SUBROUTINE BD_FD_GA2
 
+! This subroutine does finite differencing for only the modal damping
+! of the GA2 algorithm. This is applied in a consistent way as the Newton update.
+SUBROUTINE BD_FD_GA2_DAMPING(p_in, x_in, OtherState_in, m_in)
+
+   TYPE(BD_ParameterType),       INTENT(IN   )  :: p_in           !< Parameters
+   TYPE(BD_ContinuousStateType), INTENT(IN   )  :: x_in           !< Continuous states
+   TYPE(BD_OtherStateType),      INTENT(IN   )  :: OtherState_in  !< other states (contains ref orientation)
+   TYPE(BD_MiscVarType),         INTENT(INOUT)  :: m_in           !< Misc/optimization variables
+
+   TYPE(BD_ParameterType)          :: p           !< Parameters
+   TYPE(BD_ContinuousStateType)    :: x           !< Continuous states
+   TYPE(BD_OtherStateType)         :: OtherState  !< other states (contains ref orientation)
+   TYPE(BD_MiscVarType)            :: m           !< Misc/optimization variables
+
+   integer(IntKi)    :: i, j, k        ! looping indexing variable
+   integer(IntKi)    :: nDOF        ! number of DOFs
+   real(BDKi)     :: delta        ! number of DOFs
+
+   INTEGER(IntKi)                  :: ErrStat   ! Temporary Error status
+   CHARACTER(ErrMsgLen)            :: ErrMsg    ! Temporary Error message
+   REAL(BDKi), allocatable  :: Damping_FD(:,:)
+   REAL(BDKi), allocatable  :: Damping_Diff(:,:)
+
+   ErrStat = ErrID_None
+   ErrMsg  = ""
+
+   ! Debugging work suggests at 1e-6 works well here.
+   delta = 1.0d-6 ! p_in%tngt_stf_pert
+
+   nDOF = p_in%dof_total - 6
+
+   ! allocate local array and initialize to all zeros
+   CALL AllocAry(Damping_FD, nDOF, nDOF,'Damping_FD', ErrStat, ErrMsg)
+   CALL AllocAry(Damping_Diff, nDOF, nDOF,'Damping_Diff', ErrStat, ErrMsg)
+
+   Damping_FD(:, :) = 0.0_BDKi
+   Damping_Diff(:, :) = 0.0_BDKi
+
+   CALL BD_CopyMisc(m_in, m, MESH_NEWCOPY, ErrStat, ErrMsg)
+
+   ! Loop over doing Finite Differencing
+   DO i = 2,p_in%nodes_per_elem ! skip first node
+      DO j = 1,p_in%dof_node
+
+         ! Global DOF
+         k = 6 * (i - 2) + j
+
+         !!!!!!!!!!!!!!!!!!!!!!!!!
+         ! Positive Perturbation
+         ! Copy Everything about the problem
+         CALL BD_CopyParam(p_in, p, MESH_UPDATECOPY, ErrStat, ErrMsg)
+         CALL BD_CopyContState(x_in, x, MESH_UPDATECOPY, ErrStat, ErrMsg)
+         CALL BD_CopyOtherState(OtherState_in, OtherState, MESH_UPDATECOPY, ErrStat, ErrMsg)
+         CALL BD_CopyMisc(m_in, m, MESH_UPDATECOPY, ErrStat, ErrMsg)
+
+         ! Apply perturbation as a solution is applied
+         m%Solution = 0.0_BDKi
+         m%Solution(j,i) = delta
+
+         ! Recalculate Everything
+         CALL BD_UpdateDynamicGA2(p,m,x,OtherState)
+         CALL BD_QuadraturePointData( p,x,m )
+         CALL BD_GenerateDynamicElementGA2( x, OtherState, p, m, .FALSE.)
+
+         m%LP_RHS_LU = 0.0_BDKi
+
+         CALL BD_AddModalDampingRHS(p, x, OtherState, m, .FALSE.)
+
+         Damping_FD(:, k) = Damping_FD(:, k) + m%LP_RHS_LU
+
+         !!!!!!!!!!!!!!!!!!!!!!!!!
+         ! Negative Perturbation
+         ! Copy Everything about the problem
+         CALL BD_CopyParam(p_in, p, MESH_UPDATECOPY, ErrStat, ErrMsg)
+         CALL BD_CopyContState(x_in, x, MESH_UPDATECOPY, ErrStat, ErrMsg)
+         CALL BD_CopyOtherState(OtherState_in, OtherState, MESH_UPDATECOPY, ErrStat, ErrMsg)
+         CALL BD_CopyMisc(m_in, m, MESH_UPDATECOPY, ErrStat, ErrMsg)
+
+         ! Apply perturbation as a solution is applied
+         m%Solution = 0.0_BDKi
+         m%Solution(j,i) = -1.0_BDKi * delta
+
+         ! Recalculate Everything
+         CALL BD_UpdateDynamicGA2(p,m,x,OtherState)
+         CALL BD_QuadraturePointData( p,x,m )
+         CALL BD_GenerateDynamicElementGA2( x, OtherState, p, m, .FALSE.)
+
+         m%LP_RHS_LU = 0.0_BDKi
+
+         CALL BD_AddModalDampingRHS(p, x, OtherState, m, .FALSE.)
+
+         Damping_FD(:, k) = Damping_FD(:, k) - m%LP_RHS_LU
+
+         ! Include Negative Sign because solver actually uses -dRHS/dX
+         Damping_FD(:, k) = Damping_FD(:, k) / (-2.0_BDKi * delta)
+
+      END DO
+   END DO
+
+   ! Reference Analytical Damping Matrix
+
+   ! Copy Everything about the problem
+   CALL BD_CopyParam(p_in, p, MESH_UPDATECOPY, ErrStat, ErrMsg)
+   CALL BD_CopyContState(x_in, x, MESH_UPDATECOPY, ErrStat, ErrMsg)
+   CALL BD_CopyOtherState(OtherState_in, OtherState, MESH_UPDATECOPY, ErrStat, ErrMsg)
+   CALL BD_CopyMisc(m_in, m, MESH_UPDATECOPY, ErrStat, ErrMsg)
+
+   ! Recalculate Everything
+   CALL BD_QuadraturePointData( p,x,m )
+   CALL BD_GenerateDynamicElementGA2( x, OtherState, p, m, .FALSE.)
+
+   m%LP_StifK_LU = 0.0_BDKi
+   CALL BD_AddModalDampingRHS(p, x, OtherState, m, .TRUE.)
+
+   Damping_Diff = m%LP_StifK_LU - Damping_FD
+
+   ! print *, 'Finite Diff matrix: \n', Damping_FD
+   ! print *, 'Difference in damping matrices: \n', Damping_Diff
+
+   print *, 'Finite Difference Matrix Norm: \n', sum(Damping_FD*Damping_FD)
+   print *, 'Error Diff Norm: \n', sum(Damping_Diff*Damping_Diff)
+   print *, 'Relative Error Norm: \n', sum(Damping_Diff*Damping_Diff) / sum(Damping_FD*Damping_FD)
+
+END SUBROUTINE BD_FD_GA2_DAMPING
+
 !-----------------------------------------------------------------------------------------------------------------------------------
 !> This subroutine updates the 1) displacements/rotations(uf)
 !! 2) linear/angular velocities(vf); 3) linear/angular accelerations(af); and
@@ -5195,7 +5255,7 @@ SUBROUTINE BD_GenerateDynamicElementGA2( x, OtherState, p, m, fact )
    DO nelem=1,p%elem_total
 
         ! compute m%elk,m%elf,m%elm,m%elg:
-      CALL BD_ElementMatrixGA2(fact, nelem, p, m )
+      CALL BD_ElementMatrixGA2(fact, nelem, p, OtherState, m )
 
       IF(fact) THEN
          CALL BD_AssembleStiffK(nelem,p,m%elk,m%StifK)
@@ -5211,9 +5271,10 @@ END SUBROUTINE BD_GenerateDynamicElementGA2
 
 !-----------------------------------------------------------------------------------------------------------------------------------
 !FIXME: lots of pieces of BD_ElementMatrixAcc show up in here
-SUBROUTINE BD_ElementMatrixGA2(  fact, nelem, p, m )
+SUBROUTINE BD_ElementMatrixGA2(  fact, nelem, p, OtherState, m )
 
    TYPE(BD_ParameterType),       INTENT(IN   )  :: p                 !< Parameters
+   TYPE(BD_OtherStateType),      INTENT(IN   )  :: OtherState        !< other states (contains global orientation to get gravity in right direction)
    TYPE(BD_MiscVarType),         INTENT(INOUT)  :: m                 !< misc/optimization variables
 
    LOGICAL,                      INTENT(IN   )  :: fact              !< are we factoring?
@@ -5234,11 +5295,11 @@ SUBROUTINE BD_ElementMatrixGA2(  fact, nelem, p, m )
    CALL BD_ElasticForce(  nelem,p,m,fact )                    ! Calculate Fc, Fd  [and if(fact): Oe, Pe, and Qe for N-R algorithm] using m%qp%E1, m%qp%RR0, m%qp%kappa, m%qp%Stif   
    CALL BD_InertialForce( nelem,p,m,fact )                    ! Calculate Fi [and Mi,Gi,Ki IF(fact)]
    
-   IF(p%damp_flag .NE. 0) THEN
+   IF(p%damp_flag .EQ. 1) THEN
       CALL BD_DissipativeForce( nelem,p,m,fact )              ! Calculate dissipative terms on Fc, Fd [and Sd, Od, Pd and Qd, betaC, Gd, Xd, Yd for N-R algorithm]
    ENDIF
    
-   CALL BD_GravityForce( nelem, p, m, p%gravity )
+   CALL BD_GravityForce( nelem, p, m, MATMUL(p%gravity,OtherState%GlbRot) )
    
    
 
@@ -5288,7 +5349,7 @@ SUBROUTINE BD_ElementMatrixGA2(  fact, nelem, p, m )
       END DO
    
          ! Dissipative terms
-      IF (p%damp_flag .NE. 0) THEN
+      IF (p%damp_flag .EQ. 1) THEN
          DO j=1,p%nodes_per_elem
             DO idx_dof2=1,p%dof_node
                DO i=1,p%nodes_per_elem
@@ -5407,32 +5468,33 @@ END SUBROUTINE BD_CompTngtStiff
 !!  4 Point forces/moments
 !!  5 Distributed forces/moments
 !! It also transforms the DCM to rotation tensor in the input data structure
-SUBROUTINE BD_InputGlobalLocal(p, u)
+SUBROUTINE BD_InputGlobalLocal(p, OtherState, u)
    TYPE(BD_ParameterType), INTENT(IN   ):: p
+   TYPE(BD_OtherStateType),INTENT(IN   ):: OtherState  !< Other states at t on input; at t+dt on outputs
    TYPE(BD_InputType),     INTENT(INOUT):: u
    INTEGER(IntKi)                       :: i                          !< Generic counter
    CHARACTER(*), PARAMETER              :: RoutineName = 'BD_InputGlobalLocal'
 
    ! Transform Root Motion from Global to Local (Blade) frame
-   u%RootMotion%TranslationDisp(:,1) = MATMUL(u%RootMotion%TranslationDisp(:,1),p%GlbRot)
-   u%RootMotion%TranslationVel(:,1)  = MATMUL(u%RootMotion%TranslationVel( :,1),p%GlbRot)
-   u%RootMotion%RotationVel(:,1)     = MATMUL(u%RootMotion%RotationVel(    :,1),p%GlbRot)
-   u%RootMotion%TranslationAcc(:,1)  = MATMUL(u%RootMotion%TranslationAcc( :,1),p%GlbRot)
-   u%RootMotion%RotationAcc(:,1)     = MATMUL(u%RootMotion%RotationAcc(    :,1),p%GlbRot)
+   u%RootMotion%TranslationDisp(:,1) = MATMUL(u%RootMotion%TranslationDisp(:,1),OtherState%GlbRot)
+   u%RootMotion%TranslationVel(:,1)  = MATMUL(u%RootMotion%TranslationVel( :,1),OtherState%GlbRot)
+   u%RootMotion%RotationVel(:,1)     = MATMUL(u%RootMotion%RotationVel(    :,1),OtherState%GlbRot)
+   u%RootMotion%TranslationAcc(:,1)  = MATMUL(u%RootMotion%TranslationAcc( :,1),OtherState%GlbRot)
+   u%RootMotion%RotationAcc(:,1)     = MATMUL(u%RootMotion%RotationAcc(    :,1),OtherState%GlbRot)
 
    ! Transform DCM to Rotation Tensor (RT)   
    u%RootMotion%Orientation(:,:,1) = TRANSPOSE(u%RootMotion%Orientation(:,:,1)) ! matrix that now transfers from local to global (FAST's DCMs convert from global to local)
    
    ! Transform Applied Forces from Global to Local (Blade) frame
    DO i=1,p%node_total
-      u%PointLoad%Force(1:3,i)  = MATMUL(u%PointLoad%Force(:,i),p%GlbRot)
-      u%PointLoad%Moment(1:3,i) = MATMUL(u%PointLoad%Moment(:,i),p%GlbRot)
+      u%PointLoad%Force(1:3,i)  = MATMUL(u%PointLoad%Force(:,i),OtherState%GlbRot)
+      u%PointLoad%Moment(1:3,i) = MATMUL(u%PointLoad%Moment(:,i),OtherState%GlbRot)
    ENDDO
    
    ! transform distributed forces and moments
    DO i=1,u%DistrLoad%Nnodes
-      u%DistrLoad%Force(1:3,i)  = MATMUL(u%DistrLoad%Force(:,i),p%GlbRot)
-      u%DistrLoad%Moment(1:3,i) = MATMUL(u%DistrLoad%Moment(:,i),p%GlbRot)
+      u%DistrLoad%Force(1:3,i)  = MATMUL(u%DistrLoad%Force(:,i),OtherState%GlbRot)
+      u%DistrLoad%Moment(1:3,i) = MATMUL(u%DistrLoad%Moment(:,i),OtherState%GlbRot)
    ENDDO
 
 END SUBROUTINE BD_InputGlobalLocal
@@ -5486,11 +5548,12 @@ END SUBROUTINE BD_DistrLoadCopy
 !! The initial displacements/rotations and linear velocities are
 !! set to the root value; the angular velocities over the beam
 !! are computed based on rigid body rotation: \omega = v_{root} \times r_{pos}
-SUBROUTINE BD_CalcIC_Position( u, p, x, ErrStat, ErrMsg)
+SUBROUTINE BD_CalcIC_Position( u, p, x, OtherState, ErrStat, ErrMsg)
 
    TYPE(BD_InputType),           INTENT(IN   )  :: u              !< Inputs at t (in BD coordinates)
    TYPE(BD_ParameterType),       INTENT(IN   )  :: p              !< Parameters
    TYPE(BD_ContinuousStateType), INTENT(INOUT)  :: x              !< Continuous states at t
+   TYPE(BD_OtherStateType),      INTENT(IN   )  :: OtherState     !< Other states (contains reference frame info)
    INTEGER(IntKi),               INTENT(  OUT)  :: ErrStat        !< Error status of the operation
    CHARACTER(*),                 INTENT(  OUT)  :: ErrMsg         !< Error message if ErrStat /= ErrID_None
 
@@ -5511,7 +5574,7 @@ SUBROUTINE BD_CalcIC_Position( u, p, x, ErrStat, ErrMsg)
 
       !  Since RootMotion%Orientation is the transpose of the absolute orientation in the global frame,
       !  we need to find the relative change in orientation from the reference.
-   CALL ExtractRelativeRotation(u%RootMotion%Orientation(:,:,1),p,temp_rv, ErrStat2, ErrMsg2)
+   CALL ExtractRelativeRotation(u%RootMotion%Orientation(:,:,1), p, OtherState, temp_rv, ErrStat2, ErrMsg2)
    CALL SetErrStat(ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName)
    if (ErrStat >= AbortErrLev) return
 
@@ -5523,10 +5586,10 @@ SUBROUTINE BD_CalcIC_Position( u, p, x, ErrStat, ErrMsg)
       DO j=k,p%nodes_per_elem
             ! reference at current root orientation.
          temp_p0 = MATMUL(u%rootmotion%orientation(:,:,1),p%uuN0(1:3,j,i))    ! Global frame
-         temp_p0 = MATMUL(temp_p0, p%GlbRot )                                 ! Into the local frame
+         temp_p0 = MATMUL(temp_p0, OtherState%GlbRot )                                 ! Into the local frame
             !  Add the root displacement (in local frame) to the reference at current root orientation in local frame,
             !  and subtract the reference to get the displacement.  This is equivalent to TranslationDisp in the local frame.
-         x%q(1:3,temp_id+j) = u%RootMotion%TranslationDisp(1:3,1) + temp_p0 - p%uuN0(1:3,j,i)
+         x%q(1:3,temp_id+j) = temp_p0 - p%uuN0(1:3,j,i)
       ENDDO
       k = 2 ! start j loop at k=2 for remaining elements (i>1)
    ENDDO
@@ -5673,11 +5736,12 @@ END SUBROUTINE BD_CalcCentripAcc
 
 !-----------------------------------------------------------------------------------------------------------------------------------
 !! Routine for computing outputs, used in both loose and tight coupling.
-SUBROUTINE BD_InitAcc( u, p, x, m, qdotdot, ErrStat, ErrMsg )
+SUBROUTINE BD_InitAcc( u, p, x, OtherState, m, qdotdot, ErrStat, ErrMsg )
 
    TYPE(BD_InputType),           INTENT(IN   )  :: u              !< Inputs at t (in BD coordinates)
    TYPE(BD_ParameterType),       INTENT(IN   )  :: p              !< Parameters
    TYPE(BD_ContinuousStateType), INTENT(IN   )  :: x              !< Continuous states at t
+   TYPE(BD_OtherStateType),      INTENT(IN   )  :: OtherState     !< Other states at t
    TYPE(BD_MiscVarType),         INTENT(INOUT)  :: m              !< Misc/optimization variables
    REAL(BDKi),                   INTENT(  OUT)  :: qdotdot(:,:)   !< accelerations
    INTEGER(IntKi),               INTENT(  OUT)  :: ErrStat        !< Error status of the operation
@@ -5696,8 +5760,12 @@ SUBROUTINE BD_InitAcc( u, p, x, m, qdotdot, ErrStat, ErrMsg )
       ! Calculate Quadrature point values needed
    CALL BD_QuadraturePointData( p, x, m )     ! Calculate QP values uuu, uup, RR0, kappa, E1
 
+      ! Reset QP values
+   CALL BD_QPData_mEta_rho(p, m)
+   CALL BD_QPDataVelocity(p, x, m)
+
       ! set misc vars, particularly m%RHS
-   CALL BD_CalcForceAcc( u, p, m, ErrStat2, ErrMsg2 )
+   CALL BD_CalcForceAcc( u, p, x, OtherState, m, ErrStat2, ErrMsg2 )
       CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
 
       ! set accelerations with inputs from the root and BD_CalcForceAcc solution
@@ -5781,10 +5849,12 @@ END SUBROUTINE BD_InitAcc
 !!
 !! The root reaction force is therefore calculated afterwards as
 !! \f$  F_\textrm{root} = f_1 - \sum_{i} m_{1,i} a_{i}  \f$.
-SUBROUTINE BD_CalcForceAcc( u, p, m, ErrStat, ErrMsg )
+SUBROUTINE BD_CalcForceAcc( u, p, x, OtherState, m, ErrStat, ErrMsg )
 
    TYPE(BD_InputType),           INTENT(IN   )  :: u           !< Inputs at t
    TYPE(BD_ParameterType),       INTENT(IN   )  :: p           !< Parameters
+   TYPE(BD_ContinuousStateType), INTENT(IN   )  :: x           !< Continuous states
+   TYPE(BD_OtherStateType),      INTENT(IN   )  :: OtherState  !< other states (contains ref orientation)
    TYPE(BD_MiscVarType),         INTENT(INOUT)  :: m           !< Misc/optimization variables
    INTEGER(IntKi),               INTENT(  OUT)  :: ErrStat     !< Error status of the operation
    CHARACTER(*),                 INTENT(  OUT)  :: ErrMsg      !< Error message if ErrStat /= ErrID_None
@@ -5792,6 +5862,7 @@ SUBROUTINE BD_CalcForceAcc( u, p, m, ErrStat, ErrMsg )
    INTEGER(IntKi)                               :: j
    REAL(BDKi)                                   :: RootAcc(6)
    REAL(BDKi)                                   :: NodeMassAcc(6)
+   INTEGER(IntKi)                               :: n_free
    INTEGER(IntKi)                               :: nelem ! number of elements
    INTEGER(IntKi)                               :: ErrStat2                     ! Temporary Error status
    CHARACTER(ErrMsgLen)                         :: ErrMsg2                      ! Temporary Error message
@@ -5799,76 +5870,59 @@ SUBROUTINE BD_CalcForceAcc( u, p, m, ErrStat, ErrMsg )
 
    ErrStat = ErrID_None
    ErrMsg  = ""
-
-      ! must initialize these because BD_AssembleStiffK and BD_AssembleRHS are INOUT
+   ! must initialize these because BD_AssembleStiffK and BD_AssembleRHS are INOUT
    m%RHS    =  0.0_BDKi
    m%MassM  =  0.0_BDKi
 
-      ! Store the root accelerations as they will be used multiple times
+   ! Store the root accelerations as they will be used multiple times
    RootAcc(1:3) = u%RootMotion%TranslationAcc(1:3,1)
    RootAcc(4:6) = u%RootMotion%RotationAcc(1:3,1)
 
-
-      ! Calculate the global mass matrix and force vector for the beam
+   ! Calculate the global mass matrix and force vector for the beam
    DO nelem=1,p%elem_total
-      CALL BD_ElementMatrixAcc( nelem, p, m )            ! Calculate m%elm and m%elf
+      CALL BD_ElementMatrixAcc( nelem, p, OtherState, m )            ! Calculate m%elm and m%elf
       CALL BD_AssembleStiffK(nelem,p,m%elm, m%MassM)     ! Assemble full mass matrix
       CALL BD_AssembleRHS(nelem,p,m%elf, m%RHS)          ! Assemble right hand side force terms
    ENDDO
 
+   ! Add point forces at GLL points to RHS of equation.
+   m%RHS = m%RHS + m%PointLoadLcl
 
-      ! Add point forces at GLL points to RHS of equation.
-   DO j=1,p%node_total
-      m%RHS(1:3,j) =  m%RHS(1:3,j) + m%PointLoadLcl(1:3,j)
-      m%RHS(4:6,j) =  m%RHS(4:6,j) + m%PointLoadLcl(4:6,j)
-   ENDDO
+   ! Number of free degrees of freedom
+   n_free = p%dof_total - 6
 
+   ! Full mass matrix (n_dof, n_dof)
+   m%LP_MassM = reshape(m%MassM, [p%dof_total, p%dof_total])
 
-      ! Now set the root reaction force.
-      ! Note: m%RHS currently holds the force terms for the RHS of the equation.
-      !> The root reaction force is first node force minus  mass time acceleration terms:
-      !! \f$ F_\textrm{root} = F_1 - \sum_{i} m_{1,i} a_{i} \f$.
-   m%FirstNodeReactionLclForceMoment(1:6) =  m%RHS(1:6,1)
+   ! Mass matrix for free nodes
+   m%LP_MassM_LU = m%LP_MassM(7:p%dof_total, 7:p%dof_total)
 
-      ! Setup the RHS of the m*a=F equation. Skip the first node as that is handled separately.
-   DO j=2,p%node_total
-      m%RHS(:,j)  =  m%RHS(:,j)  -  MATMUL( RESHAPE(m%MassM(:,j,:,1),(/6,6/)), RootAcc)
-   ENDDO
+   ! Residual vector for free nodes
+   m%LP_RHS_LU = reshape(m%RHS(:,2:p%node_total), [n_free])
 
+   ! Add force contributions from root acceleration
+   m%LP_RHS_LU = m%LP_RHS_LU - matmul(m%LP_MassM(7:,1:6), RootAcc)
 
-      ! Solve for the accelerations!
-      !  Reshape for the use with the LAPACK solver.  Only solving for nodes 2:p%node_total (node 1 accelerations are known)
-   m%LP_RHS_LU =  RESHAPE(m%RHS(:,2:p%node_total),    (/p%dof_total-6/))
-   m%LP_MassM  =  RESHAPE(m%MassM,  (/p%dof_total,p%dof_total/))     ! Flatten out the dof dimensions of the matrix.
-   m%LP_MassM_LU  = m%LP_MassM(7:p%dof_total,7:p%dof_total)
+   IF(p%damp_flag .EQ. 2) THEN
+      ! Because modal damping is already global, it wouldn't make sense in BD_AssembleRHS.
+      CALL BD_AddModalDampingRHS(p, x, OtherState, m, .False.)
+   ENDIF
 
-      ! Solve linear equations A * X = B for acceleration (F=ma) for nodes 2:p%node_total
-   CALL LAPACK_getrf( p%dof_total-6, p%dof_total-6, m%LP_MassM_LU, m%LP_indx, ErrStat2, ErrMsg2)
-      CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
-   CALL LAPACK_getrs( 'N',p%dof_total-6, m%LP_MassM_LU, m%LP_indx, m%LP_RHS_LU,ErrStat2, ErrMsg2)
-      CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
-
+   ! Solve linear equations A * X = B for acceleration (F=ma) for nodes 2:p%node_total
+   CALL LAPACK_getrf(n_free, n_free, m%LP_MassM_LU, m%LP_indx, ErrStat2, ErrMsg2)
+   CALL SetErrStat(ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName)
+   CALL LAPACK_getrs('N', n_free, m%LP_MassM_LU, m%LP_indx, m%LP_RHS_LU, ErrStat2, ErrMsg2)
+   CALL SetErrStat(ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName)
    if (ErrStat >= AbortErrLev) return
 
-      ! Reshape for copy over to output overall accelerations of system
-   m%RHS(:,2:p%node_total) = RESHAPE( m%LP_RHS_LU, (/ p%dof_node, p%node_total-1 /) )
-   m%RHS(:,1) = RootAcc       ! This is known at the start.
+   ! Get reaction force at root node
+   m%FirstNodeReactionLclForceMoment = m%RHS(1:6,1) - &
+                                       matmul(m%LP_MassM(1:6,7:), m%LP_RHS_LU) - &
+                                       matmul(m%LP_MassM(1:6,1:6), RootAcc)   
 
-
-
-      !> Now that we have all the accelerations, complete the summation \f$ \sum_{i} m_{1,i} a_{i} \f$
-      ! First node:
-   NodeMassAcc = MATMUL( RESHAPE(m%MassM(:,1,:,1),(/6,6/)),m%RHS(:,1) )
-   m%FirstNodeReactionLclForceMoment(1:6)   =  m%FirstNodeReactionLclForceMoment(1:6)   - NodeMassAcc(1:6)
-
-      ! remaining nodes
-   DO j=2,p%Node_total
-      NodeMassAcc = MATMUL( RESHAPE(m%MassM(:,j,:,1),(/6,6/)),m%RHS(:,j) )
-      m%FirstNodeReactionLclForceMoment(1:6)   =  m%FirstNodeReactionLclForceMoment(1:6)   - NodeMassAcc(1:6)
-   ENDDO
-
-
-   RETURN
+   ! Populate RHS with prescribed root acceleration and solved accelerations
+   m%RHS(:,1) = RootAcc
+   m%RHS(:,2:p%node_total) = RESHAPE(m%LP_RHS_LU, [p%dof_node, p%node_total-1])
 
 END SUBROUTINE BD_CalcForceAcc
 
@@ -5985,49 +6039,299 @@ SUBROUTINE BD_ComputeElementMass(nelem,p,NQPpos,EMass0_GL,elem_mass,elem_CG,elem
 
 END SUBROUTINE BD_ComputeElementMass
 
-
 !-----------------------------------------------------------------------------------------------------------------------------------
-!> This routine alters the RootMotion inputs based on the pitch-actuator parameters and discrete states
-SUBROUTINE PitchActuator_SetBC(p, u, xd, AllOuts)
+!> This subroutine calculates the modal damping force
+! Adds modal damping contributions to m%LP_RHS_LU
+SUBROUTINE BD_AddModalDampingRHS(p, x, OtherState, m, fact)
 
-   TYPE(BD_ParameterType),    INTENT(IN   )  :: p                                 !< The module parameters
-   TYPE(BD_InputType),        INTENT(INOUT)  :: u                                 !< inputs
-   TYPE(BD_DiscreteStateType),INTENT(IN   )  :: xd                                !< The module discrete states
-   REAL(ReKi),       OPTIONAL,INTENT(INOUT)  :: AllOuts(0:)                       !< all output array for writing to file
-   ! local variables
-   REAL(BDKi)                                :: temp_R(3,3)
-   REAL(BDKi)                                :: temp_cc(3)
-   REAL(BDKi)                                :: u_theta_pitch
-   REAL(BDKi)                                :: thetaP
-   REAL(BDKi)                                :: omegaP
-   REAL(BDKi)                                :: alphaP
+   TYPE(BD_ParameterType),       INTENT(IN   )  :: p           !< Parameters
+   TYPE(BD_ContinuousStateType), INTENT(IN   )  :: x           !< Continuous states
+   TYPE(BD_OtherStateType),      INTENT(IN   )  :: OtherState  !< other states (contains ref orientation)
+   TYPE(BD_MiscVarType),         INTENT(INOUT)  :: m           !< Misc/optimization variables
+   LOGICAL,                      INTENT(IN   )  :: fact        !< Boolean to calculate the Jacobian
+
+   integer(IntKi)    :: j, k        ! looping indexing variable
+   integer(IntKi)    :: nDOF        ! number of DOFs
+   integer(IntKi)    :: elem        ! looping indexing for element number
+   integer(IntKi)    :: elem_node   ! looping indexing for node in the element number
+   real(R8Ki)        :: r(3)        ! nodal position relative to root
+   real(R8Ki)        :: NodeRot(3, 3)
+
+   ! 1. Velocities relative to root
+   ! element loops
+   do elem = 1, p%elem_total
+
+      do elem_node = 2, p%nodes_per_elem
+
+         ! Global node index, excluding root
+         j = (elem - 1) * (p%nodes_per_elem - 1) + elem_node
+
+         ! DOF index
+         k = (j - 2) * 6
+
+         ! 1.a. Node translational velocity minus root velocity
+         ! x%... is at j+1 because skipping the root node and j is 1 at the first node after root.
+         m%DampedVelocities(k+1:k+6) = x%dqdt(:, j) - x%dqdt(:, 1)
+
+         ! 1.b. Subtract out the rigid body rotational velocity based on the blade root rotation
+
+         ! Vector from root to node
+         ! r = OtherState%GlbPos + p%uuN0(1:3, elem_node, elem) + x%q(1:3, j) - &
+         !     (u%RootMotion%Position(:, 1) + u%RootMotion%TranslationDisp(:, 1))
+         r = p%uuN0(1:3, elem_node, elem) + x%q(1:3, j)
+
+         m%DampedVelocities(k+1:k+3) = m%DampedVelocities(k+1:k+3) - Cross_Product(x%dqdt(4:6, 1), r)
+      end do
+
+   end do
+
+   ! 2. rotate velocities by matmul(u%RootMotion%Orientation, OtherState%GlbRot)
+   ! Solve is done at the coordinate system based on time n for states at time n+1
+   ! The damping matrix is technically defined for the n+1 coordinate system since that's where accel is evaluated.
+   ! Therefore, need to resolve the coordinate differences.
+   !
+   ! OtherState%GlbRot = tranpose(u%RootMotion%Orientation(:, :, 1) evaluated at n)
+   ! here, u%RootMotion%Orientation(:, :, 1) is evaluated at n+1, but is tranposed at this point
+
+   do j = 2, p%node_total
+
+      ! Loop over the nodes that apply to the damping matrix, so don't include the root node.
+      call BD_CrvMatrixR(x%q(4:6, j), NodeRot)
+
+      k = (j - 2) * 6
+      m%DampedVelocities(k+1:k+3) = matmul(transpose(NodeRot), m%DampedVelocities(k+1:k+3))
+      m%DampedVelocities(k+4:k+6) = matmul(transpose(NodeRot), m%DampedVelocities(k+4:k+6))
+   end do
+
+   ! 3. Multiply by modal damping matrix
+   m%ModalDampingF = matmul(p%ModalDampingMat, m%DampedVelocities)
+
+   ! 4. Rotate to correct coordinates and subtract from m%LP_RHS_LU
+   do j = 2, p%node_total
+
+      call BD_CrvMatrixR(x%q(4:6, j), NodeRot)
+
+      k = (j - 2) * 6
+      m%LP_RHS_LU(k+1:k+3) = m%LP_RHS_LU(k+1:k+3) - matmul(NodeRot, m%ModalDampingF(k+1:k+3))
+      m%LP_RHS_LU(k+4:k+6) = m%LP_RHS_LU(k+4:k+6) - matmul(NodeRot, m%ModalDampingF(k+4:k+6))
+   end do
+
+   IF (fact) THEN
+      ! Calculate Jacobian and add to 'm%LP_StifK_LU'
+      ! Do not consider any derivative effects of displacements on portions of this calculation
+      nDOF = p%dof_total - 6
+
+      m%RotatedDamping = p%ModalDampingMat
+
+      do j = 2, p%node_total
+
+         ! Loop over the nodes that apply to the damping matrix, so don't include the root node.
+         call BD_CrvMatrixR(x%q(4:6, j), NodeRot)
+
+         k = (j - 2) * 6
+
+         ! Rotations of the velocity side
+         m%RotatedDamping(:, k+1:k+3) = matmul(m%RotatedDamping(:, k+1:k+3), transpose(NodeRot))
+         m%RotatedDamping(:, k+4:k+6) = matmul(m%RotatedDamping(:, k+4:k+6), transpose(NodeRot))
+
+         ! rotations on the force side
+         m%RotatedDamping(k+1:k+3, :) = matmul(NodeRot, m%RotatedDamping(k+1:k+3, :))
+         m%RotatedDamping(k+4:k+6, :) = matmul(NodeRot, m%RotatedDamping(k+4:k+6, :))
+
+      end do
+
+      m%LP_StifK_LU = m%LP_StifK_LU + p%coef(7) * m%RotatedDamping
+   ENDIF
+
+END SUBROUTINE BD_AddModalDampingRHS
 
 
-   temp_R = MATMUL(u%RootMotion%Orientation(:,:,1),TRANSPOSE(u%HubMotion%Orientation(:,:,1)))
-   temp_cc = EulerExtract(temp_R)   != Hub_theta_Root
-   u_theta_pitch = -temp_cc(3)
+subroutine BD_InitVars(u, p, x, y, m, InitOut, Linearize, ErrStat, ErrMsg)
+   type(BD_InputType),           intent(inout)  :: u           !< An initial guess for the input; input mesh must be defined
+   type(BD_ParameterType),       intent(inout)  :: p           !< Parameters
+   type(BD_ContinuousStateType), intent(inout)  :: x           !< Continuous state
+   type(BD_OutputType),          intent(inout)  :: y           !< Initial system outputs (outputs are not calculated;
+   type(BD_MiscVarType),         intent(inout)  :: m           !< Misc variables for optimization (not copied in glue code)
+   type(BD_InitOutputType),      intent(inout)  :: InitOut     !< Output for initialization routine
+   logical,                      intent(in   )  :: Linearize   !< Flag to initialize linearization variables
+   integer(IntKi),               intent(  out)  :: ErrStat     !< Error status of the operation
+   character(*),                 intent(  out)  :: ErrMsg      !< Error message if ErrStat /= ErrID_None
 
-   thetaP = xd%thetaP
-   omegaP = xd%thetaPD
-   alphaP = -(p%pitchK/p%pitchJ) * xd%thetaP - (p%pitchC/p%pitchJ) * xd%thetaPD + (p%pitchK/p%pitchJ) * u_theta_pitch
+   character(*), parameter :: RoutineName = 'BD_InitVars'
+   INTEGER(IntKi)          :: ErrStat2                     ! Temporary Error status
+   CHARACTER(ErrMsgLen)    :: ErrMsg2                      ! Temporary Error message
 
-   ! Calculate new root motions for use as BeamDyn boundary conditions:
-   !note: we alter the orientation last because we need the input (before actuator) root orientation for the rotational velocity and accelerations
-   u%RootMotion%RotationVel(:,1) = u%RootMotion%RotationVel(:,1) - omegaP * u%RootMotion%Orientation(3,:,1)
-   u%RootMotion%RotationAcc(:,1) = u%RootMotion%RotationAcc(:,1) - alphaP * u%RootMotion%Orientation(3,:,1)
+   integer(IntKi)          :: i, j, Flags, idx
+   REAL(R8Ki)              :: MaxThrust, MaxTorque
+   CHARACTER(200)          :: label
 
-   temp_cc(3) = -thetaP
-   temp_R = EulerConstruct(temp_cc)
-   u%RootMotion%Orientation(:,:,1) = MATMUL(temp_R,u%HubMotion%Orientation(:,:,1))
+   ErrStat = ErrID_None
+   ErrMsg = ""
 
-   if (present(AllOuts)) then
-      AllOuts(PAngInp) = u_theta_pitch
-      AllOuts(PAngAct) = thetaP
-      AllOuts(PRatAct) = omegaP
-      AllOuts(PAccAct) = alphaP
-   end if
+   !----------------------------------------------------------------------------
+   ! Continuous State Variables
+   !----------------------------------------------------------------------------
 
-END SUBROUTINE PitchActuator_SetBC
+   ! Set flags to AeroMap, if rotating states is true, set flags to rotating states
+   Flags = ior(VF_AeroMap, VF_DerivOrder2)
+   if (p%RotStates) Flags = ior(Flags, VF_RotFrame)
+
+   ! Add translation displacement and orientation variables at blade nodes
+   ! Note: the first node is not included as it is a constraint state
+   do i = 2, p%node_total
+      label = 'finite element node '//trim(num2lstr(i))//' (number of elements = '//&
+                  trim(num2lstr(p%elem_total))//'; element order = '//trim(num2lstr(p%nodes_per_elem-1))//')'
+
+      call MV_AddVar(InitOut%Vars%x, "Blade Node "//trim(num2lstr(i)), FieldTransDisp, &
+                     DatLoc(BD_x_q), iAry=1, jAry=i, Num=3, &
+                     Flags=Flags, &
+                     Perturb=0.2_BDKi*D2R_D * p%blade_length, &
+                     LinNames=[trim(label)//' translational displacement in X, m', &
+                               trim(label)//' translational displacement in Y, m', &
+                               trim(label)//' translational displacement in Z, m'])
+
+      call MV_AddVar(InitOut%Vars%x, "Blade Node "//trim(num2lstr(i)), FieldOrientation, &
+                     DatLoc(BD_x_q), iAry=4, jAry=i, Num=3, &
+                     Flags=ior(Flags, VF_WM_Rot), &
+                     Perturb=0.2_BDKi*D2R_D, &
+                     LinNames=[trim(label)//' rotational displacement in X, rad', &
+                               trim(label)//' rotational displacement in Y, rad', &
+                               trim(label)//' rotational displacement in Z, rad'])
+   end do
+
+   ! Add translation and angular velocity at blade nodes
+   do i = 2, p%node_total
+      label = 'First time derivative of finite element node '//trim(num2lstr(i))//' (number of elements = '//&
+                  trim(num2lstr(p%elem_total))//'; element order = '//trim(num2lstr(p%nodes_per_elem-1))//')'
+
+      call MV_AddVar(InitOut%Vars%x, "Blade Node "//trim(num2lstr(i)), FieldTransVel, &
+                     DatLoc(BD_x_dqdt), iAry=1, jAry=i, Num=3, &
+                     Flags=Flags, &
+                     Perturb=0.2_BDKi*D2R_D * p%blade_length, &
+                     LinNames=[trim(label)//' translational displacement in X, m/s', &
+                               trim(label)//' translational displacement in Y, m/s', &
+                               trim(label)//' translational displacement in Z, m/s'])
+
+      call MV_AddVar(InitOut%Vars%x, "Blade Node "//trim(num2lstr(i)), FieldAngularVel, &
+                     DatLoc(BD_x_dqdt), iAry=4, jAry=i, Num=3, &
+                     Flags=Flags, &
+                     Perturb=0.2_BDKi*D2R_D, &
+                     LinNames=[trim(label)//' rotational displacement in X, rad/s', &
+                               trim(label)//' rotational displacement in Y, rad/s', &
+                               trim(label)//' rotational displacement in Z, rad/s'])
+   end do
+
+   !----------------------------------------------------------------------------
+   ! Input variables
+   !----------------------------------------------------------------------------
+   
+   MaxThrust = 170.0_R8Ki*p%blade_length**2
+   MaxTorque =  14.0_R8Ki*p%blade_length**3
+
+   call MV_AddMeshVar(InitOut%Vars%u, "RootMotion", MotionFields, &
+                      DatLoc(BD_u_RootMotion), &
+                      Mesh=u%RootMotion, &
+                      Perturbs=[0.2_R8Ki*D2R_D * p%blade_length, &    ! FieldTransDisp
+                                0.2_R8Ki*D2R_D, &                     ! FieldOrientation
+                                0.2_R8Ki*D2R_D * p%blade_length, &    ! FieldTransVel
+                                0.2_R8Ki*D2R_D, &                     ! FieldAngularVel
+                                0.2_R8Ki*D2R_D * p%blade_length, &    ! FieldTransAcc
+                                0.2_R8Ki*D2R_D])                      ! FieldAngularAcc
+
+   call MV_AddMeshVar(InitOut%Vars%u, "PointLoad", LoadFields, &
+                      DatLoc(BD_u_PointLoad), &
+                      Mesh=u%PointLoad, &
+                      Perturbs=[MaxThrust/(100.0_R8Ki*3.0_R8Ki*u%PointLoad%Nnodes), &  ! FieldForce
+                                MaxTorque/(100.0_R8Ki*3.0_R8Ki*u%PointLoad%Nnodes)])   ! FieldMoment
+
+   call MV_AddMeshVar(InitOut%Vars%u, "DistrLoad", LoadFields, &
+                      DatLoc(BD_u_DistrLoad), &
+                      Flags=ior(VF_Line, VF_AeroMap), &
+                      Mesh=u%DistrLoad, &
+                      Perturbs=[MaxThrust/(100.0_R8Ki*3.0_R8Ki*u%PointLoad%Nnodes), &  ! FieldForce
+                                MaxTorque/(100.0_R8Ki*3.0_R8Ki*u%PointLoad%Nnodes)])   ! FieldMoment
+
+   !----------------------------------------------------------------------------
+   ! Output variables
+   !----------------------------------------------------------------------------
+
+   call MV_AddMeshVar(InitOut%Vars%y, 'Reaction force', LoadFields, DatLoc(BD_y_ReactionForce), Mesh=y%ReactionForce)
+
+   call MV_AddMeshVar(InitOut%Vars%y, 'Blade motion', [FieldTransDisp, FieldOrientation, FieldTransVel, FieldAngularVel], &
+                      DatLoc(BD_y_BldMotion), &
+                      Flags=VF_AeroMap, &
+                      Mesh=y%BldMotion)
+   call MV_AddMeshVar(InitOut%Vars%y, 'Blade motion', [FieldTransAcc, FieldAngularAcc], DatLoc(BD_y_BldMotion), &
+                      Mesh=y%BldMotion)
+
+   do i = 1, p%NumOuts
+      call MV_AddVar(InitOut%Vars%y, p%OutParam(i)%Name, FieldScalar, &
+                     DatLoc(BD_y_WriteOutput), iAry=i, &
+                     Flags=VF_WriteOut + OutParamFlags(p%OutParam(i)%Indx), &
+                     LinNames=[trim(p%OutParam(i)%Name)//', '//trim(p%OutParam(i)%Units)], &
+                     Active=p%OutParam(i)%Indx > 0)
+   end do
+
+   idx = p%NumOuts + 1
+   do i = 1, p%BldNd_NumOuts
+      call MV_AddVar(InitOut%Vars%y, p%BldNd_OutParam(i)%Name, FieldScalar, &
+                     DatLoc(BD_y_WriteOutput), iAry=idx, &
+                     Num=size(p%BldNd_BlOutNd), &
+                     Flags=VF_WriteOut + BldNd_OutParamFlags(p%BldNd_OutParam(i)%Name), &
+                     LinNames=[(BldNd_LinChan(p%BldNd_OutParam(i), j), j=1,size(p%BldNd_BlOutNd))], &
+                     Active=p%BldNd_OutParam(i)%Indx > 0)
+      idx = idx + size(p%BldNd_BlOutNd)
+   end do
+
+   !----------------------------------------------------------------------------
+   ! Initialize Variables and Values
+   !----------------------------------------------------------------------------
+
+   CALL MV_InitVarsJac(InitOut%Vars, m%Jac, Linearize .or. p%CompAeroMaps, ErrStat2, ErrMsg2); if (Failed()) return
+
+   call BD_CopyContState(x, m%x_perturb, MESH_NEWCOPY, ErrStat2, ErrMsg2); if (Failed()) return
+   call BD_CopyContState(x, m%dxdt_lin, MESH_NEWCOPY, ErrStat2, ErrMsg2); if (Failed()) return
+   call BD_CopyInput(u, m%u_perturb, MESH_NEWCOPY, ErrStat2, ErrMsg2); if (Failed()) return
+   call BD_CopyOutput(y, m%y_lin, MESH_NEWCOPY, ErrStat2, ErrMsg2); if (Failed()) return
+
+contains
+
+   pure integer(IntKi) function OutParamFlags(indx)
+      integer(IntKi), intent(in) :: indx
+      integer(IntKi), parameter  :: GlobalFrameIndices(*) = [&
+         TipTVXg, TipTVYg, TipTVZg, TipRVXg, TipRVYg, TipRVZg, NTVg, NRVg]
+      if (any(GlobalFrameIndices == indx)) then
+         OutParamFlags = VF_None
+      else
+         OutParamFlags = VF_RotFrame
+      end if
+   end function
+
+   pure integer(IntKi) function BldNd_OutParamFlags(ChannelName)
+      character(*), intent(in)   :: ChannelName
+      integer(IntKi)             :: k
+      ! Get index of last character in channel name
+      k = len_trim(ChannelName)
+      ! If last letter is uppercase or lowercase G, then frame is global
+      if (ChannelName(k:k) == 'G' .or. ChannelName(k:k) == 'g') then
+         BldNd_OutParamFlags = VF_None
+      else
+         BldNd_OutParamFlags = VF_RotFrame
+      end if
+   end function
+
+   pure character(LinChanLen) function BldNd_LinChan(BldNd_OutParam, IdxNode) result(name)
+      type(OutParmType), intent(in) :: BldNd_OutParam
+      integer(IntKi), intent(in)    :: IdxNode
+      write(name, '("N",I3.3,A,", ",A)') IdxNode, trim(BldNd_OutParam%Name), trim(BldNd_OutParam%Units)
+   end function
+
+   logical function Failed()
+      call SetErrStat(ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName) 
+      Failed =  ErrStat >= AbortErrLev
+   end function Failed
+end subroutine
+
 
 !++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 ! ###### The following four routines are Jacobian routines for linearization capabilities #######
@@ -6035,9 +6339,9 @@ END SUBROUTINE PitchActuator_SetBC
 !----------------------------------------------------------------------------------------------------------------------------------
 !> Routine to compute the Jacobians of the output (Y), continuous- (X), discrete- (Xd), and constraint-state (Z) functions
 !! with respect to the inputs (u). The partial derivatives dY/du, dX/du, dXd/du, and DZ/du are returned.
-SUBROUTINE BD_JacobianPInput( t, u, p, x, xd, z, OtherState, y, m, ErrStat, ErrMsg, dYdu, dXdu, dXddu, dZdu, StateRel_x, StateRel_xdot)
-!..................................................................................................................................
+SUBROUTINE BD_JacobianPInput(Vars, t, u, p, x, xd, z, OtherState, y, m, ErrStat, ErrMsg, dYdu, dXdu, dXddu, dZdu)
 
+   type(ModVarsType),                    INTENT(IN   )           :: Vars       !< Module variables
    REAL(DbKi),                           INTENT(IN   )           :: t          !< Time in seconds at operating point
    TYPE(BD_InputType),                   INTENT(INOUT)           :: u          !< Inputs at operating point (may change to inout if a mesh copy is required)
    TYPE(BD_ParameterType),               INTENT(IN   )           :: p          !< Parameters
@@ -6052,268 +6356,134 @@ SUBROUTINE BD_JacobianPInput( t, u, p, x, xd, z, OtherState, y, m, ErrStat, ErrM
    TYPE(BD_MiscVarType),                 INTENT(INOUT)           :: m          !< Misc/optimization variables
    INTEGER(IntKi),                       INTENT(  OUT)           :: ErrStat    !< Error status of the operation
    CHARACTER(*),                         INTENT(  OUT)           :: ErrMsg     !< Error message if ErrStat /= ErrID_None
-   REAL(R8Ki), ALLOCATABLE, OPTIONAL,    INTENT(INOUT)           :: dYdu(:,:)  !< Partial derivatives of output functions (Y) with respect
-                                                                               !!   to the inputs (u) [intent in to avoid deallocation]
-   REAL(R8Ki), ALLOCATABLE, OPTIONAL,    INTENT(INOUT)           :: dXdu(:,:)  !< Partial derivatives of continuous state functions (X) with
-                                                                               !!   respect to the inputs (u) [intent in to avoid deallocation]
-   REAL(R8Ki), ALLOCATABLE, OPTIONAL,    INTENT(INOUT)           :: dXddu(:,:) !< Partial derivatives of discrete state functions (Xd) with
-                                                                               !!   respect to the inputs (u) [intent in to avoid deallocation]
-   REAL(R8Ki), ALLOCATABLE, OPTIONAL,    INTENT(INOUT)           :: dZdu(:,:)  !< Partial derivatives of constraint state functions (Z) with
-                                                                               !!   respect to the inputs (u) [intent in to avoid deallocation]
-   REAL(R8Ki), ALLOCATABLE, OPTIONAL,    INTENT(INOUT)           :: StateRel_x(:,:)    !< Matrix by which the displacement states are optionally converted relative to root
-   REAL(R8Ki), ALLOCATABLE, OPTIONAL,    INTENT(INOUT)           :: StateRel_xdot(:,:) !< Matrix by which the velocity states are optionally converted relative to root
-
+   REAL(R8Ki), ALLOCATABLE, OPTIONAL,    INTENT(INOUT)           :: dYdu(:,:)  !< Partial derivatives of output functions (Y) with respect to the inputs (u) [intent in to avoid deallocation]
+   REAL(R8Ki), ALLOCATABLE, OPTIONAL,    INTENT(INOUT)           :: dXdu(:,:)  !< Partial derivatives of continuous state functions (X) with respect to the inputs (u) [intent in to avoid deallocation]
+   REAL(R8Ki), ALLOCATABLE, OPTIONAL,    INTENT(INOUT)           :: dXddu(:,:) !< Partial derivatives of discrete state functions (Xd) with respect to the inputs (u) [intent in to avoid deallocation]
+   REAL(R8Ki), ALLOCATABLE, OPTIONAL,    INTENT(INOUT)           :: dZdu(:,:)  !< Partial derivatives of constraint state functions (Z) with respect to the inputs (u) [intent in to avoid deallocation]
    
-      ! local variables
-   TYPE(BD_OutputType)                                           :: y_p
-   TYPE(BD_OutputType)                                           :: y_m
-   TYPE(BD_ContinuousStateType)                                  :: x_p
-   TYPE(BD_ContinuousStateType)                                  :: x_m
-   TYPE(BD_InputType)                                            :: u_perturb
-   REAL(R8Ki)                                                    :: delta_p, delta_m  ! delta change in input (plus, minus)
-   INTEGER(IntKi)                                                :: i
-   REAL(R8Ki)                                                    :: RotateStates(3,3)
-   REAL(R8Ki), ALLOCATABLE                                       :: RelState_x(:,:)   
-   REAL(R8Ki), ALLOCATABLE                                       :: RelState_xdot(:,:)
-   
-   integer(intKi)                                                :: ErrStat2
-   character(ErrMsgLen)                                          :: ErrMsg2
-   character(*), parameter                                       :: RoutineName = 'BD_JacobianPInput'
-
-
-      ! Initialize ErrStat
+   character(*), parameter       :: RoutineName = 'BD_JacobianPInput'
+   integer(intKi)                :: ErrStat2
+   character(ErrMsgLen)          :: ErrMsg2
+   REAL(R8Ki)                    :: RotateStates(3,3)
+   logical                       :: NeedWriteOutput
+   INTEGER(IntKi)                :: i, j, col
 
    ErrStat = ErrID_None
    ErrMsg  = ''
 
+   ! Get OP values here
+   call BD_CalcOutput(t, u, p, x, xd, z, OtherState, y, m, ErrStat2, ErrMsg2); if (Failed()) return
    
-      ! get OP values here:
-   call BD_CalcOutput( t, u, p, x, xd, z, OtherState, y, m, ErrStat2, ErrMsg2 )
-      call SetErrStat(ErrStat2,ErrMsg2,ErrStat,ErrMsg,RoutineName)
+   ! Make a copy of the inputs to perturb
+   call BD_CopyInput(u, m%u_perturb, MESH_UPDATECOPY, ErrStat2, ErrMsg2); if (Failed()) return
+   call BD_VarsPackInput(Vars, u, m%Jac%u)
    
-      ! make a copy of the inputs to perturb
-   call BD_CopyInput( u, u_perturb, MESH_NEWCOPY, ErrStat2, ErrMsg2)
-      call SetErrStat(ErrStat2,ErrMsg2,ErrStat,ErrMsg,RoutineName)
-      if (ErrStat>=AbortErrLev) then
-         call cleanup()
-         return
+   ! Calculate the partial derivative of the output functions (Y) with respect to the inputs (u) here:
+   if (present(dYdu)) then
+      
+      ! Allocate dYdu if not allocated
+      if (.not. allocated(dYdu)) then
+         call AllocAry(dYdu, m%Jac%Ny, m%Jac%Nu, 'dYdu', ErrStat2, ErrMsg2); if (Failed()) return
       end if
 
-   if (p%RelStates) then
-      if (.not. allocated(RelState_x)) then
-         call AllocAry(RelState_x, p%Jac_nx * 2, size(p%Jac_u_indx,1), 'RelState_x', ErrStat2, ErrMsg2) ! 18=6 motion fields on mesh x 3 directions for each field
-         call SetErrStat(ErrStat2,ErrMsg2,ErrStat,ErrMsg,RoutineName)
-      end if
-      if (.not. allocated(RelState_xdot)) then
-         call AllocAry(RelState_xdot, size(RelState_x,1), size(RelState_x,2), 'RelState_xdot', ErrStat2, ErrMsg2)
-         call SetErrStat(ErrStat2,ErrMsg2,ErrStat,ErrMsg,RoutineName)
-      end if
-      if (ErrStat>=AbortErrLev) then
-         call cleanup()
-         return
-      end if
-      
-      call Compute_RelState_Matrix(p, u, x, RelState_x, RelState_xdot)
-
-      if ( present(StateRel_x) ) then
-         if (.not. allocated(StateRel_x)) then
-            call AllocAry(StateRel_x, size(RelState_x,1), size(RelState_x,2), 'StateRel_x', ErrStat2, ErrMsg2)
-               call SetErrStat(ErrStat2,ErrMsg2,ErrStat,ErrMsg,RoutineName)
-               if (ErrStat>=AbortErrLev) then
-                  call cleanup()
-                  return
-               end if
+      ! Determine if write outputs need to be calculated (usually at end of output variables)
+      NeedWriteOutput = .false.
+      do i = size(Vars%y), 1, -1
+         if (MV_HasFlagsAll(Vars%y(i), VF_WriteOut)) then
+            NeedWriteOutput = .true.
+            exit
          end if
-         StateRel_x = RelState_x
-      end if
-      if ( present(StateRel_xdot) ) then
-         if (.not. allocated(StateRel_xdot)) then
-            call AllocAry(StateRel_xdot, size(RelState_xdot,1), size(RelState_xdot,2), 'StateRel_xdot', ErrStat2, ErrMsg2)
-               call SetErrStat(ErrStat2,ErrMsg2,ErrStat,ErrMsg,RoutineName)
-               if (ErrStat>=AbortErrLev) then
-                  call cleanup()
-                  return
-               end if
-         end if
-         StateRel_xdot = RelState_xdot
-      end if
-   else
-      if ( present(StateRel_x) ) then
-         if (allocated(StateRel_x)) deallocate(StateRel_x)
-      end if
-      if ( present(StateRel_xdot) ) then
-         if (allocated(StateRel_xdot)) deallocate(StateRel_xdot)
-      end if
-   end if
-      
-
-   IF ( PRESENT( dYdu ) ) THEN
-      ! Calculate the partial derivative of the output functions (Y) with respect to the inputs (u) here:
-      
-      ! allocate dYdu
-      if (.not. allocated(dYdu) ) then
-         call AllocAry(dYdu,p%Jac_ny, size(p%Jac_u_indx,1),'dYdu', ErrStat2, ErrMsg2)
-         call setErrStat(ErrStat2,ErrMsg2,ErrStat,ErrMsg,RoutineName)
-         if (ErrStat>=AbortErrLev) then
-            call cleanup()
-            return
-         end if
-      end if
-      
-      
-         ! make a copy of outputs because we will need two for the central difference computations (with orientations)
-      call BD_CopyOutput( y, y_p, MESH_NEWCOPY, ErrStat2, ErrMsg2)
-         call SetErrStat(ErrStat2,ErrMsg2,ErrStat,ErrMsg,RoutineName)
-      call BD_CopyOutput( y, y_m, MESH_NEWCOPY, ErrStat2, ErrMsg2)
-         call SetErrStat(ErrStat2,ErrMsg2,ErrStat,ErrMsg,RoutineName)
-         if (ErrStat>=AbortErrLev) then
-            call cleanup()
-            return
-         end if
-         
-      do i=1,size(p%Jac_u_indx,1)
-         
-            ! get u_op + delta_p u
-         call BD_CopyInput( u, u_perturb, MESH_UPDATECOPY, ErrStat2, ErrMsg2 )
-            call SetErrStat(ErrStat2,ErrMsg2,ErrStat,ErrMsg,RoutineName) ! we shouldn't have any errors about allocating memory here so I'm not going to return-on-error until later
-         call Perturb_u( p, i, 1, u_perturb, delta_p )
-      
-            ! compute y at u_op + delta_p u
-         call BD_CalcOutput( t, u_perturb, p, x, xd, z, OtherState, y_p, m, ErrStat2, ErrMsg2 ) 
-            call SetErrStat(ErrStat2,ErrMsg2,ErrStat,ErrMsg,RoutineName) ! we shouldn't have any errors about allocating memory here so I'm not going to return-on-error until later
-            
-            ! get u_op - delta_m u
-         call BD_CopyInput( u, u_perturb, MESH_UPDATECOPY, ErrStat2, ErrMsg2 )
-            call SetErrStat(ErrStat2,ErrMsg2,ErrStat,ErrMsg,RoutineName) ! we shouldn't have any errors about allocating memory here so I'm not going to return-on-error until later
-         call Perturb_u( p, i, -1, u_perturb, delta_m )
-         
-            ! compute y at u_op - delta_m u
-         call BD_CalcOutput( t, u_perturb, p, x, xd, z, OtherState, y_m, m, ErrStat2, ErrMsg2 ) 
-            call SetErrStat(ErrStat2,ErrMsg2,ErrStat,ErrMsg,RoutineName) ! we shouldn't have any errors about allocating memory here so I'm not going to return-on-error until later
-      
-            ! get central difference:
-         call Compute_dY( p, y_p, y_m, delta_p, dYdu(:,i) )
-         
       end do
       
-      
-      if (ErrStat>=AbortErrLev) then
-         call cleanup()
-         return
-      end if
-      call BD_DestroyOutput( y_p, ErrStat2, ErrMsg2 ) ! we don't need this any more
-      call BD_DestroyOutput( y_m, ErrStat2, ErrMsg2 ) ! we don't need this any more
-      
-      if (p%RelStates) then
-         call BD_JacobianPContState_noRotate( t, u, p, x, xd, z, OtherState, y, m, ErrStat, ErrMsg, dYdx=m%lin_C )
-            call SetErrStat(ErrStat2,ErrMsg2,ErrStat,ErrMsg,RoutineName)
-            if (ErrStat>=AbortErrLev) then
-               call cleanup()
-               return
-            end if
-         dYdu = dYdu + matmul(m%lin_C, RelState_x)
-      end if
-      
-   END IF
+      ! Loop through input variables
+      do i = 1, size(Vars%u)
 
-   IF ( PRESENT( dXdu ) ) THEN
-      ! Calculate the partial derivative of the continuous state functions (X) with respect to the inputs (u) here:
+         ! Loop through number of linearization perturbations in variable
+         do j = 1, Vars%u(i)%Num
 
-      ! allocate dXdu if necessary
-      if (.not. allocated(dXdu)) then
-         call AllocAry(dXdu, p%Jac_nx * 2, size(p%Jac_u_indx,1), 'dXdu', ErrStat2, ErrMsg2)
-         call SetErrStat(ErrStat2,ErrMsg2,ErrStat,ErrMsg,RoutineName)
-         if (ErrStat>=AbortErrLev) then
-            call cleanup()
-            return
-         end if
-      end if
-      
-         
-      do i=1,size(p%Jac_u_indx,1)
-         
-            ! get u_op + delta u
-         call BD_CopyInput( u, u_perturb, MESH_UPDATECOPY, ErrStat2, ErrMsg2 )
-            call SetErrStat(ErrStat2,ErrMsg2,ErrStat,ErrMsg,RoutineName) ! we shouldn't have any errors about allocating memory here so I'm not going to return-on-error until later
-         call Perturb_u( p, i, 1, u_perturb, delta_p )
+            ! Calculate column index
+            col = Vars%u(i)%iLoc(1) + j - 1
 
-            ! compute x at u_op + delta u
-         call BD_CalcContStateDeriv( t, u_perturb, p, x, xd, z, OtherState, m, x_p, ErrStat2, ErrMsg2 ) 
-            call SetErrStat(ErrStat2,ErrMsg2,ErrStat,ErrMsg,RoutineName)
-            
-                                         
-            ! get u_op - delta u
-         call BD_CopyInput( u, u_perturb, MESH_UPDATECOPY, ErrStat2, ErrMsg2 )
-            call SetErrStat(ErrStat2,ErrMsg2,ErrStat,ErrMsg,RoutineName) 
-            
-         call Perturb_u( p, i, -1, u_perturb, delta_m )
-         
-            ! compute x at u_op - delta u
-         call BD_CalcContStateDeriv( t, u_perturb, p, x, xd, z, OtherState, m, x_m, ErrStat2, ErrMsg2 ) 
-            call SetErrStat(ErrStat2,ErrMsg2,ErrStat,ErrMsg,RoutineName) 
-            
-            
-            ! get central difference:
-            
-            ! we may have had an error allocating memory, so we'll check
-         if (ErrStat>=AbortErrLev) then 
-            call cleanup()
-            return
-         end if
-         
-            ! get central difference:
-         call Compute_dX( p, x_p, x_m, delta_p, dXdu(:,i) )
-         
-      end do
-      
-      call BD_DestroyContState( x_p, ErrStat2, ErrMsg2 ) ! we don't need this any more
-      call BD_DestroyContState( x_m, ErrStat2, ErrMsg2 ) ! we don't need this any more
+            ! Calculate positive perturbation
+            call MV_Perturb(Vars%u(i), j, 1, m%Jac%u, m%Jac%u_perturb)
+            call BD_VarsUnpackInput(Vars, m%Jac%u_perturb, m%u_perturb)
+            call BD_CalcOutput(t, m%u_perturb, p, x, xd, z, OtherState, m%y_lin, m, ErrStat2, ErrMsg2, NeedWriteOutput); if (Failed()) return
+            call BD_VarsPackOutput(Vars, m%y_lin, m%Jac%y_pos)
 
-      if (p%RelStates) then
-         call BD_JacobianPContState_noRotate( t, u, p, x, xd, z, OtherState, y, m, ErrStat, ErrMsg, dXdx=m%lin_A )
-            call SetErrStat(ErrStat2,ErrMsg2,ErrStat,ErrMsg,RoutineName)
-            if (ErrStat>=AbortErrLev) then
-               call cleanup()
-               return
-            end if
-         dXdu = dXdu + matmul(m%lin_A, RelState_x) - RelState_xdot
-      end if
-      
-      if (p%RotStates) then
-         RotateStates = matmul( u%RootMotion%Orientation(:,:,1), transpose( u%RootMotion%RefOrientation(:,:,1) ) )
-         do i=1,size(dXdu,1),3
-            dXdu(i:i+2, :) = matmul( RotateStates, dXdu(i:i+2, :) )
+            ! Calculate negative perturbation
+            call MV_Perturb(Vars%u(i), j, -1, m%Jac%u, m%Jac%u_perturb)
+            call BD_VarsUnpackInput(Vars, m%Jac%u_perturb, m%u_perturb)
+            call BD_CalcOutput(t, m%u_perturb, p, x, xd, z, OtherState, m%y_lin, m, ErrStat2, ErrMsg2, NeedWriteOutput); if (Failed()) return
+            call BD_VarsPackOutput(Vars, m%y_lin, m%Jac%y_neg)
+
+            ! Get partial derivative via central difference and store in full linearization array
+            call MV_ComputeCentralDiff(Vars%y, Vars%u(i)%Perturb, m%Jac%y_pos, m%Jac%y_neg, dYdu(:,col))
          end do
+      end do
+        
+   end if
+
+   ! Calculate the partial derivative of the continuous state functions (X) with respect to the inputs (u) here:
+   if (present(dXdu)) then
+
+      ! Allocate dXdu if not allocated
+      if (.not. allocated(dXdu)) then
+         call AllocAry(dXdu, m%Jac%Nx, m%Jac%Nu, 'dXdu', ErrStat2, ErrMsg2); if (Failed()) return
       end if
-
-   END IF ! dXdu
-
-   IF ( PRESENT( dXddu ) ) THEN
-      if (allocated(dXddu)) deallocate(dXddu)
-   END IF
-
-   IF ( PRESENT( dZdu ) ) THEN
-      if (allocated(dZdu)) deallocate(dZdu)
-   END IF
    
-   call cleanup()
-contains
-   subroutine cleanup()
-      call BD_DestroyOutput(      y_p, ErrStat2, ErrMsg2 )
-      call BD_DestroyOutput(      y_m, ErrStat2, ErrMsg2 )
-      call BD_DestroyInput( u_perturb, ErrStat2, ErrMsg2 )
-      
-      if (allocated(RelState_x))    deallocate(RelState_x)
-      if (allocated(RelState_xdot)) deallocate(RelState_xdot)
-   end subroutine cleanup
+      ! Loop through input variables
+      do i = 1, size(Vars%u)
 
+         ! Loop through number of linearization perturbations in variable
+         do j = 1, Vars%u(i)%Num
+
+            ! Calculate column index
+            col = Vars%u(i)%iLoc(1) + j - 1
+
+            ! Calculate positive perturbation
+            call MV_Perturb(Vars%u(i), j, 1, m%Jac%u, m%Jac%u_perturb)
+            call BD_VarsUnpackInput(Vars, m%Jac%u_perturb, m%u_perturb)
+            call BD_CalcContStateDeriv(t, m%u_perturb, p, x, xd, z, OtherState, m, m%dxdt_lin, ErrStat2, ErrMsg2); if (Failed()) return
+            call BD_VarsPackContState(Vars, m%dxdt_lin, m%Jac%x_pos)
+
+            ! Calculate negative perturbation
+            call MV_Perturb(Vars%u(i), j, -1, m%Jac%u, m%Jac%u_perturb)
+            call BD_VarsUnpackInput(Vars, m%Jac%u_perturb, m%u_perturb)
+            call BD_CalcContStateDeriv(t, m%u_perturb, p, x, xd, z, OtherState, m, m%dxdt_lin, ErrStat2, ErrMsg2); if (Failed()) return
+            call BD_VarsPackContState(Vars, m%dxdt_lin, m%Jac%x_neg)
+
+            ! Get partial derivative via central difference and store in full linearization array
+            dXdu(:,col) = (m%Jac%x_pos - m%Jac%x_neg) / (2.0_R8Ki * Vars%u(i)%Perturb)
+         end do
+      end do
+   end if
+
+   !----------------------------------------------------------------------------
+
+   ! Calculate the partial derivative of the discrete state functions (Xd) with respect to the inputs (u) here:
+   if (present(dXddu)) then
+      if (allocated(dXddu)) deallocate(dXddu)
+   end if
+
+   !----------------------------------------------------------------------------
+
+   ! Calculate the partial derivative of the constraint state functions (Z) with respect to the inputs (u) here:
+   if (present(dZdu)) then
+      if (allocated(dZdu)) deallocate(dZdu)
+   end if
+   
+contains
+   logical function Failed()
+      call SetErrStat(ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName)
+      Failed = ErrStat >= AbortErrLev
+   end function
 END SUBROUTINE BD_JacobianPInput
 !----------------------------------------------------------------------------------------------------------------------------------
 !> Routine to compute the Jacobians of the output (Y), continuous- (X), discrete- (Xd), and constraint-state (Z) functions
 !! with respect to the continuous states (x). The partial derivatives dY/dx, dX/dx, dXd/dx, and dZ/dx are returned.
-SUBROUTINE BD_JacobianPContState( t, u, p, x, xd, z, OtherState, y, m, ErrStat, ErrMsg, dYdx, dXdx, dXddx, dZdx, StateRotation )
-!..................................................................................................................................
+SUBROUTINE BD_JacobianPContState(Vars, t, u, p, x, xd, z, OtherState, y, m, ErrStat, ErrMsg, dYdx, dXdx, dXddx, dZdx)
 
+   TYPE(ModVarsType),                    INTENT(IN   )      :: Vars               !< Module variables
    REAL(DbKi),                           INTENT(IN   )      :: t                  !< Time in seconds at operating point
    TYPE(BD_InputType),                   INTENT(INOUT)      :: u                  !< Inputs at operating point (may change to inout if a mesh copy is required)
    TYPE(BD_ParameterType),               INTENT(IN   )      :: p                  !< Parameters
@@ -6328,326 +6498,133 @@ SUBROUTINE BD_JacobianPContState( t, u, p, x, xd, z, OtherState, y, m, ErrStat, 
    TYPE(BD_MiscVarType),                 INTENT(INOUT)      :: m                  !< Misc/optimization variables
    INTEGER(IntKi),                       INTENT(  OUT)      :: ErrStat            !< Error status of the operation
    CHARACTER(*),                         INTENT(  OUT)      :: ErrMsg             !< Error message if ErrStat /= ErrID_None
-   REAL(R8Ki), ALLOCATABLE, OPTIONAL,    INTENT(INOUT)      :: dYdx(:,:)          !< Partial derivatives of output functions
-                                                                                  !!   (Y) with respect to the continuous
-                                                                                  !!   states (x) [intent in to avoid deallocation]
-   REAL(R8Ki), ALLOCATABLE, OPTIONAL,    INTENT(INOUT)      :: dXdx(:,:)          !< Partial derivatives of continuous state
-                                                                                  !!   functions (X) with respect to
-                                                                                  !!   the continuous states (x) [intent in to avoid deallocation]
-   REAL(R8Ki), ALLOCATABLE, OPTIONAL,    INTENT(INOUT)      :: dXddx(:,:)         !< Partial derivatives of discrete state
-                                                                                  !!   functions (Xd) with respect to
-                                                                                  !!   the continuous states (x) [intent in to avoid deallocation]
-   REAL(R8Ki), ALLOCATABLE, OPTIONAL,    INTENT(INOUT)      :: dZdx(:,:)          !< Partial derivatives of constraint state
-                                                                                  !!   functions (Z) with respect to
-                                                                                  !!   the continuous states (x) [intent in to avoid deallocation]
-   REAL(R8Ki), ALLOCATABLE, OPTIONAL,    INTENT(INOUT)      :: StateRotation(:,:) !< Matrix by which the states are optionally rotated
+   REAL(R8Ki), ALLOCATABLE, OPTIONAL,    INTENT(INOUT)      :: dYdx(:,:)          !< Partial derivatives of output functions (Y) with respect to the continuous states (x)
+   REAL(R8Ki), ALLOCATABLE, OPTIONAL,    INTENT(INOUT)      :: dXdx(:,:)          !< Partial derivatives of continuous state functions (X) with respect to the continuous states (x)
+   REAL(R8Ki), ALLOCATABLE, OPTIONAL,    INTENT(INOUT)      :: dXddx(:,:)         !< Partial derivatives of discrete state functions (Xd) with respect to the continuous states (x)
+   REAL(R8Ki), ALLOCATABLE, OPTIONAL,    INTENT(INOUT)      :: dZdx(:,:)          !< Partial derivatives of constraint state functions (Z) with respect to the continuous states (x)
 
-
-      ! local variables
-   TYPE(BD_OutputType)                               :: y_p
-   TYPE(BD_OutputType)                               :: y_m
-   TYPE(BD_ContinuousStateType)                      :: x_p
-   TYPE(BD_ContinuousStateType)                      :: x_m
-   TYPE(BD_ContinuousStateType)                      :: x_perturb
-   INTEGER(IntKi)                                    :: i
-   REAL(R8Ki)                                        :: RotateStates(3,3)
-   REAL(R8Ki)                                        :: RotateStatesTranspose(3,3)
-   
-   INTEGER(IntKi)                                    :: ErrStat2
-   CHARACTER(ErrMsgLen)                              :: ErrMsg2
-   CHARACTER(*), PARAMETER                           :: RoutineName = 'BD_JacobianPContState'
-   
-   
-      ! Initialize ErrStat
+   CHARACTER(*), PARAMETER       :: RoutineName = 'BD_JacobianPContState'
+   INTEGER(IntKi)                :: ErrStat2
+   CHARACTER(ErrMsgLen)          :: ErrMsg2
+   REAL(R8Ki)                    :: RotateStates(3,3)
+   REAL(R8Ki)                    :: RotateStatesTranspose(3,3)
+   INTEGER(IntKi)                :: i, j, col
+   logical                       :: NeedWriteOutput
 
    ErrStat = ErrID_None
    ErrMsg  = ''
 
-   IF ( PRESENT( dYdx ) .AND. PRESENT( dXdx )) THEN
-      call BD_JacobianPContState_noRotate(t, u, p, x, xd, z, OtherState, y, m, ErrStat2, ErrMsg2, dYdx, dXdx)
-!      call BD_JacobianPContState_noRotate(t, u, p, x, xd, z, OtherState, y, m, LIN_X_CALLED_FIRST, ErrStat2, ErrMsg2, dYdx, dXdx)
-   ELSEIF ( PRESENT( dYdx ) ) THEN
-      call BD_JacobianPContState_noRotate(t, u, p, x, xd, z, OtherState, y, m, ErrStat2, ErrMsg2, dYdx=dYdx )
-!      call BD_JacobianPContState_noRotate(t, u, p, x, xd, z, OtherState, y, m, LIN_X_CALLED_FIRST, ErrStat2, ErrMsg2, dYdx=dYdx )
-   ELSEIF ( PRESENT( dXdx ) ) THEN
-      call BD_JacobianPContState_noRotate(t, u, p, x, xd, z, OtherState, y, m, ErrStat2, ErrMsg2, dXdx=dXdx)
-!      call BD_JacobianPContState_noRotate(t, u, p, x, xd, z, OtherState, y, m, LIN_X_CALLED_FIRST, ErrStat2, ErrMsg2, dXdx=dXdx)
-   END IF
-   call SetErrStat(ErrStat2,ErrMsg2,ErrStat,ErrMsg,RoutineName)
-   
-   if (p%RotStates) then
-      RotateStates          = matmul( u%RootMotion%Orientation(:,:,1), transpose( u%RootMotion%RefOrientation(:,:,1) ) )
-      RotateStatesTranspose = transpose( RotateStates )
+   ! Copy state values
+   call BD_CopyContState(x, m%x_perturb, MESH_UPDATECOPY, ErrStat2, ErrMsg2); if (Failed()) return
+   call BD_VarsPackContState(Vars, x, m%Jac%x)
 
-      if ( present(StateRotation) ) then
-         if (.not. allocated(StateRotation)) then
-            call AllocAry(StateRotation, 3, 3, 'StateRotation', ErrStat2, ErrMsg2)
-               call SetErrStat(ErrStat2,ErrMsg2,ErrStat,ErrMsg,RoutineName)
-               if (ErrStat>=AbortErrLev) then
-                  call cleanup()
-                  return
-               end if
+   !----------------------------------------------------------------------------
+
+   ! Calculate the partial derivative of the output functions (Y) with respect to the continuous states (x) here:
+   if (present(dYdx)) then
+
+      ! Allocate dYdx if not allocated
+      if (.not. allocated(dYdx)) then
+         call AllocAry(dYdx, m%Jac%Ny, m%Jac%Nx, 'dYdx', ErrStat2, ErrMsg2); if (Failed()) return
+      end if
+
+      ! Determine if write outputs need to be calculated (usually at end of output variables)
+      NeedWriteOutput = .false.
+      do i = size(Vars%y), 1, -1
+         if (MV_HasFlagsAll(Vars%y(i), VF_WriteOut)) then
+            NeedWriteOutput = .true.
+            exit
          end if
-         StateRotation = RotateStates
-      end if
-   else
-      if ( present(StateRotation) ) then
-         if (allocated(StateRotation)) deallocate(StateRotation)
-      end if
+      end do
+
+      ! Loop through state variables
+      do i = 1, size(Vars%x)
+
+         ! Loop through number of linearization perturbations in variable
+         do j = 1, Vars%x(i)%Num
+
+            ! Calculate column index
+            col = Vars%x(i)%iLoc(1) + j - 1
+
+            ! Calculate positive perturbation
+            call MV_Perturb(Vars%x(i), j, 1, m%Jac%x, m%Jac%x_perturb)
+            call BD_VarsUnpackContState(Vars, m%Jac%x_perturb, m%x_perturb)
+            call BD_CalcOutput(t, u, p, m%x_perturb, xd, z, OtherState, m%y_lin, m, ErrStat2, ErrMsg2, NeedWriteOutput); if (Failed()) return
+            call BD_VarsPackOutput(Vars, m%y_lin, m%Jac%y_pos)
+
+            ! Calculate negative perturbation
+            call MV_Perturb(Vars%x(i), j, -1, m%Jac%x, m%Jac%x_perturb)
+            call BD_VarsUnpackContState(Vars, m%Jac%x_perturb, m%x_perturb)
+            call BD_CalcOutput(t, u, p, m%x_perturb, xd, z, OtherState, m%y_lin, m, ErrStat2, ErrMsg2, NeedWriteOutput); if (Failed()) return
+            call BD_VarsPackOutput(Vars, m%y_lin, m%Jac%y_neg)
+
+            ! Get partial derivative via central difference and store in full linearization array
+            call MV_ComputeCentralDiff(Vars%y, Vars%x(i)%Perturb, m%Jac%y_pos, m%Jac%y_neg, dYdx(:,col))
+         end do
+      end do
    end if
 
-   IF ( PRESENT( dYdx ) ) THEN
+   !----------------------------------------------------------------------------
 
-      if (p%RotStates) then
-         do i=1,size(dYdx,2),3
-            dYdx(:, i:i+2) = matmul( dYdx(:, i:i+2), RotateStatesTranspose )
-         end do
+   ! Calculate the partial derivative of the continuous state functions (X) with respect to the continuous states (x) here:
+   if (present(dXdx)) then
+
+      ! Allocate dXdx if not allocated
+      if (.not. allocated(dXdx)) then
+         call AllocAry(dXdx, m%Jac%Nx, m%Jac%Nx, 'dXdx', ErrStat2, ErrMsg2); if (Failed()) return
       end if
-      
-   END IF
 
-   IF ( PRESENT( dXdx ) ) THEN
+      ! Loop through state variables
+      do i = 1, size(Vars%x)
 
-      ! Calculate the partial derivative of the continuous state functions (X) with respect to the continuous states (x) here:
+         ! Loop through number of linearization perturbations in variable
+         do j = 1, Vars%x(i)%Num
 
-      if (p%RotStates) then
-         do i=1,size(dXdx,1),3
-            dXdx(i:i+2,:) = matmul( RotateStates, dXdx(i:i+2,:) )
+            ! Calculate column index
+            col = Vars%x(i)%iLoc(1) + j - 1
+
+            ! Calculate positive perturbation
+            call MV_Perturb(Vars%x(i), j, 1, m%Jac%x, m%Jac%x_perturb)
+            call BD_VarsUnpackContState(Vars, m%Jac%x_perturb, m%x_perturb)
+            call BD_CalcContStateDeriv(t, u, p, m%x_perturb, xd, z, OtherState, m, m%dxdt_lin, ErrStat2, ErrMsg2); if (Failed()) return
+            call BD_VarsPackContStateDeriv(Vars, m%dxdt_lin, m%Jac%x_pos)
+
+            ! Calculate negative perturbation
+            call MV_Perturb(Vars%x(i), j, -1, m%Jac%x, m%Jac%x_perturb)
+            call BD_VarsUnpackContState(Vars, m%Jac%x_perturb, m%x_perturb)
+            call BD_CalcContStateDeriv(t, u, p, m%x_perturb, xd, z, OtherState, m, m%dxdt_lin, ErrStat2, ErrMsg2); if (Failed()) return
+            call BD_VarsPackContStateDeriv(Vars, m%dxdt_lin, m%Jac%x_neg)
+
+            ! Get partial derivative via central difference and store in full linearization array
+            dXdx(:,col) = (m%Jac%x_pos - m%Jac%x_neg) / (2.0_R8Ki * Vars%x(i)%Perturb)
          end do
-         do i=1,size(dXdx,2),3
-            dXdx(:, i:i+2) = matmul( dXdx(:, i:i+2), RotateStatesTranspose )
-         end do
-      end if
-      
-   END IF
+      end do
+   end if
 
-   IF ( PRESENT( dXddx ) ) THEN
+   !----------------------------------------------------------------------------
+
+   if (present(dXddx)) then
       if (allocated(dXddx)) deallocate(dXddx)
-   END IF
+   end if
 
-   IF ( PRESENT( dZdx ) ) THEN
+   !----------------------------------------------------------------------------
+
+   if (present(dZdx)) then
       if (allocated(dZdx)) deallocate(dZdx)
-   END IF
+   end if
 
-   call cleanup()
-   
 contains
-   subroutine cleanup()
-      call BD_DestroyOutput(         y_p, ErrStat2, ErrMsg2 )
-      call BD_DestroyOutput(         y_m, ErrStat2, ErrMsg2 )
-      call BD_DestroyContState(      x_p, ErrStat2, ErrMsg2 )
-      call BD_DestroyContState(      x_m, ErrStat2, ErrMsg2 )
-      call BD_DestroyContState(x_perturb, ErrStat2, ErrMsg2 )
-   end subroutine cleanup
-
+   logical function Failed()
+      call SetErrStat(ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName)
+      Failed = ErrStat >= AbortErrLev
+   end function
 END SUBROUTINE BD_JacobianPContState
 !----------------------------------------------------------------------------------------------------------------------------------
 !> Routine to compute the Jacobians of the output (Y), continuous- (X), discrete- (Xd), and constraint-state (Z) functions
-!! with respect to the continuous states (x). The partial derivatives dY/dx, and dX/dx are returned.
-!SUBROUTINE BD_JacobianPContState_noRotate( t, u, p, x, xd, z, OtherState, y, m, calledFrom, ErrStat, ErrMsg, dYdx, dXdx )
-SUBROUTINE BD_JacobianPContState_noRotate( t, u, p, x, xd, z, OtherState, y, m, ErrStat, ErrMsg, dYdx, dXdx )
-!..................................................................................................................................
-
-   REAL(DbKi),                           INTENT(IN   )      :: t                  !< Time in seconds at operating point
-   TYPE(BD_InputType),                   INTENT(INOUT)      :: u                  !< Inputs at operating point (may change to inout if a mesh copy is required)
-   TYPE(BD_ParameterType),               INTENT(IN   )      :: p                  !< Parameters
-   TYPE(BD_ContinuousStateType),         INTENT(IN   )      :: x                  !< Continuous states at operating point
-   TYPE(BD_DiscreteStateType),           INTENT(IN   )      :: xd                 !< Discrete states at operating point
-   TYPE(BD_ConstraintStateType),         INTENT(IN   )      :: z                  !< Constraint states at operating point
-   TYPE(BD_OtherStateType),              INTENT(IN   )      :: OtherState         !< Other states at operating point
-   TYPE(BD_OutputType),                  INTENT(INOUT)      :: y                  !< Output (change to inout if a mesh copy is required);
-                                                                                  !!   Output fields are not used by this routine, but type is
-                                                                                  !!   available here so that mesh parameter information (i.e.,
-                                                                                  !!   connectivity) does not have to be recalculated for dYdx.
-   TYPE(BD_MiscVarType),                 INTENT(INOUT)      :: m                  !< Misc/optimization variables
-   !INTEGER(IntKi),                       INTENT(IN   )      :: calledFrom         !< flag to help determine logic for when these matrices need to be recalculated
-   INTEGER(IntKi),                       INTENT(  OUT)      :: ErrStat            !< Error status of the operation
-   CHARACTER(*),                         INTENT(  OUT)      :: ErrMsg             !< Error message if ErrStat /= ErrID_None
-   REAL(R8Ki), ALLOCATABLE, OPTIONAL,    INTENT(INOUT)      :: dYdx(:,:)          !< Partial derivatives of output functions
-                                                                                  !!   (Y) with respect to the continuous
-                                                                                  !!   states (x) [intent in to avoid deallocation]
-   REAL(R8Ki), ALLOCATABLE, OPTIONAL,    INTENT(INOUT)      :: dXdx(:,:)          !< Partial derivatives of continuous state
-                                                                                  !!   functions (X) with respect to
-                                                                                  !!   the continuous states (x) [intent in to avoid deallocation]
-
-
-      ! local variables
-   TYPE(BD_OutputType)                               :: y_p
-   TYPE(BD_OutputType)                               :: y_m
-   TYPE(BD_ContinuousStateType)                      :: x_p
-   TYPE(BD_ContinuousStateType)                      :: x_m
-   TYPE(BD_ContinuousStateType)                      :: x_perturb
-   REAL(R8Ki)                                        :: delta        ! delta change in input or state
-   INTEGER(IntKi)                                    :: i, k
-   INTEGER(IntKi)                                    :: index
-   INTEGER(IntKi)                                    :: dof
-   
-   INTEGER(IntKi)                                    :: ErrStat2
-   CHARACTER(ErrMsgLen)                              :: ErrMsg2
-   CHARACTER(*), PARAMETER                           :: RoutineName = 'BD_JacobianPContState_noRotate'
-   
-   
-      ! Initialize ErrStat
-
-   ErrStat = ErrID_None
-   ErrMsg  = ''
-
-      ! make a copy of the continuous states to perturb
-   call BD_CopyContState( x, x_perturb, MESH_NEWCOPY, ErrStat2, ErrMsg2)
-      call SetErrStat(ErrStat2,ErrMsg2,ErrStat,ErrMsg,RoutineName)
-      if (ErrStat>=AbortErrLev) then
-         call cleanup()
-         return
-      end if
-
-   IF ( PRESENT( dYdx ) ) THEN
-
-      ! Calculate the partial derivative of the output functions (Y) with respect to the continuous states (x) here:
-
-      ! allocate dYdx if necessary
-      if (.not. allocated(dYdx)) then
-         call AllocAry(dYdx, p%Jac_ny, p%Jac_nx*2, 'dYdx', ErrStat2, ErrMsg2)
-         call SetErrStat(ErrStat2,ErrMsg2,ErrStat,ErrMsg,RoutineName)
-         if (ErrStat>=AbortErrLev) then
-            call cleanup()
-            return
-         end if
-      end if
-      
-         ! make a copy of outputs because we will need two for the central difference computations (with orientations)
-      call BD_CopyOutput( y, y_p, MESH_NEWCOPY, ErrStat2, ErrMsg2)
-         call SetErrStat(ErrStat2,ErrMsg2,ErrStat,ErrMsg,RoutineName)
-      call BD_CopyOutput( y, y_m, MESH_NEWCOPY, ErrStat2, ErrMsg2)
-         call SetErrStat(ErrStat2,ErrMsg2,ErrStat,ErrMsg,RoutineName)
-         if (ErrStat>=AbortErrLev) then
-            call cleanup()
-            return
-         end if
-         
-         
-      index = 1
-      do k=1,2
-         do i=2,p%node_total
-            do dof=1,p%dof_node
-            
-                  ! get x_op + delta x
-               call BD_CopyContState( x, x_perturb, MESH_UPDATECOPY, ErrStat2, ErrMsg2 )
-                  call SetErrStat(ErrStat2,ErrMsg2,ErrStat,ErrMsg,RoutineName) ! we shouldn't have any errors about allocating memory here so I'm not going to return-on-error until later
-               call perturb_x(p, k, i, dof, 1, x_perturb, delta )
-
-                  ! compute y at x_op + delta x
-               call BD_CalcOutput( t, u, p, x_perturb, xd, z, OtherState, y_p, m, ErrStat2, ErrMsg2 ) 
-                  call SetErrStat(ErrStat2,ErrMsg2,ErrStat,ErrMsg,RoutineName) ! we shouldn't have any errors about allocating memory here so I'm not going to return-on-error until later
-         
-            
-               ! get x_op - delta x
-               call BD_CopyContState( x, x_perturb, MESH_UPDATECOPY, ErrStat2, ErrMsg2 )
-                  call SetErrStat(ErrStat2,ErrMsg2,ErrStat,ErrMsg,RoutineName) ! we shouldn't have any errors about allocating memory here so I'm not going to return-on-error until later
-               call perturb_x(p, k, i, dof, -1, x_perturb, delta )
-         
-                  ! compute y at x_op - delta x
-               call BD_CalcOutput( t, u, p, x_perturb, xd, z, OtherState, y_m, m, ErrStat2, ErrMsg2 ) 
-                  call SetErrStat(ErrStat2,ErrMsg2,ErrStat,ErrMsg,RoutineName) ! we shouldn't have any errors about allocating memory here so I'm not going to return-on-error until later
-         
-            
-                  ! get central difference:
-               call Compute_dY( p, y_p, y_m, delta, dYdx(:,index) )
-         
-               index = index+1
-            end do
-         end do
-      end do
-         
-      
-      if (ErrStat>=AbortErrLev) then
-         call cleanup()
-         return
-      end if
-      call BD_DestroyOutput( y_p, ErrStat2, ErrMsg2 ) ! we don't need this any more
-      call BD_DestroyOutput( y_m, ErrStat2, ErrMsg2 ) ! we don't need this any more
-
-      
-   END IF
-
-   IF ( PRESENT( dXdx ) ) THEN
-
-      ! Calculate the partial derivative of the continuous state functions (X) with respect to the continuous states (x) here:
-
-      ! allocate dXdu if necessary
-      if (.not. allocated(dXdx)) then
-         call AllocAry(dXdx, p%Jac_nx * 2, p%Jac_nx * 2, 'dXdx', ErrStat2, ErrMsg2)
-         call SetErrStat(ErrStat2,ErrMsg2,ErrStat,ErrMsg,RoutineName)
-         if (ErrStat>=AbortErrLev) then
-            call cleanup()
-            return
-         end if
-      end if
-      
-      index = 1 ! counter into dXdx
-      do k=1,2 ! 1=positions (x_perturb%q); 2=velocities (x_perturb%dqdt)
-         do i=2,p%node_total
-            do dof=1,p%dof_node
-         
-                  ! get x_op + delta x
-               call BD_CopyContState( x, x_perturb, MESH_UPDATECOPY, ErrStat2, ErrMsg2 )
-                  call SetErrStat(ErrStat2,ErrMsg2,ErrStat,ErrMsg,RoutineName) ! we shouldn't have any errors about allocating memory here so I'm not going to return-on-error until later
-               call perturb_x(p, k, i, dof, 1, x_perturb, delta )
-
-                  ! compute x at x_op + delta x
-               call BD_CalcContStateDeriv( t, u, p, x_perturb, xd, z, OtherState, m, x_p, ErrStat2, ErrMsg2 ) 
-                  call SetErrStat(ErrStat2,ErrMsg2,ErrStat,ErrMsg,RoutineName)
-
-
-                  ! get x_op - delta x
-               call BD_CopyContState( x, x_perturb, MESH_UPDATECOPY, ErrStat2, ErrMsg2 )
-                  call SetErrStat(ErrStat2,ErrMsg2,ErrStat,ErrMsg,RoutineName) ! we shouldn't have any errors about allocating memory here so I'm not going to return-on-error until later
-               call perturb_x(p, k, i, dof, -1, x_perturb, delta )
-         
-                  ! compute x at x_op - delta x
-               call BD_CalcContStateDeriv( t, u, p, x_perturb, xd, z, OtherState, m, x_m, ErrStat2, ErrMsg2 )
-                  call SetErrStat(ErrStat2,ErrMsg2,ErrStat,ErrMsg,RoutineName) 
-
-            
-                  ! get central difference:
-            
-                  ! we may have had an error allocating memory, so we'll check
-               if (ErrStat>=AbortErrLev) then 
-                  call cleanup()
-                  return
-               end if
-         
-                  ! get central difference:
-               call Compute_dX( p, x_p, x_m, delta, dXdx(:,index) )
-         
-               index = index+1
-            end do
-         end do
-      end do
-      
-      call BD_DestroyContState( x_p, ErrStat2, ErrMsg2 ) ! we don't need this any more
-      call BD_DestroyContState( x_m, ErrStat2, ErrMsg2 ) ! we don't need this any more
-      
-   END IF
-      
-
-   call cleanup()
-   
-contains
-   subroutine cleanup()
-      call BD_DestroyOutput(         y_p, ErrStat2, ErrMsg2 )
-      call BD_DestroyOutput(         y_m, ErrStat2, ErrMsg2 )
-      call BD_DestroyContState(      x_p, ErrStat2, ErrMsg2 )
-      call BD_DestroyContState(      x_m, ErrStat2, ErrMsg2 )
-      call BD_DestroyContState(x_perturb, ErrStat2, ErrMsg2 )
-   end subroutine cleanup
-
-END SUBROUTINE BD_JacobianPContState_noRotate
-!----------------------------------------------------------------------------------------------------------------------------------
-!> Routine to compute the Jacobians of the output (Y), continuous- (X), discrete- (Xd), and constraint-state (Z) functions
 !! with respect to the discrete states (xd). The partial derivatives dY/dxd, dX/dxd, dXd/dxd, and DZ/dxd are returned.
-SUBROUTINE BD_JacobianPDiscState( t, u, p, x, xd, z, OtherState, y, m, ErrStat, ErrMsg, dYdxd, dXdxd, dXddxd, dZdxd )
+SUBROUTINE BD_JacobianPDiscState(Vars, t, u, p, x, xd, z, OtherState, y, m, ErrStat, ErrMsg, dYdxd, dXdxd, dXddxd, dZdxd )
 !..................................................................................................................................
-
+   TYPE(ModVarsType),                    INTENT(IN   )           :: Vars       !< Module variables
    REAL(DbKi),                           INTENT(IN   )           :: t          !< Time in seconds at operating point
    TYPE(BD_InputType),                   INTENT(IN   )           :: u          !< Inputs at operating point (may change to inout if a mesh copy is required)
    TYPE(BD_ParameterType),               INTENT(IN   )           :: p          !< Parameters
@@ -6719,9 +6696,9 @@ END SUBROUTINE BD_JacobianPDiscState
 !----------------------------------------------------------------------------------------------------------------------------------
 !> Routine to compute the Jacobians of the output (Y), continuous- (X), discrete- (Xd), and constraint-state (Z) functions
 !! with respect to the constraint states (z). The partial derivatives dY/dz, dX/dz, dXd/dz, and DZ/dz are returned.
-SUBROUTINE BD_JacobianPConstrState( t, u, p, x, xd, z, OtherState, y, m, ErrStat, ErrMsg, dYdz, dXdz, dXddz, dZdz )
-!..................................................................................................................................
+SUBROUTINE BD_JacobianPConstrState(Vars, t, u, p, x, xd, z, OtherState, y, m, ErrStat, ErrMsg, dYdz, dXdz, dXddz, dZdz )
 
+   TYPE(ModVarsType),                    INTENT(IN   )           :: Vars       !< Module variables
    REAL(DbKi),                           INTENT(IN   )           :: t          !< Time in seconds at operating point
    TYPE(BD_InputType),                   INTENT(IN   )           :: u          !< Inputs at operating point (may change to inout if a mesh copy is required)
    TYPE(BD_ParameterType),               INTENT(IN   )           :: p          !< Parameters
@@ -6772,201 +6749,14 @@ SUBROUTINE BD_JacobianPConstrState( t, u, p, x, xd, z, OtherState, y, m, ErrStat
 
    IF ( PRESENT(dZdz) ) THEN
    END IF
-     
 
 END SUBROUTINE BD_JacobianPConstrState
-!++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-!> Routine to pack the data structures representing the operating points into arrays for linearization.
-SUBROUTINE BD_GetOP( t, u, p, x, xd, z, OtherState, y, m, ErrStat, ErrMsg, u_op, y_op, x_op, dx_op, xd_op, z_op, NeedLogMap )
 
-   REAL(DbKi),                           INTENT(IN   )           :: t          !< Time in seconds at operating point
-   TYPE(BD_InputType),                   INTENT(INOUT)           :: u          !< Inputs at operating point (may change to inout if a mesh copy is required)
-   TYPE(BD_ParameterType),               INTENT(IN   )           :: p          !< Parameters
-   TYPE(BD_ContinuousStateType),         INTENT(IN   )           :: x          !< Continuous states at operating point
-   TYPE(BD_DiscreteStateType),           INTENT(IN   )           :: xd         !< Discrete states at operating point
-   TYPE(BD_ConstraintStateType),         INTENT(IN   )           :: z          !< Constraint states at operating point
-   TYPE(BD_OtherStateType),              INTENT(IN   )           :: OtherState !< Other states at operating point
-   TYPE(BD_OutputType),                  INTENT(IN   )           :: y          !< Output at operating point
-   TYPE(BD_MiscVarType),                 INTENT(INOUT)           :: m          !< Misc/optimization variables
-   INTEGER(IntKi),                       INTENT(  OUT)           :: ErrStat    !< Error status of the operation
-   CHARACTER(*),                         INTENT(  OUT)           :: ErrMsg     !< Error message if ErrStat /= ErrID_None
-   REAL(ReKi), ALLOCATABLE, OPTIONAL,    INTENT(INOUT)           :: u_op(:)    !< values of linearized inputs
-   REAL(ReKi), ALLOCATABLE, OPTIONAL,    INTENT(INOUT)           :: y_op(:)    !< values of linearized outputs
-   REAL(ReKi), ALLOCATABLE, OPTIONAL,    INTENT(INOUT)           :: x_op(:)    !< values of linearized continuous states
-   REAL(ReKi), ALLOCATABLE, OPTIONAL,    INTENT(INOUT)           :: dx_op(:)   !< values of first time derivatives of linearized continuous states
-   REAL(ReKi), ALLOCATABLE, OPTIONAL,    INTENT(INOUT)           :: xd_op(:)   !< values of linearized discrete states
-   REAL(ReKi), ALLOCATABLE, OPTIONAL,    INTENT(INOUT)           :: z_op(:)    !< values of linearized constraint states
-   LOGICAL,                 OPTIONAL,    INTENT(IN   )           :: NeedLogMap !< whether a y_op values should contain log maps instead of full orientation matrices
-
-   INTEGER(IntKi)                                                :: index, i, dof
-   INTEGER(IntKi)                                                :: nu
-   INTEGER(IntKi)                                                :: ny
-   INTEGER(IntKi)                                                :: ErrStat2
-   CHARACTER(ErrMsgLen)                                          :: ErrMsg2
-   CHARACTER(*), PARAMETER                                       :: RoutineName = 'BD_GetOP'
-   LOGICAL                                                       :: FieldMask(FIELDMASK_SIZE)
-   LOGICAL                                                       :: ReturnLogMap
-   TYPE(BD_ContinuousStateType)                                  :: dx          ! derivative of continuous states at operating point
-
-   
-      ! Initialize ErrStat
-
-   ErrStat = ErrID_None
-   ErrMsg  = ''
-
-   IF ( PRESENT( u_op ) ) THEN
-      
-      nu = size(p%Jac_u_indx,1) + u%RootMotion%NNodes * 6  ! Jac_u_indx has 3 orientation angles, but the OP needs the full 9 elements of the DCM (thus 6 more per node)
-      
-      if (.not. allocated(u_op)) then
-         call AllocAry(u_op, nu, 'u_op', ErrStat2, ErrMsg2)
-            call SetErrStat(ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName)
-            if (ErrStat >= AbortErrLev) return
-      end if
-      
-   
-      index = 1
-      FieldMask = .false.
-      FieldMask(MASKID_TranslationDisp) = .true.
-      FieldMask(MASKID_Orientation)     = .true.
-      FieldMask(MASKID_TranslationVel)  = .true.
-      FieldMask(MASKID_RotationVel)     = .true.
-      FieldMask(MASKID_TranslationAcc)  = .true.
-      FieldMask(MASKID_RotationAcc)     = .true.
-      call PackMotionMesh(u%RootMotion, u_op, index, FieldMask=FieldMask)
-   
-      call PackLoadMesh(u%PointLoad, u_op, index)
-      call PackLoadMesh(u%DistrLoad, u_op, index)
-      
-   END IF
-
-   
-   IF ( PRESENT( y_op ) ) THEN
-      if (present(NeedLogMap)) then
-         ReturnLogMap = NeedLogMap
-      else
-         ReturnLogMap = .false.
-      end if
-      
-      if (.not. allocated(y_op)) then
-         ny = p%Jac_ny + y%BldMotion%NNodes * 6  ! Jac_ny has 3 orientation angles, but the OP needs the full 9 elements of the DCM (thus 6 more per node)
-   
-         call AllocAry(y_op, ny, 'y_op', ErrStat2, ErrMsg2)
-            call SetErrStat(ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName)
-            if (ErrStat >= AbortErrLev) return
-      end if
-
-      
-      index = 1
-      call PackLoadMesh(y%ReactionForce, y_op, index)
-
-      FieldMask = .false.
-      FieldMask(MASKID_TranslationDisp) = .true.
-      FieldMask(MASKID_Orientation)     = .true.
-      FieldMask(MASKID_TranslationVel)  = .true.
-      FieldMask(MASKID_RotationVel)     = .true.
-      FieldMask(MASKID_TranslationAcc)  = .true.
-      FieldMask(MASKID_RotationAcc)     = .true.
-      call PackMotionMesh(y%BldMotion, y_op, index, FieldMask=FieldMask, UseLogMaps=ReturnLogMap)
-   
-      index = index - 1
-      do i=1,p%NumOuts + p%BldNd_TotNumOuts
-         y_op(i+index) = y%WriteOutput(i)
-      end do
-         
-      
-   END IF
-
-   IF ( PRESENT( x_op ) ) THEN
-
-      if (.not. allocated(x_op)) then
-         call AllocAry(x_op, p%Jac_nx * 2,'x_op',ErrStat2,ErrMsg2)
-            call SetErrStat(ErrStat2,ErrMsg2,ErrStat,ErrMsg,RoutineName)
-         if (ErrStat>=AbortErrLev) return
-      end if
-
-      index = 1
-      do i=2,p%node_total
-         do dof=1,p%dof_node
-            x_op(index) = x%q( dof, i )
-            index = index+1
-         end do
-      end do
-
-      do i=2,p%node_total
-         do dof=1,p%dof_node
-            x_op(index) = x%dqdt( dof, i )
-            index = index+1
-         end do
-      end do
-
-   END IF
-
-   IF ( PRESENT( dx_op ) ) THEN
-
-      if (.not. allocated(dx_op)) then
-         call AllocAry(dx_op, p%Jac_nx * 2,'dx_op',ErrStat2,ErrMsg2)
-            call SetErrStat(ErrStat2,ErrMsg2,ErrStat,ErrMsg,RoutineName)
-         if (ErrStat>=AbortErrLev) return
-      end if
-      
-      call BD_CalcContStateDeriv( t, u, p, x, xd, z, OtherState, m, dx, ErrStat2, ErrMsg2 ) 
-         call SetErrStat(ErrStat2,ErrMsg2,ErrStat,ErrMsg,RoutineName) 
-         if (ErrStat>=AbortErrLev) then
-            call BD_DestroyContState( dx, ErrStat2, ErrMsg2)
-            return
-         end if
-
-      index = 1
-      do i=2,p%node_total
-         do dof=1,p%dof_node
-            dx_op(index) = dx%q( dof, i )
-            index = index+1
-         end do
-      end do
-
-      do i=2,p%node_total
-         do dof=1,p%dof_node
-            dx_op(index) = dx%dqdt( dof, i )
-            index = index+1
-         end do
-      end do
-
-      call BD_DestroyContState( dx, ErrStat2, ErrMsg2)
-
-   END IF
-
-   IF ( PRESENT( xd_op ) ) THEN
-
-   END IF
-   
-   IF ( PRESENT( z_op ) ) THEN
-   ! this is a little weird, but seems to be how BD has implemented the first node in the continuous state array.
-
-      if (.not. allocated(z_op)) then
-         call AllocAry(z_op, p%dof_node * 2,'z_op',ErrStat2,ErrMsg2)
-            call SetErrStat(ErrStat2,ErrMsg2,ErrStat,ErrMsg,RoutineName)
-         if (ErrStat>=AbortErrLev) return
-      end if
-
-      index = 1
-      do dof=1,p%dof_node
-         z_op(index) = x%q( dof, 1 )
-         index = index+1
-      end do
-
-      do dof=1,p%dof_node
-         z_op(index) = x%dqdt( dof, 1 )
-         index = index+1
-      end do
-   
-   END IF
-
-END SUBROUTINE BD_GetOP
 !++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++   
 
 
 SUBROUTINE BD_WriteMassStiff( p, m, ErrStat, ErrMsg )
+   use YAML, only: yaml_write_array
    TYPE(BD_ParameterType),              INTENT(IN   ) :: p           !< Parameters
    TYPE(BD_MiscVarType),                INTENT(INOUT) :: m           !< misc/optimization variables ! intent(out) so that we can update the accelerations here...
    INTEGER(IntKi),                      INTENT(  OUT) :: ErrStat     !< Error status of the operation
@@ -6987,17 +6777,16 @@ SUBROUTINE BD_WriteMassStiff( p, m, ErrStat, ErrMsg )
 
       ! Write out the mass and stiffness in the calculation frame
    WRITE(m%Un_Sum,'()')
-   CALL WrMatrix(RESHAPE(m%StifK, (/p%dof_total, p%dof_total/)), m%Un_Sum, p%OutFmt, 'Full stiffness matrix (BD calculation coordinate frame)')
+   call yaml_write_array(m%Un_Sum, 'K_BD', RESHAPE(m%StifK, (/p%dof_total, p%dof_total/)), p%OutFmt, ErrStat, ErrMsg, comment='Full stiffness matrix (BD calculation coordinate frame).')
    WRITE(m%Un_Sum,'()')
-   CALL WrMatrix(RESHAPE(m%MassM, (/p%dof_total, p%dof_total/)), m%Un_Sum, p%OutFmt, 'Full mass matrix (BD calculation coordinate frame)')
-
-   RETURN
+   call yaml_write_array(m%Un_Sum, 'M_BD', RESHAPE(m%MassM, (/p%dof_total, p%dof_total/)), p%OutFmt, ErrStat, ErrMsg, comment='Full mass matrix (BD calculation coordinate frame)')
 
 END SUBROUTINE BD_WriteMassStiff
 !----------------------------------------------------------------------------------------------------------------------------------
 
 
 SUBROUTINE BD_WriteMassStiffInFirstNodeFrame( p, x, m, ErrStat, ErrMsg )
+   use YAML, only: yaml_write_array
    TYPE(BD_ParameterType),              INTENT(IN   ) :: p           !< Parameters
    TYPE(BD_ContinuousStateType),        INTENT(IN   ) :: x           !< Continuous states at t
    TYPE(BD_MiscVarType),                INTENT(INOUT) :: m           !< misc/optimization variables ! intent(out) so that we can update the accelerations here...
@@ -7045,10 +6834,8 @@ SUBROUTINE BD_WriteMassStiffInFirstNodeFrame( p, x, m, ErrStat, ErrMsg )
    enddo
 
       ! Write out the mass and stiffness in the first node frame
-   WRITE(m%Un_Sum,'()')
-   CALL WrMatrix(RESHAPE(TmpStifK, (/p%dof_total, p%dof_total/)), m%Un_Sum, p%OutFmt, 'Full stiffness matrix (IEC blade first node coordinate frame)')
-   WRITE(m%Un_Sum,'()')
-   CALL WrMatrix(RESHAPE(TmpMassM, (/p%dof_total, p%dof_total/)), m%Un_Sum, p%OutFmt, 'Full mass matrix (IEC blade first node coordinate frame)')
+   call yaml_write_array(m%Un_Sum, 'K_IEC', TmpStifK, p%OutFmt, ErrStat, ErrMsg, comment='Full stiffness matrix (IEC blade first node coordinate frame)')
+   call yaml_write_array(m%Un_Sum, 'M_IEC', TmpMassM, p%OutFmt, ErrStat, ErrMsg, comment='Full mass matrix (IEC blade first node coordinate frame)')
 
 
 
@@ -7063,6 +6850,97 @@ SUBROUTINE BD_WriteMassStiffInFirstNodeFrame( p, x, m, ErrStat, ErrMsg )
       END SUBROUTINE cleanup
 END SUBROUTINE BD_WriteMassStiffInFirstNodeFrame
 !----------------------------------------------------------------------------------------------------------------------------------
+
+!----------------------------------------------------------------------------------------------------------------------------------
+!> Update the state information to follow the blade rootmotion mesh.
+!!    - move the state information in x from the previous reference frame at time T (u(2)%rootmotion) to the new reference frame at T+dt (u(1)%rootmation)
+!!    - the GlbRot, GlbPos, and Glb_crv values are stored as otherstates and updated
+!!    - 
+subroutine BD_UpdateGlobalRef(u, p, x, OtherState, ErrStat, ErrMsg)
+   type(BD_InputType),           intent(in   ) :: u          !< Inputs at utimes
+   type(BD_ParameterType),       intent(in   ) :: p          !< Parameters
+   type(BD_ContinuousStateType), intent(inout) :: x          !< Input: Continuous states at t;
+   type(BD_OtherStateType),      intent(inout) :: OtherState !< Other states: Other states at t;
+   integer(IntKi),               intent(  out) :: ErrStat    !< Error status of the operation
+   character(*),                 intent(  out) :: ErrMsg     !< Error message if ErrStat /=
+
+   character(*), parameter       :: RoutineName = 'BD_UpdateGlobalRef'
+   integer(IntKi)                :: ErrStat2
+   character(ErrMsgLen)          :: ErrMsg2    ! Temporary Error message
+   real(R8Ki)                    :: GlbWM_old(3), GlbWM_new(3), GlbWM_diff(3)
+   real(R8Ki)                    :: GlbRot_old(3, 3), GlbRot_new(3, 3), GlbRot_diff(3, 3)
+   real(R8Ki)                    :: NodeRot_old(3)
+   real(R8Ki)                    :: GlbPos_old(3), GlbPos_new(3)
+   integer(IntKi)                :: i, j, temp_id
+
+   ErrStat  = ErrID_None
+   ErrMsg   = ""
+
+   ! If reference frame shouldn't be changed, return
+   if (.not. ChangeRefFrame) return
+
+   ! Save old global position, rotation, and WM
+   GlbPos_old = OtherState%GlbPos
+   GlbRot_old = OtherState%GlbRot
+   GlbWM_old  = OtherState%Glb_crv
+
+   ! Calculate new global position, rotation, and WM from root motion -- u must be in the global frame for the     SetRefFrame routine
+   call SetRefFrame(u, OtherState%GlbPos, OtherState%GlbRot, OtherState%Glb_Crv, ErrStat2,ErrMsg2)
+      CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
+      if (ErrStat >= AbortErrLev) return
+   GlbPos_new = OtherState%GlbPos
+   GlbRot_new = OtherState%GlbRot
+   GlbWM_new  = OtherState%Glb_crv
+
+   ! Calculate differences between old and new reference
+   call BD_CrvCompose(GlbWM_diff, GlbWM_new, GlbWM_old, FLAG_R1TR2)
+   call BD_CrvMatrixR(GlbWM_diff, GlbRot_diff)
+
+   do i = 1, p%elem_total
+      do j = 1, p%nodes_per_elem
+
+         ! The last node of the first element is used as the first node in the second element.
+         temp_id = (i - 1)*(p%nodes_per_elem - 1) + j 
+
+         ! Calculate displacement in terms of new root motion mesh position
+         x%q(1:3, temp_id) =  matmul(transpose(GlbRot_new), &
+                                    GlbPos_old - GlbPos_new + &
+                                    matmul(GlbRot_old, p%uuN0(1:3, j, i) + x%q(1:3, temp_id)) - &
+                                    matmul(GlbRot_new, p%uuN0(1:3, j, i)))
+
+         ! Update the node orientation rotation of the node
+         NodeRot_old = x%q(4:6, temp_id)
+         call BD_CrvCompose(x%q(4:6, temp_id), GlbWM_diff, NodeRot_old, FLAG_R1R2)
+      end do
+   end do
+
+   ! Update the translational velocity
+   x%dqdt(1:3, :) = matmul(GlbRot_diff, x%dqdt(1:3, :))
+
+   ! Update the rotational velocity
+   x%dqdt(4:6, :) = matmul(GlbRot_diff, x%dqdt(4:6, :))
+   
+   ! Update the translational and rotational acceleration for GA2 algorithm
+   OtherState%acc(1:3, 1) = matmul(u%RootMotion%TranslationAcc(:, 1), GlbRot_new)
+   OtherState%acc(4:6, 1) = matmul(u%RootMotion%RotationAcc(:, 1), GlbRot_new)
+   OtherState%acc(1:3, 2:) = matmul(GlbRot_diff, OtherState%acc(1:3, 2:))
+   OtherState%acc(4:6, 2:) = matmul(GlbRot_diff, OtherState%acc(4:6, 2:))
+
+   ! Update the translational and rotational algorithm acceleration for GA2 algorithm
+   OtherState%xcc(1:3, :) = matmul(GlbRot_diff, OtherState%xcc(1:3, :))
+   OtherState%xcc(4:6, :) = matmul(GlbRot_diff, OtherState%xcc(4:6, :))
+
+   ! Root node is always aligned with root motion mesh 
+   x%q(:, 1) = 0.0_R8Ki
+   x%dqdt(1:3, 1) = matmul(u%RootMotion%TranslationVel(:, 1), GlbRot_new)
+   x%dqdt(4:6, 1) = matmul(u%RootMotion%RotationVel(:, 1), GlbRot_new)
+
+end subroutine
+
+
+
+
+
 
 
 !-----------------------------------------------------------------------------------------------------------------------------------

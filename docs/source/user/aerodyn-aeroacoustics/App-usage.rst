@@ -5,17 +5,18 @@ Using the Aeroacoustics Model in AeroDyn
 
 A live version of this documentation is available at
 https://openfast.readthedocs.io/. To run the aeroacoustics model, the
-flag **CompAA** needs to be set to **True** at line 13 of the AeroDyn15 main
+flag **CompAA** needs to be set to **True** at line 14 of the AeroDyn main
 input file in the inputs block **General Options**. When the flag is set to
 **True**, the following line must include the name of the file containing
 the inputs to the aeroacoustics model, which is discussed in
-:numref:`aa-sec-BLinputs`.
+:numref:`aa-sec-MainInput`. Currently, this module cannot be used with an MHK
+turbine.
 
 
 .. container::
-   :name: aa-tab:AD15
+   :name: aa-tab:AeroDyn
 
-   .. literalinclude:: example/AD15.ipt
+   .. literalinclude:: example/AeroDyn.ipt
       :linenos:
       :language: none
 
@@ -55,15 +56,17 @@ models:
 
 -  **TICalcMeth** – Integer 1/2: flag to set the calculation method for the
    incident turbulence intensity. When set to 1, incident turbulence intensity is
-   defined in a user-defined grid; see :numref:`aa-sec-TIgrid`. When set to
-   2, incident turbulence intensity is estimated from the time history of the
-   incident flow.
+   user-defined. When set to 2, incident turbulence intensity is 
+   estimated from the time history of the incident flow.
 
--  **TICalcTabFile** – String: name of the text file with the user-defined
-   turbulence intensity grid; see :numref:`aa-sec-TIgrid`.
+-  **TI** – Float: user-defined value of :math:`TI`, which is the rotor-incident
+   turbulence intensity used in the Amiet model.
 
--  **SurfRoughness** – Float: value of :math:`z_{0}` used to estimate
-   :math:`L_{t}` in the Amiet model.
+-  **avgV** – Float: value of the average wind speed used to scale :math:`TI`
+   and convert it to a blade section incident turbulence intensity.
+
+-  **Lturb** – Float: value of :math:`L_{turb}` used to estimate the turbulent
+   lengthscale used in the Amiet model.
 
 -  **TBLTEMod** – Integer 0/1/2: flag to set the TBL-TE noise model; 0 turns
    off the model, 1 uses the Brooks-Pope-Marcolini (BPM) airfoil noise
@@ -97,12 +100,7 @@ models:
 -  **BluntMod** – Integer 0/1: flag to activate (**BluntMod=1**) the
    trailing-edge bluntness – vortex shedding model, see :numref:`aa-TE-vortex`. If
    the flag is set to 1, the trailing-edge geometry must be specified in
-   the file(s) listed in the field Blade Properties.
-
-Next, the field Blade Properties lists three file names, often but not
-necessarily identical, which contain the distributed properties
-describing the detailed geometry of the trailing edge. These are
-described in :numref:`aa-sec-TEgeom`.
+   the files as described in :numref:`aa-sec-BLinputs`.
 
 The field Observer Locations contains the path to the file where the
 number of observers (NrObsLoc) and the respective locations are
@@ -114,20 +112,22 @@ Finally, the set Outputs contains a few options for the output data:
    levels are reported with (True) or without (False) the A-weighting
    correction; see :numref:`aa-sec-ModelUsage`.
 
--  **NAAOutFile** – Integer 1/2/3: flag to set the desired output file. When
+-  **NAAOutFile** – Integer 1/2/3/4: flag to set the desired output file. When
    set to 1, a value of overall sound pressure level at every **DT_AA** time
    step per observer is printed to file. When set to 2, the first output
    is accompanied by a second file where the total sound pressure level
    spectrum is printed per time step per observer. When set to
-   3, the two first outputs are accompanied by a third file where the
+   3, the two first output files are accompanied by a third file where the
    sound pressure level spectrum per noise mechanism is printed per time
    step per observer. When set to 4, a fourth file is generated with the
    values of overall sound pressure levels per node, per blade, 
    per observer, and per time step.
 
--  The following line contains the file name used to store the outputs.
-   The file name is attached with a 1, 2, 3, and 4 flag based on the
-   **NAAOutFile** options.
+-  The following line, **AAOutFile**, contains the root name for the files 
+   used to store the outputs. If set to "default", the default output file
+   root name will be used.
+   The file name is appended with a 1, 2, 3, and 4 flag based on the
+   **NAAOutFile** options. 
 
 The file must be closed by an END command.
 
@@ -141,8 +141,8 @@ The file must be closed by an END command.
 
 .. _aa-sec-BLinputs:
 
-Boundary Layer Inputs
----------------------
+Boundary Layer Inputs and Trailing Edge Geometry
+------------------------------------------------
 
 When the flag **BLMod** is set equal to 2, pretabulated properties of the
 boundary layer must be provided and are used by the turbulent boundary
@@ -188,6 +188,26 @@ outputs of XFoil.  Because it is usually impossible to obtain these values for
 the whole ranges of Reynolds numbers and angles of attack, the code is set to
 adopt the last available values and print to screen a warning.
 
+When the flag **BluntMod** is set to 1, the detailed geometry of the
+trailing edge must also be defined along the span. Two inputs must be
+provided, namely the angle, :math:`\Psi` between the suction and
+pressure sides of the profile, right before the trailing-edge point, and
+the height, :math:`h`, of the trailing edge. :math:`\Psi` must be
+defined in degrees, while :math:`h` is in meters. Note that the BPM
+trailing-edge bluntness model is very sensitive to these two parameters,
+which, however, are often not easy to determine for real blades. 
+:numref:`aa-fig:GeomParamTE` shows the two inputs.
+
+.. figure:: media/NoiseN011.png
+   :alt:    Geometric parameters of the trailing-edge bluntness
+   :name:   aa-fig:GeomParamTE
+   :width:  100.0%
+
+   Geometric parameters :math:`\mathbf{\Psi}` and
+   :math:`\mathbf{h}` of the trailing-edge bluntness
+
+One value of :math:`\Psi` and one value of :math:`h` per file must be defined.
+These values are not used if the flag **BluntMod** is set to 0.
 
 .. container::
    :name: aa-tab:AF20_BL
@@ -238,64 +258,6 @@ is shown here:
       :linenos:
       :language: none
 
-
-.. _aa-sec-TIgrid:
-
-Turbulence Grid
----------------
-
-When the flag **TICalcMeth** is set equal to 1, the grid of incident
-turbulent intensity :math:`I_{1}` must be defined by the user. This is
-done by creating a file called **TIGrid_In.txt**, which mimics a TurbSim
-output file and contains a grid of turbulence intensity, which is
-defined as a fraction value. The file defines a grid centered at hub
-height and oriented with the OpenFAST global inertial frame coordinate
-system; see :numref:`aa-fig:ObsRefSys`. A user-defined number of lateral and vertical
-points equally spaced by a user-defined number of meters must be
-specified. An example file for a 160 (lateral) by 180 (vertical) meters
-grid looks like the following:
-
-
-.. container::
-   :name: aa-tab:TIgrid
-
-   .. literalinclude:: example/TIGrid.txt
-      :linenos:
-      :language: none
-
-
-.. _aa-sec-TEgeom:
-
-Trailing-Edge Geometry
-----------------------
-
-When the flag **BluntMod** is set to 1, the detailed geometry of the
-trailing edge must be defined along the span. Two inputs must be
-provided, namely the angle, :math:`\Psi,` between the suction and
-pressure sides of the profile, right before the trailing-edge point, and
-the height, :math:`h`, of the trailing edge. :math:`\Psi` must be
-defined in degrees, while :math:`h` is in meters. Note that the BPM
-trailing-edge bluntness model is very sensitive to these two parameters,
-which, however, are often not easy to determine for real blades. 
-:numref:`aa-fig:GeomParamTE` shows the two inputs.
-
-.. figure:: media/NoiseN011.png
-   :alt:    Geometric parameters of the trailing-edge bluntness
-   :name:   aa-fig:GeomParamTE
-   :width:  100.0%
-
-   Geometric parameters :math:`\mathbf{\Psi}` and
-   :math:`\mathbf{h}` of the trailing-edge bluntness
-
-The two distributions must be defined with the same spanwise resolution
-of the AeroDyn15 blade file, such as:
-
-.. container::
-   :name: aa-tab:BladeProp
-
-   .. literalinclude:: example/BladeProp.dat
-      :linenos:
-      :language: none
 
 .. [4]
    https://github.com/OpenFAST/python-toolbox

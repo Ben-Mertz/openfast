@@ -62,9 +62,14 @@ MODULE ElastoDyn
                                                !   (Xd), and constraint-state (Z) equations all with respect to the constraint
                                                !   states (z)
 
-   PUBLIC :: ED_GetOP                          ! Routine to pack the operating point values (for linearization) into arrays
+   PUBLIC :: ED_PackExtInputAry                ! Routine to pack extended inputs for linearization
+   
+
+   PUBLIC :: ED_UpdateAzimuth
+   PUBLIC :: ED_UpdateBlPitch
    
 CONTAINS
+
 !----------------------------------------------------------------------------------------------------------------------------------
 !> This routine is called at the start of the simulation to perform initialization steps.
 !! The parameters are set here and not changed during the simulation.
@@ -97,9 +102,10 @@ SUBROUTINE ED_Init( InitInp, u, p, x, xd, z, OtherState, y, m, Interval, InitOut
 
    TYPE(ED_InputFile)                           :: InputFileData           ! Data stored in the module's input file
    INTEGER(IntKi)                               :: ErrStat2                ! temporary Error status of the operation
-   INTEGER(IntKi)                               :: i                       ! loop counters
-   LOGICAL, PARAMETER                           :: GetAdamsVals = .FALSE.  ! Determines if we should read Adams values and create (update) an Adams model
+   INTEGER(IntKi)                               :: i, K                    ! loop counters
    CHARACTER(ErrMsgLen)                         :: ErrMsg2                 ! temporary Error message if ErrStat /= ErrID_None
+   REAL(R8Ki)                                   :: TransMat(3,3)           ! Initial rotation matrix at Platform Refz
+   REAL(ReKi)                                   :: TmpVec(3)
 
 
       ! Initialize variables for this routine
@@ -120,21 +126,25 @@ SUBROUTINE ED_Init( InitInp, u, p, x, xd, z, OtherState, y, m, Interval, InitOut
       ! Read the input file and validate the data
       !............................................................................................
    p%BD4Blades = .NOT. InitInp%CompElast           ! if we're not using ElastoDyn for the blades, use BeamDyn
-   p%UseAD14   = LEN_TRIM(InitInp%ADInputFile) > 0 ! if we're using AD14, we need to use the AD14 input files
+   p%RigidAero = InitInp%RigidAero                 ! If AeroDisk is used, set blades to all be rigid
 
    p%RootName = InitInp%RootName ! FAST already adds '.ED' to the root name
+   p%CompAeroMaps = InitInp%CompAeroMaps
+   p%Gravity = InitInp%Gravity
    
-   CALL ED_ReadInput( InitInp%InputFile, InitInp%ADInputFile, InputFileData, GetAdamsVals, p%BD4Blades, Interval, p%RootName, ErrStat2, ErrMsg2 )
+   CALL ED_ReadInput( InitInp%InputFile, InputFileData, p%BD4Blades, Interval, p%RootName, ErrStat2, ErrMsg2 )
       CALL CheckError( ErrStat2, ErrMsg2 )
       IF ( ErrStat >= AbortErrLev ) RETURN
 
-   IF ( p%BD4Blades ) THEN
-   
-         ! Set DOFs to FALSE for whatever values you don't want on for BeamDyn
+
+   IF ( p%BD4Blades .or. p%RigidAero ) THEN
+         ! Set DOFs to make rotor rigid
       InputFileData%FlapDOF1 = .FALSE.
       InputFileData%FlapDOF2 = .FALSE.
       InputFileData%EdgeDOF  = .FALSE.
-      
+   ENDIF
+
+   IF ( p%BD4Blades ) THEN
          ! Set other values not used for BeamDyn      
       InputFileData%OoPDefl  = 0.0_ReKi
       InputFileData%IPDefl   = 0.0_ReKi
@@ -143,18 +153,65 @@ SUBROUTINE ED_Init( InitInp, u, p, x, xd, z, OtherState, y, m, Interval, InitOut
       InputFileData%NBlGages = 0
       InputFileData%BldGagNd = 0
       InputFileData%BldNodes = 0
-       
    END IF
 
+   IF (p%CompAeroMaps) THEN
+      InputFileData%DT = Interval
+      p%Gravity        = 0.0_ReKi
+      
+      ! DEGREES OF FREEDOM
+      InputFileData%TeetDOF  = .false.
+      InputFileData%DrTrDOF  = .false.
+      InputFileData%GenDOF   = .false.
+      InputFileData%YawDOF   = .false.
+      InputFileData%TwFADOF1 = .false.
+      InputFileData%TwFADOF2 = .false.
+      InputFileData%TwSSDOF1 = .false.
+      InputFileData%TwSSDOF2 = .false.
+      InputFileData%PtfmSgDOF= .false.
+      InputFileData%PtfmSwDOF= .false.
+      InputFileData%PtfmHvDOF= .false.
+      InputFileData%PtfmRDOF = .false.
+      InputFileData%PtfmPDOF = .false.
+      InputFileData%PtfmYDOF = .false.
+      
+      ! INITIAL CONDITIONS
+      InputFileData%RotSpeed = InitInp%RotSpeed
+      InputFileData%OoPDefl     = 0.0_ReKi
+      InputFileData%IPDefl      = 0.0_ReKi
+      InputFileData%BlPitch(1)  = 0.0_ReKi
+      InputFileData%BlPitch(2)  = 0.0_ReKi
+      InputFileData%BlPitch(3)  = 0.0_ReKi
+      InputFileData%TeetDefl    = 0.0_ReKi
+      InputFileData%Azimuth     = 0.0_ReKi
+      InputFileData%NacYaw      = 0.0_ReKi
+      InputFileData%TTDspFA     = 0.0_ReKi
+      InputFileData%TTDspSS     = 0.0_ReKi
+      InputFileData%PtfmSurge   = 0.0_ReKi
+      InputFileData%PtfmSway    = 0.0_ReKi
+      InputFileData%PtfmHeave   = 0.0_ReKi
+      InputFileData%PtfmRoll    = 0.0_ReKi
+      InputFileData%PtfmPitch   = 0.0_ReKi
+      InputFileData%PtfmYaw     = 0.0_ReKi
+      
+      ! TURBINE CONFIGURATION
+   ! CHECK THAT precone is same for all blades???
+      InputFileData%ShftTilt = 0.0_ReKi
+      
+   ! CHECK THAT BldFile is same for all blades???
 
-   CALL ED_ValidateInput( InputFileData, p%BD4Blades, InitInp%Linearize, ErrStat2, ErrMsg2 )
+      InputFileData%TeetMod = 0
+
+   END IF
+
+   CALL ED_ValidateInput( InputFileData, p%BD4Blades, InitInp%Linearize, InitInp%MHK, ErrStat2, ErrMsg2 )
       CALL CheckError( ErrStat2, ErrMsg2 )
       IF (ErrStat >= AbortErrLev) RETURN
 
       !............................................................................................
       ! Define parameters here:
       !............................................................................................
-   CALL ED_SetParameters( InputFileData, p, ErrStat2, ErrMsg2 )
+   CALL ED_SetParameters( InitInp, InputFileData, p, ErrStat2, ErrMsg2 )
       CALL CheckError( ErrStat2, ErrMsg2 )
       IF (ErrStat >= AbortErrLev) RETURN
 
@@ -236,16 +293,28 @@ SUBROUTINE ED_Init( InitInp, u, p, x, xd, z, OtherState, y, m, Interval, InitOut
       
    InitOut%Ver         = ED_Ver
    InitOut%NumBl       = p%NumBl
-   InitOut%Gravity     = p%Gravity
    InitOut%BladeLength = p%TipRad - p%HubRad
-   InitOut%TowerHeight = p%TwrFlexL
+   InitOut%TowerFlexL = p%TwrFlexL
    InitOut%TowerBaseHeight = p%TowerBsHt
+
+   ! Platform reference point wrt to global origin (0,0,0)
    InitOut%PlatformPos = x%QT(1:6)
-   InitOut%HubHt       = p%HubHt
-   InitOut%TwrBasePos  = y%TowerLn2Mesh%Position(:,p%TwrNodes + 2)
+   TransMat = EulerConstructZYX((/x%QT(4),x%QT(5),x%QT(6)/))
+   TmpVec = MATMUL((/p%PtfmRefxt,p%PtfmRefyt,p%PtfmRefzt/),TransMat)
+
+   InitOut%PlatformPos(1) = InitOut%PlatformPos(1) - TmpVec(1) + p%PtfmRefxt
+   InitOut%PlatformPos(2) = InitOut%PlatformPos(2) - TmpVec(2) + p%PtfmRefyt
+   InitOut%PlatformPos(3) = InitOut%PlatformPos(3) - TmpVec(3) + p%PtfmRefzt
+
+   InitOut%HubHt            = p%HubHt
+   InitOut%TwrBaseRefPos    = y%TowerLn2Mesh%Position(:,p%TwrNodes + 2)
+   InitOut%TwrBaseTransDisp = y%TowerLn2Mesh%TranslationDisp(:,p%TwrNodes + 2)
+   InitOut%TwrBaseRefOrient = y%TowerLn2Mesh%RefOrientation(:,:,p%TwrNodes + 2)
+   InitOut%TwrBaseOrient    = y%TowerLn2Mesh%Orientation(:,:,p%TwrNodes + 2)
    InitOut%HubRad      = p%HubRad
    InitOut%RotSpeed    = p%RotSpeed
    InitOut%isFixed_GenDOF = .not. InputFileData%GenDOF
+   InitOut%GearBox_index = DOF_GeAz ! for steady-state solver changing rotor speed
    
 
    if (.not. p%BD4Blades) then
@@ -272,27 +341,26 @@ SUBROUTINE ED_Init( InitInp, u, p, x, xd, z, OtherState, y, m, Interval, InitOut
    InitOut%BlPitch = InputFileData%BlPitch(1:p%NumBl)
 
       !............................................................................................
-      ! set up data needed for linearization analysis
-      !............................................................................................
-   
-   if (InitInp%Linearize) then
-      call ED_Init_Jacobian(p, u, y, InitOut, ErrStat2, ErrMsg2)
-         call CheckError( ErrStat2, ErrMsg2 )
-         if (ErrStat >= AbortErrLev) return
-   end if
-   
-   
-      !............................................................................................
       ! If you want to choose your own rate instead of using what the glue code suggests, tell the glue code the rate at which
       !   this module must be called here:
       !............................................................................................
 
    Interval = p%DT
 
+      !............................................................................................
+      ! Module Variables
+      !............................................................................................
+
+   CALL ED_InitVars(u, p, x, y, m, InitOut%Vars, InputFileData, .true., ErrStat2, ErrMsg2)
+      CALL CheckError( ErrStat2, ErrMsg2 )
+
+      !............................................................................................
+      ! Summary and cleanup
+      !............................................................................................
 
        ! Print the summary file if requested:
    IF (InputFileData%SumPrint) THEN
-      CALL ED_PrintSum( p, OtherState, GetAdamsVals, ErrStat2, ErrMsg2 )
+      CALL ED_PrintSum( p, OtherState, ErrStat2, ErrMsg2 )
          CALL CheckError( ErrStat2, ErrMsg2 )
          IF (ErrStat >= AbortErrLev) RETURN
    END IF
@@ -422,13 +490,15 @@ SUBROUTINE ED_UpdateStates( t, n, u, utimes, p, x, xd, z, OtherState, m, ErrStat
       INTEGER(IntKi),                     INTENT(  OUT) :: ErrStat    !< Error status of the operation
       CHARACTER(*),                       INTENT(  OUT) :: ErrMsg     !< Error message if ErrStat /= ErrID_None
 
-
+      INTEGER(IntKi)                                    :: K
 
          ! Initialize ErrStat
 
       ErrStat = ErrID_None
       ErrMsg  = ""            
       
+         ! Passing in u(1) as a dummy. ED_UpdateDiscState does not require input, u, only the continuous state, x.
+      CALL ED_UpdateDiscState( t, n, u(1), p, x, xd, z, OtherState, m, ErrStat, ErrMsg )
 
       SELECT CASE ( p%method )
          
@@ -460,9 +530,48 @@ SUBROUTINE ED_UpdateStates( t, n, u, utimes, p, x, xd, z, OtherState, m, ErrStat
       ! bjj: why don't we just do a modulo on x%QT(DOF_GeAz) instead of using x%QT(DOF_DrTr) with it?   
       
       IF ( ( x%QT(DOF_GeAz) + x%QT(DOF_DrTr) ) >= TwoPi_D )  x%QT(DOF_GeAz) = x%QT(DOF_GeAz) - TwoPi_D
+
+      DO K = 1,p%NumBl
+         IF ( p%DOF_Flag(DOF_BP(K)) ) THEN
+            IF      ( x%QT(DOF_BP(K)) >=  Pi_D ) THEN
+               x%QT(DOF_BP(K)) = x%QT(DOF_BP(K)) - TwoPi_D
+            ELSE IF ( x%QT(DOF_BP(K)) <  -Pi_D ) THEN
+               x%QT(DOF_BP(K)) = x%QT(DOF_BP(K)) + TwoPi_D
+            END IF
+         END IF
+      END DO
             
-      
 END SUBROUTINE ED_UpdateStates
+
+!> Limit azimuth to be between 0 and 2pi
+SUBROUTINE ED_UpdateAzimuth(p, x, DT)
+   TYPE(ED_ParameterType),       INTENT(IN   )  :: p          !< Parameters
+   TYPE(ED_ContinuousStateType), INTENT(INOUT)  :: x
+   real(DbKi),                   INTENT(IN   )  :: DT
+
+   ! If the generator degree of freedom is not active, update the azimuth angle
+   IF (.not. p%DOF_Flag(DOF_GeAz)) x%QT(DOF_GeAz) = x%QT(DOF_GeAz) + DT*x%QDT(DOF_GeAz)
+
+   ! If the azimuth is greater than 2pi, subtract 2pi
+   IF ((x%QT(DOF_GeAz) + x%QT(DOF_DrTr)) >= TwoPi_D) x%QT(DOF_GeAz) = x%QT(DOF_GeAz) - TwoPi_D
+END SUBROUTINE
+
+SUBROUTINE ED_UpdateBlPitch(p, x)
+   TYPE(ED_ParameterType),       INTENT(IN   )  :: p          !< Parameters
+   TYPE(ED_ContinuousStateType), INTENT(INOUT)  :: x
+   INTEGER(IntKi)                               :: K
+
+   DO K = 1,p%NumBl
+      IF ( p%DOF_Flag(DOF_BP(K)) ) THEN
+         IF      ( x%QT(DOF_BP(K)) >=  Pi_D ) THEN
+            x%QT(DOF_BP(K)) = x%QT(DOF_BP(K)) - TwoPi_D
+         ELSE IF ( x%QT(DOF_BP(K)) <  -Pi_D ) THEN
+            x%QT(DOF_BP(K)) = x%QT(DOF_BP(K)) + TwoPi_D
+         END IF
+      END IF
+   END DO
+END SUBROUTINE
+
 !----------------------------------------------------------------------------------------------------------------------------------
 !> Routine for computing outputs, used in both loose and tight coupling.
 !! This SUBROUTINE is used to compute the output channels (motions and loads) and place them in the WriteOutput() array.
@@ -529,6 +638,7 @@ SUBROUTINE ED_CalcOutput( t, u, p, x, xd, z, OtherState, y, m, ErrStat, ErrMsg )
    REAL(R8Ki)                   :: TmpVec2   (NDims)                               ! A temporary vector.
 
    REAL(ReKi)                   :: LinAccES (NDims,0:p%TipNode,p%NumBl)            ! Total linear acceleration of a point on a   blade (point S) in the inertia frame (body E for earth).
+   REAL(ReKi)                   :: AngAccEK (NDims,0:p%TipNode,p%NumBl)            ! Total rotational acceleration of a point on a blade (point S) in the inertia frame (body E for earth).
    REAL(ReKi)                   :: LinAccET (NDims,0:p%TwrNodes)                   ! Total linear acceleration of a point on the tower (point T) in the inertia frame (body E for earth).
    REAL(ReKi)                   :: AngAccEF (NDims,0:p%TwrNodes)                   ! Total angular acceleration of tower element J (body F) in the inertia frame (body E for earth).
    REAL(ReKi)                   :: FrcS0B   (NDims,p%NumBl)                        ! Total force at the blade root (point S(0)) due to the blade.
@@ -536,6 +646,7 @@ SUBROUTINE ED_CalcOutput( t, u, p, x, xd, z, OtherState, y, m, ErrStat, ErrMsg )
    REAL(ReKi)                   :: MFHydro  (NDims,p%TwrNodes)                     ! Total hydrodynamic + aerodynamic moment per unit length acting on a tower element (body F) at point T.
    REAL(ReKi)                   :: MomH0B   (NDims,p%NumBl)                        ! Total moment at the hub (body H) / blade root (point S(0)) due to the blade.
 
+   REAL(ReKi)                   :: gAccE (NDims)                                   ! Gravitational acceleration in the inertia frame (body E for earth)
 
    INTEGER(IntKi)               :: I                                               ! Generic index
    INTEGER(IntKi)               :: J, J2                                           ! Loops through nodes / elements
@@ -589,6 +700,8 @@ SUBROUTINE ED_CalcOutput( t, u, p, x, xd, z, OtherState, y, m, ErrStat, ErrMsg )
    !   associated with the accelerations one by one:
    !...............................................................................................................................
 
+   gAccE      = -p%Gravity * m%CoordSys%z2
+
    AngAccEB   = m%RtHS%AngAccEBt
    AngAccEH   = m%RtHS%AngAccEHt
    AngAccEN   = m%RtHS%AngAccENt
@@ -602,9 +715,13 @@ SUBROUTINE ED_CalcOutput( t, u, p, x, xd, z, OtherState, y, m, ErrStat, ErrMsg )
    FrcT0Trb   = m%RtHS%FrcT0Trbt
 
    ! was FZHydro    = m%RtHS%FZHydrot
-   FZHydro    = u%PlatformPtMesh%Force(DOF_Sg,1)*m%RtHS%PLinVelEZ(DOF_Sg,0,:) &
-              + u%PlatformPtMesh%Force(DOF_Sw,1)*m%RtHS%PLinVelEZ(DOF_Sw,0,:) &
-              + u%PlatformPtMesh%Force(DOF_Hv,1)*m%RtHS%PLinVelEZ(DOF_Hv,0,:)
+   ! FZHydro    = u%PlatformPtMesh%Force(DOF_Sg,1)*m%RtHS%PLinVelEZ(DOF_Sg,0,:) &
+   !            + u%PlatformPtMesh%Force(DOF_Sw,1)*m%RtHS%PLinVelEZ(DOF_Sw,0,:) &
+   !            + u%PlatformPtMesh%Force(DOF_Hv,1)*m%RtHS%PLinVelEZ(DOF_Hv,0,:)
+
+   FZHydro    = u%PlatformPtMesh%Force(DOF_Sg,1)*m%CoordSys%z1 &
+              - u%PlatformPtMesh%Force(DOF_Sw,1)*m%CoordSys%z3 &
+              + u%PlatformPtMesh%Force(DOF_Hv,1)*m%CoordSys%z2
 
    MomBNcRt   = m%RtHS%MomBNcRtt
    MomLPRot   = m%RtHS%MomLPRott
@@ -613,9 +730,13 @@ SUBROUTINE ED_CalcOutput( t, u, p, x, xd, z, OtherState, y, m, ErrStat, ErrMsg )
    MomX0Trb   = m%RtHS%MomX0Trbt
 
    ! was MXHydro = m%RtHS%MXHydrot
-   MXHydro    = u%PlatformPtMesh%Moment(DOF_R-3,1)*m%RtHS%PAngVelEX(DOF_R ,0,:) &
-              + u%PlatformPtMesh%Moment(DOF_P-3,1)*m%RtHS%PAngVelEX(DOF_P ,0,:) &
-              + u%PlatformPtMesh%Moment(DOF_Y-3,1)*m%RtHS%PAngVelEX(DOF_Y ,0,:)
+   ! MXHydro    = u%PlatformPtMesh%Moment(DOF_R-3,1)*m%RtHS%PAngVelEX(DOF_R ,0,:) &
+   !            + u%PlatformPtMesh%Moment(DOF_P-3,1)*m%RtHS%PAngVelEX(DOF_P ,0,:) &
+   !            + u%PlatformPtMesh%Moment(DOF_Y-3,1)*m%RtHS%PAngVelEX(DOF_Y ,0,:)
+
+   MXHydro    = u%PlatformPtMesh%Moment(DOF_R-3,1)*m%CoordSys%z1 &
+              - u%PlatformPtMesh%Moment(DOF_P-3,1)*m%CoordSys%z3 &
+              + u%PlatformPtMesh%Moment(DOF_Y-3,1)*m%CoordSys%z2
 
    DO I = 1,p%DOFs%NActvDOF ! Loop through all active (enabled) DOFs
       AngAccEB   = AngAccEB   + m%RtHS%PAngVelEB  (p%DOFs%SrtPS(I),0,:)*m%QD2T(p%DOFs%SrtPS(I))
@@ -665,9 +786,10 @@ SUBROUTINE ED_CalcOutput( t, u, p, x, xd, z, OtherState, y, m, ErrStat, ErrMsg )
       DO J = 0,p%TipNode ! Loop through the blade nodes / elements
 
          LinAccES(:,J,K) = m%RtHS%LinAccESt(:,K,J)
-
+         AngAccEK(:,J,K) = m%RtHs%AngAccEKt(:,J,K)
          DO I = 1,p%DOFs%NPSE(K)  ! Loop through all active (enabled) DOFs that contribute to the QD2T-related linear accelerations of blade K
             LinAccES(:,J,K) = LinAccES(:,J,K) + m%RtHS%PLinVelES(K,J,p%DOFs%PSE(K,I),0,:)*m%QD2T(p%DOFs%PSE(K,I))
+            AngAccEK(:,J,K) = AngAccEK(:,J,K) + m%RtHS%PAngVelEM(K,J,p%DOFs%PSE(K,I),0,:)*m%QD2T(p%DOFs%PSE(K,I))
          ENDDO             ! I - All active (enabled) DOFs that contribute to the QD2T-related linear accelerations of blade K
 
       ENDDO             ! J - Blade nodes / elements
@@ -744,13 +866,24 @@ SUBROUTINE ED_CalcOutput( t, u, p, x, xd, z, OtherState, y, m, ErrStat, ErrMsg )
          m%AllOuts( TipALxb(K) ) = DOT_PRODUCT( LinAccES(:,p%TipNode,K), m%CoordSys%n1(K,p%BldNodes,:) )
          m%AllOuts( TipALyb(K) ) = DOT_PRODUCT( LinAccES(:,p%TipNode,K), m%CoordSys%n2(K,p%BldNodes,:) )
          m%AllOuts( TipALzb(K) ) = DOT_PRODUCT( LinAccES(:,p%TipNode,K), m%CoordSys%n3(K,p%BldNodes,:) )
+         m%AllOuts( TipALgxb(K) ) = DOT_PRODUCT( LinAccES(:,p%TipNode,K) - gAccE, m%CoordSys%n1(K,p%BldNodes,:) )
+         m%AllOuts( TipALgyb(K) ) = DOT_PRODUCT( LinAccES(:,p%TipNode,K) - gAccE, m%CoordSys%n2(K,p%BldNodes,:) )
+         m%AllOuts( TipALgzb(K) ) = DOT_PRODUCT( LinAccES(:,p%TipNode,K) - gAccE, m%CoordSys%n3(K,p%BldNodes,:) )
          m%AllOuts( TipRDxb(K) ) = DOT_PRODUCT( m%RtHS%AngPosHM(:,K,p%TipNode), m%CoordSys%j1(K,         :) )*R2D
          m%AllOuts( TipRDyb(K) ) = DOT_PRODUCT( m%RtHS%AngPosHM(:,K,p%TipNode), m%CoordSys%j2(K,         :) )*R2D
          ! There is no sense computing AllOuts( TipRDzc(K) ) here since it is always zero for FAST simulation results.
-         IF ( rOSTipzn > 0.0 )  THEN   ! Tip of blade K is above the yaw bearing.
-            m%AllOuts(TipClrnc(K) ) = SQRT( rOSTipxn*rOSTipxn + rOSTipyn*rOSTipyn + rOSTipzn*rOSTipzn ) ! Absolute distance from the tower top / yaw bearing to the tip of blade 1.
-         ELSE                          ! Tip of blade K is below the yaw bearing.
-            m%AllOuts(TipClrnc(K) ) = SQRT( rOSTipxn*rOSTipxn + rOSTipyn*rOSTipyn                     ) ! Perpendicular distance from the yaw axis / tower centerline to the tip of blade 1.
+         IF ( p%MHK == MHK_Floating ) THEN
+            IF ( rOSTipzn < 0.0 )  THEN   ! Tip of blade K is above the yaw bearing.
+               m%AllOuts(TipClrnc(K) ) = SQRT( rOSTipxn*rOSTipxn + rOSTipyn*rOSTipyn + rOSTipzn*rOSTipzn ) ! Absolute distance from the tower top / yaw bearing to the tip of blade 1.
+            ELSE                          ! Tip of blade K is below the yaw bearing.
+               m%AllOuts(TipClrnc(K) ) = SQRT( rOSTipxn*rOSTipxn + rOSTipyn*rOSTipyn                     ) ! Perpendicular distance from the yaw axis / tower centerline to the tip of blade 1.
+            ENDIF
+         ELSE
+            IF ( rOSTipzn > 0.0 )  THEN   ! Tip of blade K is above the yaw bearing.
+               m%AllOuts(TipClrnc(K) ) = SQRT( rOSTipxn*rOSTipxn + rOSTipyn*rOSTipyn + rOSTipzn*rOSTipzn ) ! Absolute distance from the tower top / yaw bearing to the tip of blade 1.
+            ELSE                          ! Tip of blade K is below the yaw bearing.
+               m%AllOuts(TipClrnc(K) ) = SQRT( rOSTipxn*rOSTipxn + rOSTipyn*rOSTipyn                     ) ! Perpendicular distance from the yaw axis / tower centerline to the tip of blade 1.
+            ENDIF
          ENDIF
       END IF      
 
@@ -764,6 +897,10 @@ SUBROUTINE ED_CalcOutput( t, u, p, x, xd, z, OtherState, y, m, ErrStat, ErrMsg )
          m%AllOuts( SpnALxb(I,K) ) = DOT_PRODUCT( LinAccES(:,p%BldGagNd(I),K), m%CoordSys%n1(K,p%BldGagNd(I),:) )
          m%AllOuts( SpnALyb(I,K) ) = DOT_PRODUCT( LinAccES(:,p%BldGagNd(I),K), m%CoordSys%n2(K,p%BldGagNd(I),:) )
          m%AllOuts( SpnALzb(I,K) ) = DOT_PRODUCT( LinAccES(:,p%BldGagNd(I),K), m%CoordSys%n3(K,p%BldGagNd(I),:) )
+
+         m%AllOuts( SpnALgxb(I,K) ) = DOT_PRODUCT( LinAccES(:,p%BldGagNd(I),K) - gAccE, m%CoordSys%n1(K,p%BldGagNd(I),:) )
+         m%AllOuts( SpnALgyb(I,K) ) = DOT_PRODUCT( LinAccES(:,p%BldGagNd(I),K) - gAccE, m%CoordSys%n2(K,p%BldGagNd(I),:) )
+         m%AllOuts( SpnALgzb(I,K) ) = DOT_PRODUCT( LinAccES(:,p%BldGagNd(I),K) - gAccE, m%CoordSys%n3(K,p%BldGagNd(I),:) )
 
          rSPS                      = m%RtHS%rS0S(:,K,p%BldGagNd(I)) - p%RNodes(p%BldGagNd(I))*m%CoordSys%j3(K,:)
 
@@ -779,27 +916,48 @@ SUBROUTINE ED_CalcOutput( t, u, p, x, xd, z, OtherState, y, m, ErrStat, ErrMsg )
    END DO !K
 
 
-
       ! Blade Pitch Motions:
 
-   m%AllOuts(PtchPMzc1) = u%BlPitchCom(1)*R2D
-IF ( p%NumBl > 1 ) THEN
-   m%AllOuts(PtchPMzc2) = u%BlPitchCom(2)*R2D
-   IF ( p%NumBl > 2 )  THEN ! 3-blader
+   IF ( p%DOF_Flag(DOF_BP(1)) ) THEN
+      m%AllOuts(PtchPMzc1) = x%QT  (DOF_BP(1))*R2D
+      m%AllOuts(BldPRate1) = x%QDT (DOF_BP(1))*R2D
+      m%AllOuts(BldPAcc1 ) = m%QD2T(DOF_BP(1))*R2D
+   ELSE
+      m%AllOuts(PtchPMzc1) = u%BlPitchCom(1)*R2D
+   END IF
 
-      m%AllOuts(PtchPMzc3) = u%BlPitchCom(3)*R2D
+   IF ( p%NumBl > 1_IntKi ) THEN
 
-   ELSE  ! 2-blader
+      IF ( p%DOF_Flag(DOF_BP(2)) ) THEN
+         m%AllOuts(PtchPMzc2) = x%QT  (DOF_BP(2))*R2D
+         m%AllOuts(BldPRate2) = x%QDT (DOF_BP(2))*R2D
+         m%AllOuts(BldPAcc2 ) = m%QD2T(DOF_BP(2))*R2D
+      ELSE
+         m%AllOuts(PtchPMzc2) = u%BlPitchCom(2)*R2D
+      END IF
 
+      IF ( p%NumBl > 2_IntKi ) THEN ! 3-blader
 
-      ! Teeter Motions:
+         IF ( p%DOF_Flag(DOF_BP(3)) ) THEN
+            m%AllOuts(PtchPMzc3) = x%QT  (DOF_BP(3))*R2D
+            m%AllOuts(BldPRate3) = x%QDT (DOF_BP(3))*R2D
+            m%AllOuts(BldPAcc3 ) = m%QD2T(DOF_BP(3))*R2D
+         ELSE
+            m%AllOuts(PtchPMzc3) = u%BlPitchCom(3)*R2D
+         END IF
 
-      m%AllOuts(  TeetPya) = x%QT  (DOF_Teet)*R2D
-      m%AllOuts(  TeetVya) = x%QDT (DOF_Teet)*R2D
-      m%AllOuts(  TeetAya) = m%QD2T(DOF_Teet)*R2D
+      ELSE ! 2-blader
 
-   ENDIF
-END IF
+            ! Teeter Motions:
+
+         m%AllOuts(TeetPya) = x%QT  (DOF_Teet)*R2D
+         m%AllOuts(TeetVya) = x%QDT (DOF_Teet)*R2D
+         m%AllOuts(TeetAya) = m%QD2T(DOF_Teet)*R2D
+
+      END IF
+
+   END IF
+
 
       ! Shaft Motions:
 
@@ -833,6 +991,9 @@ END IF
    m%AllOuts(NcIMUTAxs) =      DOT_PRODUCT(                 LinAccEIMU, m%CoordSys%c1 )
    m%AllOuts(NcIMUTAys) = -1.0*DOT_PRODUCT(                 LinAccEIMU, m%CoordSys%c3 )
    m%AllOuts(NcIMUTAzs) =      DOT_PRODUCT(                 LinAccEIMU, m%CoordSys%c2 )
+   m%AllOuts(NcIMUTAgxs) =      DOT_PRODUCT(          LinAccEIMU-gAccE, m%CoordSys%c1 )
+   m%AllOuts(NcIMUTAgys) = -1.0*DOT_PRODUCT(          LinAccEIMU-gAccE, m%CoordSys%c3 )
+   m%AllOuts(NcIMUTAgzs) =      DOT_PRODUCT(          LinAccEIMU-gAccE, m%CoordSys%c2 )
    m%AllOuts(NcIMURVxs) =      DOT_PRODUCT( m%RtHS%AngVelER  , m%CoordSys%c1 )*R2D
    m%AllOuts(NcIMURVys) = -1.0*DOT_PRODUCT( m%RtHS%AngVelER  , m%CoordSys%c3 )*R2D
    m%AllOuts(NcIMURVzs) =      DOT_PRODUCT( m%RtHS%AngVelER  , m%CoordSys%c2 )*R2D
@@ -868,8 +1029,8 @@ END IF
 
    ! p%TwrNodes+1 is the tower top:
    J = p%TwrNodes+1
-   m%AllOuts(TwrTpTDxi) =     m%RtHS%rO(1) - y%TowerLn2Mesh%Position(1,J)
-   m%AllOuts(TwrTpTDyi) = -1.*m%RtHS%rO(3) - y%TowerLn2Mesh%Position(2,J)
+   m%AllOuts(TwrTpTDxi) =     m%RtHS%rO(1) - y%TowerLn2Mesh%Position(1,J) + p%PtfmRefxt
+   m%AllOuts(TwrTpTDyi) = -1.*m%RtHS%rO(3) - y%TowerLn2Mesh%Position(2,J) + p%PtfmRefyt
    m%AllOuts(TwrTpTDzi) =     m%RtHS%rO(2) - y%TowerLn2Mesh%Position(3,J) + p%PtfmRefzt
    m%AllOuts(YawBrTDxp) =  DOT_PRODUCT(     rOPO, m%CoordSys%b1 )
    m%AllOuts(YawBrTDyp) = -DOT_PRODUCT(     rOPO, m%CoordSys%b3 )
@@ -877,9 +1038,15 @@ END IF
    m%AllOuts(YawBrTDxt) =  DOT_PRODUCT(     rOPO, m%CoordSys%a1 )
    m%AllOuts(YawBrTDyt) = -DOT_PRODUCT(     rOPO, m%CoordSys%a3 )
    m%AllOuts(YawBrTDzt) =  DOT_PRODUCT(     rOPO, m%CoordSys%a2 )
+   m%AllOuts(YawBrTVxp) =  DOT_PRODUCT( m%RtHS%LinVelEO, m%CoordSys%b1 )
+   m%AllOuts(YawBrTVyp) = -DOT_PRODUCT( m%RtHS%LinVelEO, m%CoordSys%b3 )
+   m%AllOuts(YawBrTVzp) =  DOT_PRODUCT( m%RtHS%LinVelEO, m%CoordSys%b2 )  
    m%AllOuts(YawBrTAxp) =  DOT_PRODUCT( LinAccEO, m%CoordSys%b1 )
    m%AllOuts(YawBrTAyp) = -DOT_PRODUCT( LinAccEO, m%CoordSys%b3 )
    m%AllOuts(YawBrTAzp) =  DOT_PRODUCT( LinAccEO, m%CoordSys%b2 )
+   m%AllOuts(YawBrTAgxp) =  DOT_PRODUCT( LinAccEO-gAccE, m%CoordSys%b1 )
+   m%AllOuts(YawBrTAgyp) = -DOT_PRODUCT( LinAccEO-gAccE, m%CoordSys%b3 )
+   m%AllOuts(YawBrTAgzp) =  DOT_PRODUCT( LinAccEO-gAccE, m%CoordSys%b2 )
    m%AllOuts(YawBrRDxt) =  DOT_PRODUCT( m%RtHS%AngPosXB, m%CoordSys%a1 )*R2D
    m%AllOuts(YawBrRDyt) = -DOT_PRODUCT( m%RtHS%AngPosXB, m%CoordSys%a3 )*R2D
    ! There is no sense computing m%AllOuts(YawBrRDzt) here since it is always zero for FAST simulation results.
@@ -899,6 +1066,10 @@ END IF
       m%AllOuts( TwHtALyt(I) ) = -1.0*DOT_PRODUCT( LinAccET(:,p%TwrGagNd(I)), m%CoordSys%t3(p%TwrGagNd(I),:) )
       m%AllOuts( TwHtALzt(I) ) =      DOT_PRODUCT( LinAccET(:,p%TwrGagNd(I)), m%CoordSys%t2(p%TwrGagNd(I),:) )
 
+      m%AllOuts( TwHtALgxt(I) ) =      DOT_PRODUCT( LinAccET(:,p%TwrGagNd(I)) - gAccE, m%CoordSys%t1(p%TwrGagNd(I),:) )
+      m%AllOuts( TwHtALgyt(I) ) = -1.0*DOT_PRODUCT( LinAccET(:,p%TwrGagNd(I)) - gAccE, m%CoordSys%t3(p%TwrGagNd(I),:) )
+      m%AllOuts( TwHtALgzt(I) ) =      DOT_PRODUCT( LinAccET(:,p%TwrGagNd(I)) - gAccE, m%CoordSys%t2(p%TwrGagNd(I),:) )
+
       rTPT                   = m%RtHS%rT0T(:,p%TwrGagNd(I)) - p%HNodes(p%TwrGagNd(I))*m%CoordSys%a2(:)
 
       m%AllOuts( TwHtTDxt(I) ) =      DOT_PRODUCT( rTPT,     m%CoordSys%a1 )
@@ -910,13 +1081,17 @@ END IF
    !   m%AllOuts( TwHtRDzt(I) ) =     DOT_PRODUCT( m%RtHS%AngPosXF(:,p%TwrGagNd(I)), m%CoordSys%a2 )*R2D  !this will always be 0 in FAST, so no need to calculate
 
 
-      m%AllOuts( TwHtTPxi(I) ) =      m%RtHS%rT(1,p%TwrGagNd(I))
-      m%AllOuts( TwHtTPyi(I) ) = -1.0*m%RtHS%rT(3,p%TwrGagNd(I))
+      m%AllOuts( TwHtTPxi(I) ) =      m%RtHS%rT(1,p%TwrGagNd(I)) + p%PtfmRefxt
+      m%AllOuts( TwHtTPyi(I) ) = -1.0*m%RtHS%rT(3,p%TwrGagNd(I)) + p%PtfmRefyt
       m%AllOuts( TwHtTPzi(I) ) =      m%RtHS%rT(2,p%TwrGagNd(I)) + p%PtfmRefzt
 
-      m%AllOuts( TwHtRPxi(I) ) =  m%RtHS%AngPosEF(1,p%TwrGagNd(I))*R2D
-      m%AllOuts( TwHtRPyi(I) ) = -m%RtHS%AngPosEF(3,p%TwrGagNd(I))*R2D
-      m%AllOuts( TwHtRPzi(I) ) =  m%RtHS%AngPosEF(2,p%TwrGagNd(I))*R2D
+      ! m%AllOuts( TwHtRPxi(I) ) =  m%RtHS%AngPosEF(1,p%TwrGagNd(I))*R2D
+      ! m%AllOuts( TwHtRPyi(I) ) = -m%RtHS%AngPosEF(3,p%TwrGagNd(I))*R2D
+      ! m%AllOuts( TwHtRPzi(I) ) =  m%RtHS%AngPosEF(2,p%TwrGagNd(I))*R2D
+
+      m%AllOuts( TwHtRPxi(I) ) =  m%RtHS%AngPosEF(1,p%TwrGagNd(I))*R2D ! <- AngPosEF is now simply the roll, pitch, and yaw angles (possibly large) of each tower section
+      m%AllOuts( TwHtRPyi(I) ) =  m%RtHS%AngPosEF(2,p%TwrGagNd(I))*R2D
+      m%AllOuts( TwHtRPzi(I) ) =  m%RtHS%AngPosEF(3,p%TwrGagNd(I))*R2D
 
    END DO !I
 
@@ -937,24 +1112,36 @@ END IF
    m%AllOuts( PtfmTAxt) =  DOT_PRODUCT(                 LinAccEZ, m%CoordSys%a1 )
    m%AllOuts( PtfmTAyt) = -DOT_PRODUCT(                 LinAccEZ, m%CoordSys%a3 )
    m%AllOuts( PtfmTAzt) =  DOT_PRODUCT(                 LinAccEZ, m%CoordSys%a2 )
+   m%AllOuts( PtfmTAgxt) =  DOT_PRODUCT(        LinAccEZ - gAccE, m%CoordSys%a1 )
+   m%AllOuts( PtfmTAgyt) = -DOT_PRODUCT(        LinAccEZ - gAccE, m%CoordSys%a3 )
+   m%AllOuts( PtfmTAgzt) =  DOT_PRODUCT(        LinAccEZ - gAccE, m%CoordSys%a2 )
    m%AllOuts( PtfmTAxi) = m%QD2T(DOF_Sg  )
    m%AllOuts( PtfmTAyi) = m%QD2T(DOF_Sw  )
    m%AllOuts( PtfmTAzi) = m%QD2T(DOF_Hv  )
+   m%AllOuts( PtfmTAgxi) = m%QD2T(DOF_Sg  )
+   m%AllOuts( PtfmTAgyi) = m%QD2T(DOF_Sw  )
+   m%AllOuts( PtfmTAgzi) = m%QD2T(DOF_Hv  ) + p%Gravity
    m%AllOuts( PtfmRDxi) = x%QT  (DOF_R )*R2D
    m%AllOuts( PtfmRDyi) = x%QT  (DOF_P )*R2D
    m%AllOuts( PtfmRDzi) = x%QT  (DOF_Y )*R2D
    m%AllOuts( PtfmRVxt) =  DOT_PRODUCT( m%RtHS%AngVelEX, m%CoordSys%a1 )*R2D
    m%AllOuts( PtfmRVyt) = -DOT_PRODUCT( m%RtHS%AngVelEX, m%CoordSys%a3 )*R2D
    m%AllOuts( PtfmRVzt) =  DOT_PRODUCT( m%RtHS%AngVelEX, m%CoordSys%a2 )*R2D
-   m%AllOuts( PtfmRVxi) = x%QDT (DOF_R )*R2D
-   m%AllOuts( PtfmRVyi) = x%QDT (DOF_P )*R2D
-   m%AllOuts( PtfmRVzi) = x%QDT (DOF_Y )*R2D
+   ! m%AllOuts( PtfmRVxi) = x%QDT (DOF_R )*R2D
+   ! m%AllOuts( PtfmRVyi) = x%QDT (DOF_P )*R2D
+   ! m%AllOuts( PtfmRVzi) = x%QDT (DOF_Y )*R2D
+   m%AllOuts( PtfmRVxi) =  m%RtHS%AngVelEX(1)*R2D
+   m%AllOuts( PtfmRVyi) = -m%RtHS%AngVelEX(3)*R2D
+   m%AllOuts( PtfmRVzi) =  m%RtHS%AngVelEX(2)*R2D
    m%AllOuts( PtfmRAxt) =  DOT_PRODUCT(                 AngAccEX, m%CoordSys%a1 )*R2D
    m%AllOuts( PtfmRAyt) = -DOT_PRODUCT(                 AngAccEX, m%CoordSys%a3 )*R2D
    m%AllOuts( PtfmRAzt) =  DOT_PRODUCT(                 AngAccEX, m%CoordSys%a2 )*R2D
-   m%AllOuts( PtfmRAxi) = m%QD2T(DOF_R )*R2D
-   m%AllOuts( PtfmRAyi) = m%QD2T(DOF_P )*R2D
-   m%AllOuts( PtfmRAzi) = m%QD2T(DOF_Y )*R2D
+   ! m%AllOuts( PtfmRAxi) = m%QD2T(DOF_R )*R2D
+   ! m%AllOuts( PtfmRAyi) = m%QD2T(DOF_P )*R2D
+   ! m%AllOuts( PtfmRAzi) = m%QD2T(DOF_Y )*R2D
+   m%AllOuts( PtfmRAxi) =  AngAccEX(1)*R2D
+   m%AllOuts( PtfmRAyi) = -AngAccEX(3)*R2D
+   m%AllOuts( PtfmRAzi) =  AngAccEX(2)*R2D
 
 
 
@@ -1125,7 +1312,13 @@ END IF
    m%AllOuts( YawBrMzn) =  DOT_PRODUCT( MomBNcRt, m%CoordSys%d2 )
    m%AllOuts( YawBrMxp) =  DOT_PRODUCT( MomBNcRt, m%CoordSys%b1 )
    m%AllOuts( YawBrMyp) = -DOT_PRODUCT( MomBNcRt, m%CoordSys%b3 )
-
+   m%AllOuts(YawFriMom) = OtherState%Mfhat*0.001_ReKi    !KBF add YawFricMom as an output based on HSSBrTq (kN-m)
+   m%AllOuts(YawFriMfp) = OtherState%YawFriMfp*0.001_ReKi
+   m%AllOuts(YawFriMz)  = m%YawFriMz*0.001_ReKi
+   m%FrcONcRt           = (/m%AllOuts( YawBrFxn),m%AllOuts( YawBrFyn),m%AllOuts( YawBrFzn)/) * 1000_ReKi
+   m%MomONcRt           = (/m%AllOuts( YawBrMxn),m%AllOuts( YawBrMyn),m%AllOuts( YawBrMzn)/) * 1000_ReKi
+   m%AllOuts(OmegaYF)   = OtherState%OmegaTn*R2D
+   m%AllOuts(dOmegaYF)  = OtherState%OmegaDotTn*R2D
 
       ! Tower Base Loads:
 
@@ -1152,10 +1345,10 @@ END IF
       ! Integrate to find FrcFGagT and MomFGagT using all of the nodes / elements above the current strain gage location:
       DO J = ( p%TwrGagNd(I) + 1 ),p%TwrNodes ! Loop through tower nodes / elements above strain gage node
          TmpVec2  = FTTower(:,J) - p%MassT(J)*( p%Gravity*m%CoordSys%z2 + LinAccET(:,J) )           ! Portion of FrcFGagT associated with element J
-         FrcFGagT = FrcFGagT + TmpVec2*p%DHNodes(J)
+         FrcFGagT = FrcFGagT + TmpVec2*abs(p%DHNodes(J))
 
          TmpVec = CROSS_PRODUCT( m%RtHS%rZT(:,J) - m%RtHS%rZT(:,p%TwrGagNd(I)), TmpVec2 )                          ! Portion of MomFGagT associated with element J
-         MomFGagT = MomFGagT + ( TmpVec + MFHydro(:,J) )*p%DHNodes(J)
+         MomFGagT = MomFGagT + ( TmpVec + MFHydro(:,J) )*abs(p%DHNodes(J))
       ENDDO ! J -Tower nodes / elements above strain gage node
 
       ! Add the effects of 1/2 the strain gage element:
@@ -1165,12 +1358,12 @@ END IF
 
       TmpVec2  = FTTower(:,p%TwrGagNd(I)) - p%MassT(p%TwrGagNd(I))*( p%Gravity*m%CoordSys%z2 + LinAccET(:,p%TwrGagNd(I)))
 
-      FrcFGagT = FrcFGagT + TmpVec2 * 0.5 * p%DHNodes(p%TwrGagNd(I))
+      FrcFGagT = FrcFGagT + TmpVec2 * 0.5 * abs(p%DHNodes(p%TwrGagNd(I)))
       FrcFGagT = 0.001*FrcFGagT  ! Convert the local force to kN
 
       TmpVec = CROSS_PRODUCT( ( 0.25_R8Ki*p%DHNodes( p%TwrGagNd(I)) )*m%CoordSys%a2, TmpVec2 )              ! Portion of MomFGagT associated with 1/2 of the strain gage element
       TmpVec   = TmpVec   + MFHydro(:,p%TwrGagNd(I))
-      MomFGagT = MomFGagT + TmpVec * 0.5 * p%DHNodes(p%TwrGagNd(I))
+      MomFGagT = MomFGagT + TmpVec * 0.5 * abs(p%DHNodes(p%TwrGagNd(I)))
       MomFGagT = 0.001*MomFGagT  ! Convert the local moment to kN-m
 
       m%AllOuts( TwHtFLxt(I) ) =     DOT_PRODUCT( FrcFGagT, m%CoordSys%t1(p%TwrGagNd(I),:) )
@@ -1241,11 +1434,8 @@ END IF
    m%AllOuts( QD_Y     ) = x%QDT(  DOF_Y       )
 
    m%AllOuts( QD2_B1E1 ) = m%QD2T( DOF_BE(1,1) )
-   m%AllOuts( QD2_B2E1 ) = m%QD2T( DOF_BE(2,1) )
    m%AllOuts( QD2_B1F1 ) = m%QD2T( DOF_BF(1,1) )
-   m%AllOuts( QD2_B2F1 ) = m%QD2T( DOF_BF(2,1) )
    m%AllOuts( QD2_B1F2 ) = m%QD2T( DOF_BF(1,2) )
-   m%AllOuts( QD2_B2F2 ) = m%QD2T( DOF_BF(2,2) )
    m%AllOuts( QD2_DrTr ) = m%QD2T( DOF_DrTr    )
    m%AllOuts( QD2_GeAz ) = m%QD2T( DOF_GeAz    )
    m%AllOuts( QD2_RFrl ) = m%QD2T( DOF_RFrl    )
@@ -1271,6 +1461,10 @@ IF ( p%NumBl > 1 ) THEN
    m%AllOuts( QD_B2E1  ) = x%QDT(  DOF_BE(2,1) )
    m%AllOuts( QD_B2F1  ) = x%QDT(  DOF_BF(2,1) )
    m%AllOuts( QD_B2F2  ) = x%QDT(  DOF_BF(2,2) )
+
+   m%AllOuts( QD2_B2E1 ) = m%QD2T( DOF_BE(2,1) )
+   m%AllOuts( QD2_B2F1 ) = m%QD2T( DOF_BF(2,1) )
+   m%AllOuts( QD2_B2F2 ) = m%QD2T( DOF_BF(2,2) )
    
    IF ( p%NumBl > 2 ) THEN
       m%AllOuts( Q_B3E1   ) = x%QT(   DOF_BE(3,1) )
@@ -1329,49 +1523,28 @@ END IF
             if (j==0) then
                   ! blade root
                NodeNum = p%BldNodes + 2
-               if (p%UseAD14) j2 = 1                  
             elseif (j==p%TipNode) then
                ! blade tip
                NodeNum = p%BldNodes + 1
-               if (p%UseAD14) j2 = p%BldNodes
             else
                NodeNum = J
             end if
                                                                                                         
-            if (p%UseAD14) then                  
-                  ! Translational Displacement (first calculate absolute position)
-               y%BladeLn2Mesh(K)%TranslationDisp(1,NodeNum) =     m%RtHS%rS (1,K,J2) + m%RtHS%rSAerCen(1,J2,K)               ! = the distance from the undeflected tower centerline                                     to the current blade aerodynamic center in the xi ( z1) direction
-               y%BladeLn2Mesh(K)%TranslationDisp(2,NodeNum) = -1.*m%RtHS%rS (3,K,J2) - m%RtHS%rSAerCen(3,J2,K)               ! = the distance from the undeflected tower centerline                                     to the current blade aerodynamic center in the yi (-z3) direction
-               y%BladeLn2Mesh(K)%TranslationDisp(3,NodeNum) =     m%RtHS%rS (2,K,J2) + m%RtHS%rSAerCen(2,J2,K) + p%PtfmRefzt ! = the distance from the nominal tower base position (i.e., the undeflected position of the tower base) to the current blade aerodynamic center in the zi ( z2) direction
-               
-                  ! Orientation 
-               y%BladeLn2Mesh(K)%Orientation(1,1,NodeNum) =     m%CoordSys%te1(K,J2,1)
-               y%BladeLn2Mesh(K)%Orientation(2,1,NodeNum) =     m%CoordSys%te2(K,J2,1)
-               y%BladeLn2Mesh(K)%Orientation(3,1,NodeNum) =     m%CoordSys%te3(K,J2,1)
-               y%BladeLn2Mesh(K)%Orientation(1,2,NodeNum) = -1.*m%CoordSys%te1(K,J2,3)
-               y%BladeLn2Mesh(K)%Orientation(2,2,NodeNum) = -1.*m%CoordSys%te2(K,J2,3)
-               y%BladeLn2Mesh(K)%Orientation(3,2,NodeNum) = -1.*m%CoordSys%te3(K,J2,3)
-               y%BladeLn2Mesh(K)%Orientation(1,3,NodeNum) =     m%CoordSys%te1(K,J2,2)
-               y%BladeLn2Mesh(K)%Orientation(2,3,NodeNum) =     m%CoordSys%te2(K,J2,2)
-               y%BladeLn2Mesh(K)%Orientation(3,3,NodeNum) =     m%CoordSys%te3(K,J2,2)
-               
-            else         
-                  ! Translational Displacement (first calculate absolute position)
-               y%BladeLn2Mesh(K)%TranslationDisp(1,NodeNum) =     m%RtHS%rS (1,K,J2)                ! = the distance from the undeflected tower centerline to the current blade node in the xi ( z1) direction
-               y%BladeLn2Mesh(K)%TranslationDisp(2,NodeNum) = -1.*m%RtHS%rS (3,K,J2)                ! = the distance from the undeflected tower centerline to the current blade node in the yi (-z3) direction
-               y%BladeLn2Mesh(K)%TranslationDisp(3,NodeNum) =     m%RtHS%rS (2,K,J2)  + p%PtfmRefzt ! = the distance from the nominal tower base position (i.e., the undeflected position of the tower base) to the current blade node in the zi ( z2) direction
-               
-                  ! Orientation
-               y%BladeLn2Mesh(K)%Orientation(1,1,NodeNum) =     m%CoordSys%n1(K,J2,1)
-               y%BladeLn2Mesh(K)%Orientation(2,1,NodeNum) =     m%CoordSys%n2(K,J2,1)
-               y%BladeLn2Mesh(K)%Orientation(3,1,NodeNum) =     m%CoordSys%n3(K,J2,1)
-               y%BladeLn2Mesh(K)%Orientation(1,2,NodeNum) = -1.*m%CoordSys%n1(K,J2,3)
-               y%BladeLn2Mesh(K)%Orientation(2,2,NodeNum) = -1.*m%CoordSys%n2(K,J2,3)
-               y%BladeLn2Mesh(K)%Orientation(3,2,NodeNum) = -1.*m%CoordSys%n3(K,J2,3)
-               y%BladeLn2Mesh(K)%Orientation(1,3,NodeNum) =     m%CoordSys%n1(K,J2,2)
-               y%BladeLn2Mesh(K)%Orientation(2,3,NodeNum) =     m%CoordSys%n2(K,J2,2)
-               y%BladeLn2Mesh(K)%Orientation(3,3,NodeNum) =     m%CoordSys%n3(K,J2,2)
-            end if
+               ! Translational Displacement (first calculate absolute position)
+            y%BladeLn2Mesh(K)%TranslationDisp(1,NodeNum) =     m%RtHS%rS (1,K,J2)  + p%PtfmRefxt ! = the distance from the undeflected tower centerline to the current blade node in the xi ( z1) direction
+            y%BladeLn2Mesh(K)%TranslationDisp(2,NodeNum) = -1.*m%RtHS%rS (3,K,J2)  + p%PtfmRefyt ! = the distance from the undeflected tower centerline to the current blade node in the yi (-z3) direction
+            y%BladeLn2Mesh(K)%TranslationDisp(3,NodeNum) =     m%RtHS%rS (2,K,J2)  + p%PtfmRefzt ! = the distance from the nominal tower base position (i.e., the undeflected position of the tower base) to the current blade node in the zi ( z2) direction
+            
+               ! Orientation
+            y%BladeLn2Mesh(K)%Orientation(1,1,NodeNum) =     m%CoordSys%n1(K,J2,1)
+            y%BladeLn2Mesh(K)%Orientation(2,1,NodeNum) =     m%CoordSys%n2(K,J2,1)
+            y%BladeLn2Mesh(K)%Orientation(3,1,NodeNum) =     m%CoordSys%n3(K,J2,1)
+            y%BladeLn2Mesh(K)%Orientation(1,2,NodeNum) = -1.*m%CoordSys%n1(K,J2,3)
+            y%BladeLn2Mesh(K)%Orientation(2,2,NodeNum) = -1.*m%CoordSys%n2(K,J2,3)
+            y%BladeLn2Mesh(K)%Orientation(3,2,NodeNum) = -1.*m%CoordSys%n3(K,J2,3)
+            y%BladeLn2Mesh(K)%Orientation(1,3,NodeNum) =     m%CoordSys%n1(K,J2,2)
+            y%BladeLn2Mesh(K)%Orientation(2,3,NodeNum) =     m%CoordSys%n2(K,J2,2)
+            y%BladeLn2Mesh(K)%Orientation(3,3,NodeNum) =     m%CoordSys%n3(K,J2,2)
             
                ! Translational Displacement (get displacement, not absolute position):
             y%BladeLn2Mesh(K)%TranslationDisp(:,NodeNum) = y%BladeLn2Mesh(K)%TranslationDisp(:,NodeNum) - y%BladeLn2Mesh(K)%Position(:,NodeNum)
@@ -1390,6 +1563,11 @@ END IF
             y%BladeLn2Mesh(K)%TranslationAcc(1,NodeNum) =     LinAccES(1,J2,K)
             y%BladeLn2Mesh(K)%TranslationAcc(2,NodeNum) = -1.*LinAccES(3,J2,K)
             y%BladeLn2Mesh(K)%TranslationAcc(3,NodeNum) =     LinAccES(2,J2,K)  
+
+               ! Rotational Acceleration
+            y%BladeLn2Mesh(K)%RotationAcc(1,NodeNum)     =     AngAccEK(1,J2,K)
+            y%BladeLn2Mesh(K)%RotationAcc(2,NodeNum)     = -1.*AngAccEK(3,J2,K)
+            y%BladeLn2Mesh(K)%RotationAcc(3,NodeNum)     =     AngAccEK(2,J2,K) 
                
             
          END DO !J = 1,p%BldNodes ! Loop through the blade nodes / elements
@@ -1403,8 +1581,8 @@ END IF
    !...........   
    
          ! Translation (absolute position - starting position):
-   y%HubPtMotion%TranslationDisp(1,1)  =     m%RtHS%rQ(1)
-   y%HubPtMotion%TranslationDisp(2,1)  = -1.*m%RtHS%rQ(3)
+   y%HubPtMotion%TranslationDisp(1,1)  =     m%RtHS%rQ(1) + p%PtfmRefxt
+   y%HubPtMotion%TranslationDisp(2,1)  = -1.*m%RtHS%rQ(3) + p%PtfmRefyt
    y%HubPtMotion%TranslationDisp(3,1)  =     m%RtHS%rQ(2) + p%PtfmRefzt
    y%HubPtMotion%TranslationDisp       = y%HubPtMotion%TranslationDisp - y%HubPtMotion%Position   ! relative position
    
@@ -1431,8 +1609,8 @@ END IF
    DO K=1,p%NumBl
          
       ! Translation displacement  ! rS at the root      
-      y%BladeRootMotion(K)%TranslationDisp(1,1) =            m%RtHS%rS (1,K,0)                ! = the distance from the undeflected tower centerline to the current blade node in the xi ( z1) direction
-      y%BladeRootMotion(K)%TranslationDisp(2,1) =        -1.*m%RtHS%rS (3,K,0)                ! = the distance from the undeflected tower centerline to the current blade node in the yi (-z3) direction
+      y%BladeRootMotion(K)%TranslationDisp(1,1) =            m%RtHS%rS (1,K,0)  + p%PtfmRefxt ! = the distance from the undeflected tower centerline to the current blade node in the xi ( z1) direction
+      y%BladeRootMotion(K)%TranslationDisp(2,1) =        -1.*m%RtHS%rS (3,K,0)  + p%PtfmRefyt ! = the distance from the undeflected tower centerline to the current blade node in the yi (-z3) direction
       y%BladeRootMotion(K)%TranslationDisp(3,1) =            m%RtHS%rS (2,K,0)  + p%PtfmRefzt ! = the distance from the nominal tower base position (i.e., the undeflected position of the tower base) to the current blade node in the zi ( z2) direction
       y%BladeRootMotion(K)%TranslationDisp      = y%BladeRootMotion(K)%TranslationDisp - y%BladeRootMotion(K)%Position ! make it relative
       
@@ -1454,9 +1632,9 @@ END IF
       y%BladeRootMotion(K)%TranslationVel(3,1)  =     m%RtHS%LinVelES(2,0,K)
 
       ! Rotation velocity  
-      y%BladeRootMotion(K)%RotationVel(1,1)     =      m%RtHS%AngVelEH(1)
-      y%BladeRootMotion(K)%RotationVel(2,1)     =  -1.*m%RtHS%AngVelEH(3)
-      y%BladeRootMotion(K)%RotationVel(3,1)     =      m%RtHS%AngVelEH(2)
+      y%BladeRootMotion(K)%RotationVel(1,1)     =      m%RtHS%AngVelEM(1,0,K)
+      y%BladeRootMotion(K)%RotationVel(2,1)     =  -1.*m%RtHS%AngVelEM(3,0,K)
+      y%BladeRootMotion(K)%RotationVel(3,1)     =      m%RtHS%AngVelEM(2,0,K)
       
       ! Translation acceleration
       y%BladeRootMotion(K)%TranslationAcc(1,1)  =      LinAccES(1,0,K)
@@ -1464,102 +1642,48 @@ END IF
       y%BladeRootMotion(K)%TranslationAcc(3,1)  =      LinAccES(2,0,K)
       
       ! Rotation acceleration  
-      y%BladeRootMotion(K)%RotationAcc(1,1)     =      AngAccEH(1) 
-      y%BladeRootMotion(K)%RotationAcc(2,1)     =  -1.*AngAccEH(3) 
-      y%BladeRootMotion(K)%RotationAcc(3,1)     =      AngAccEH(2)
+      y%BladeRootMotion(K)%RotationAcc(1,1)     =      AngAccEK(1,0,K)
+      y%BladeRootMotion(K)%RotationAcc(2,1)     =  -1.*AngAccEK(3,0,K)
+      y%BladeRootMotion(K)%RotationAcc(3,1)     =      AngAccEK(2,0,K)
       
    END DO   
    
+  
    !...........
-   ! Hub (for AeroDyn v14):
+   ! TailFin :
    !...........   
+   ! Translation (absolute position - starting position):
+   y%TFinCMMotion%TranslationDisp(1,1) =     m%RtHS%rJ(1) + p%PtfmRefxt
+   y%TFinCMMotion%TranslationDisp(2,1) = -1.*m%RtHS%rJ(3) + p%PtfmRefyt
+   y%TFinCMMotion%TranslationDisp(3,1) =     m%RtHS%rJ(2) + p%PtfmRefzt
+   y%TFinCMMotion%TranslationDisp      = y%TFinCMMotion%TranslationDisp - y%TFinCMMotion%Position
+   ! Orientation:        
+   y%TFinCMMotion%Orientation(1,1,1)   =     m%CoordSys%tf1(1) 
+   y%TFinCMMotion%Orientation(2,1,1)   =     m%CoordSys%tf2(1)
+   y%TFinCMMotion%Orientation(3,1,1)   =     m%CoordSys%tf3(1)   
+   y%TFinCMMotion%Orientation(1,2,1)   = -1.*m%CoordSys%tf1(3)
+   y%TFinCMMotion%Orientation(2,2,1)   = -1.*m%CoordSys%tf2(3) 
+   y%TFinCMMotion%Orientation(3,2,1)   = -1.*m%CoordSys%tf3(3) 
+   y%TFinCMMotion%Orientation(1,3,1)   =     m%CoordSys%tf1(2)
+   y%TFinCMMotion%Orientation(2,3,1)   =     m%CoordSys%tf2(2)
+   y%TFinCMMotion%Orientation(3,3,1)   =     m%CoordSys%tf3(2)
+   ! Rotational velocity:
+   y%TFinCMMotion%RotationVel(1,1)     =     m%RtHS%AngVelEA(1)
+   y%TFinCMMotion%RotationVel(2,1)     = -1.*m%RtHS%AngVelEA(3)
+   y%TFinCMMotion%RotationVel(3,1)     =     m%RtHS%AngVelEA(2)   
+   ! Linear velocity:
+   y%TFinCMMotion%TranslationVel(1,1)  =     m%RtHS%LinVelEJ(1)
+   y%TFinCMMotion%TranslationVel(2,1)  = -1.*m%RtHS%LinVelEJ(3)
+   y%TFinCMMotion%TranslationVel(3,1)  =     m%RtHS%LinVelEJ(2)
 
-      ! the hub position should use rQ instead of rP, but AeroDyn 14 treats
-      ! teeter deflections like blade deflections:
-   
-   y%HubPtMotion14%TranslationDisp(1,1)  =     m%RtHS%rP(1)
-   y%HubPtMotion14%TranslationDisp(2,1)  = -1.*m%RtHS%rP(3)
-   y%HubPtMotion14%TranslationDisp(3,1)  =     m%RtHS%rP(2) + p%PtfmRefzt
-   
-   y%HubPtMotion14%TranslationDisp  = y%HubPtMotion14%TranslationDisp - y%HubPtMotion14%Position   
-   
-        ! Hub orientation should use the g instead of e system, but the current version
-        ! of AeroDyn calculates forces normal and tangential to the cone of rotation
-         
-   y%HubPtMotion14%Orientation(1,1,1)  =     m%CoordSys%e1(1) 
-   y%HubPtMotion14%Orientation(2,1,1)  =     m%CoordSys%e2(1)
-   y%HubPtMotion14%Orientation(3,1,1)  =     m%CoordSys%e3(1)   
-   y%HubPtMotion14%Orientation(1,2,1)  = -1.*m%CoordSys%e1(3)
-   y%HubPtMotion14%Orientation(2,2,1)  = -1.*m%CoordSys%e2(3) 
-   y%HubPtMotion14%Orientation(3,2,1)  = -1.*m%CoordSys%e3(3) 
-   y%HubPtMotion14%Orientation(1,3,1)  =     m%CoordSys%e1(2)
-   y%HubPtMotion14%Orientation(2,3,1)  =     m%CoordSys%e2(2)
-   y%HubPtMotion14%Orientation(3,3,1)  =     m%CoordSys%e3(2)
-   
-      ! Note the hub rotational velocity should be AngVelEH instead AngVelEL, but AeroDyn (13.00.00)
-      ! treats teeter deflections like blade deflections:
-   
-   y%HubPtMotion14%RotationVel(1,1) =     m%RtHS%AngVelEL(1)
-   y%HubPtMotion14%RotationVel(2,1) = -1.*m%RtHS%AngVelEL(3)
-   y%HubPtMotion14%RotationVel(3,1) =     m%RtHS%AngVelEL(2)
-      
-   !...........
-   ! Blade roots (AeroDyn v14):
-   !...........   
-   
-        ! Blade root orientations should use the j instead of i system, but the current version
-        ! of AeroDyn calculates forces normal and tangential to the cone of rotation
-      
-   DO K=1,p%NumBl
-         
-      y%BladeRootMotion14%Orientation(1,1,K) =     m%CoordSys%i1(K,1)
-      y%BladeRootMotion14%Orientation(2,1,K) =     m%CoordSys%i2(K,1)
-      y%BladeRootMotion14%Orientation(3,1,K) =     m%CoordSys%i3(K,1)
-      y%BladeRootMotion14%Orientation(1,2,K) = -1.*m%CoordSys%i1(K,3)
-      y%BladeRootMotion14%Orientation(2,2,K) = -1.*m%CoordSys%i2(K,3)
-      y%BladeRootMotion14%Orientation(3,2,K) = -1.*m%CoordSys%i3(K,3)
-      y%BladeRootMotion14%Orientation(1,3,K) =     m%CoordSys%i1(K,2)
-      y%BladeRootMotion14%Orientation(2,3,K) =     m%CoordSys%i2(K,2)
-      y%BladeRootMotion14%Orientation(3,3,K) =     m%CoordSys%i3(K,2)
-            
-   END DO
-   
-    
-   !...........
-   ! Rotor furl:
-   !...........   
-   
-      ! Rotor furl position should be rP instead of rV, but AeroDyn needs this for the HubVDue2Yaw calculation:
-   
-   y%RotorFurlMotion14%TranslationDisp(1,1) =     m%RtHS%rV(1)
-   y%RotorFurlMotion14%TranslationDisp(2,1) = -1.*m%RtHS%rV(3)
-   y%RotorFurlMotion14%TranslationDisp(3,1) =     m%RtHS%rV(2) + p%PtfmRefzt
-   
-   y%RotorFurlMotion14%TranslationDisp      = y%RotorFurlMotion14%TranslationDisp - y%RotorFurlMotion14%Position   
-         
-        ! Rotor furl orientation (note the different order than hub and blade root!)
-   
-   y%RotorFurlMotion14%Orientation(1,1,1) =     m%CoordSys%c1(1)
-   y%RotorFurlMotion14%Orientation(2,1,1) = -1.*m%CoordSys%c3(1)
-   y%RotorFurlMotion14%Orientation(3,1,1) =     m%CoordSys%c2(1)
-   y%RotorFurlMotion14%Orientation(1,2,1) = -1.*m%CoordSys%c1(3)
-   y%RotorFurlMotion14%Orientation(2,2,1) =     m%CoordSys%c3(3)
-   y%RotorFurlMotion14%Orientation(3,2,1) = -1.*m%CoordSys%c2(3)
-   y%RotorFurlMotion14%Orientation(1,3,1) =     m%CoordSys%c1(2)
-   y%RotorFurlMotion14%Orientation(2,3,1) = -1.*m%CoordSys%c3(2)
-   y%RotorFurlMotion14%Orientation(3,3,1) =     m%CoordSys%c2(2) 
-   
-      ! rotaional velocity:
-   y%RotorFurlMotion14%RotationVel(1,1) =     m%RtHS%AngVelER(1)
-   y%RotorFurlMotion14%RotationVel(2,1) = -1.*m%RtHS%AngVelER(3)
-   y%RotorFurlMotion14%RotationVel(3,1) =     m%RtHS%AngVelER(2)
+
       
    !...........
    ! Nacelle :
    !...........   
       
-   y%NacelleMotion%TranslationDisp(1,1) =     m%RtHS%rO(1)
-   y%NacelleMotion%TranslationDisp(2,1) = -1.*m%RtHS%rO(3)
+   y%NacelleMotion%TranslationDisp(1,1) =     m%RtHS%rO(1) + p%PtfmRefxt
+   y%NacelleMotion%TranslationDisp(2,1) = -1.*m%RtHS%rO(3) + p%PtfmRefyt
    y%NacelleMotion%TranslationDisp(3,1) =     m%RtHS%rO(2) + p%PtfmRefzt
                
    y%NacelleMotion%TranslationDisp      = y%NacelleMotion%TranslationDisp - y%NacelleMotion%Position   
@@ -1593,21 +1717,7 @@ END IF
    y%NacelleMotion%TranslationAcc(3,1)  =      LinAccEO(2)
    
    
-   !...........
-   ! Tower :
-   !...........         
-   
-      ! Tower base position should be rT(0) instead of rZ, but AeroDyn needs this for  the HubVDue2Yaw calculation:
-   y%TowerBaseMotion14%TranslationDisp(1,1) =     m%RtHS%rZ(1)
-   y%TowerBaseMotion14%TranslationDisp(2,1) = -1.*m%RtHS%rZ(3)
-   y%TowerBaseMotion14%TranslationDisp(3,1) =     m%RtHS%rZ(2) + p%PtfmRefzt
-   
-   y%TowerBaseMotion14%TranslationDisp      = y%TowerBaseMotion14%TranslationDisp - y%TowerBaseMotion14%Position   
-      
-   y%TowerBaseMotion14%RotationVel(1,1)     =     m%RtHS%AngVelEX(1)
-   y%TowerBaseMotion14%RotationVel(2,1)     = -1.*m%RtHS%AngVelEX(3)
-   y%TowerBaseMotion14%RotationVel(3,1)     =     m%RtHS%AngVelEX(2) 
-   
+  
    !...............................................................................................................................
    ! Outputs required for HydroDyn
    !...............................................................................................................................
@@ -1616,35 +1726,44 @@ END IF
    y%PlatformPtMesh%TranslationDisp(2,1) = x%QT(DOF_Sw)
    y%PlatformPtMesh%TranslationDisp(3,1) = x%QT(DOF_Hv)
    
-   y%PlatformPtMesh%RotationVel(1,1)    = x%QDT(DOF_R )
-   y%PlatformPtMesh%RotationVel(2,1)    = x%QDT(DOF_P )
-   y%PlatformPtMesh%RotationVel(3,1)    = x%QDT(DOF_Y )
+   ! y%PlatformPtMesh%RotationVel(1,1)    = x%QDT(DOF_R )
+   ! y%PlatformPtMesh%RotationVel(2,1)    = x%QDT(DOF_P )
+   ! y%PlatformPtMesh%RotationVel(3,1)    = x%QDT(DOF_Y )
+
+   y%PlatformPtMesh%RotationVel(1,1)    =     m%RtHS%AngVelEX(1)
+   y%PlatformPtMesh%RotationVel(2,1)    = -1.*m%RtHS%AngVelEX(3)
+   y%PlatformPtMesh%RotationVel(3,1)    =     m%RtHS%AngVelEX(2)
    
    y%PlatformPtMesh%TranslationVel(1,1) = x%QDT(DOF_Sg)
    y%PlatformPtMesh%TranslationVel(2,1) = x%QDT(DOF_Sw)
    y%PlatformPtMesh%TranslationVel(3,1) = x%QDT(DOF_Hv) 
    
+   ! CALL SmllRotTrans( 'platform displacement (ED_CalcOutput)', x%QT(DOF_R ),x%QT(DOF_P ),x%QT(DOF_Y ), &
+   !        y%PlatformPtMesh%Orientation(:,:,1), errstat=ErrStat, errmsg=ErrMsg )
+   !    IF (ErrStat /= ErrID_None)    ErrMsg = TRIM(ErrMsg)//' (occurred at '//TRIM(Num2LStr(t))//' s)'
+   !   !IF (ErrStat >= AbortErrLev) RETURN
 
-   CALL SmllRotTrans( 'platform displacement (ED_CalcOutput)', x%QT(DOF_R ),x%QT(DOF_P ),x%QT(DOF_Y ), &
-          y%PlatformPtMesh%Orientation(:,:,1), errstat=ErrStat, errmsg=ErrMsg )
-      IF (ErrStat /= ErrID_None)    ErrMsg = TRIM(ErrMsg)//' (occurred at '//TRIM(Num2LStr(t))//' s)'
-     !IF (ErrStat >= AbortErrLev) RETURN
+   y%PlatformPtMesh%Orientation(:,:,1) = EulerConstructZYX((/x%QT(DOF_R ),x%QT(DOF_P ),x%QT(DOF_Y )/))
 
-   y%PlatformPtMesh%RotationAcc(1,1) = m%QD2T(DOF_R )     
-   y%PlatformPtMesh%RotationAcc(2,1) = m%QD2T(DOF_P )     
-   y%PlatformPtMesh%RotationAcc(3,1) = m%QD2T(DOF_Y )     
+   ! y%PlatformPtMesh%RotationAcc(1,1) = m%QD2T(DOF_R )     
+   ! y%PlatformPtMesh%RotationAcc(2,1) = m%QD2T(DOF_P )     
+   ! y%PlatformPtMesh%RotationAcc(3,1) = m%QD2T(DOF_Y )     
+
+   y%PlatformPtMesh%RotationAcc(1,1) =     AngAccEX(1)     
+   y%PlatformPtMesh%RotationAcc(2,1) = -1.*AngAccEX(3)     
+   y%PlatformPtMesh%RotationAcc(3,1) =     AngAccEX(2)   
 
    y%PlatformPtMesh%TranslationAcc(1,1) = m%QD2T(DOF_Sg)     
    y%PlatformPtMesh%TranslationAcc(2,1) = m%QD2T(DOF_Sw)    
    y%PlatformPtMesh%TranslationAcc(3,1) = m%QD2T(DOF_Hv)    
-      
+     
    !...............................................................................................................................
    ! Outputs required for external tower loads
    !...............................................................................................................................
       
    DO J=1,p%TwrNodes
-      y%TowerLn2Mesh%TranslationDisp(1,J) =     m%RtHS%rT( 1,J) - y%TowerLn2Mesh%Position(1,J)
-      y%TowerLn2Mesh%TranslationDisp(2,J) = -1.*m%RtHS%rT( 3,J) - y%TowerLn2Mesh%Position(2,J)
+      y%TowerLn2Mesh%TranslationDisp(1,J) =     m%RtHS%rT( 1,J) - y%TowerLn2Mesh%Position(1,J) + p%PtfmRefxt
+      y%TowerLn2Mesh%TranslationDisp(2,J) = -1.*m%RtHS%rT( 3,J) - y%TowerLn2Mesh%Position(2,J) + p%PtfmRefyt
       y%TowerLn2Mesh%TranslationDisp(3,J) =     m%RtHS%rT( 2,J) - y%TowerLn2Mesh%Position(3,J) + p%PtfmRefzt
             
       y%TowerLn2Mesh%Orientation(1,1,J)   =     m%CoordSys%t1(J,1)
@@ -1679,8 +1798,8 @@ END IF
    ! p%TwrNodes+1 is the tower top:
    J = p%TwrNodes+1
    
-   y%TowerLn2Mesh%TranslationDisp(1,J) =     m%RtHS%rO(1) - y%TowerLn2Mesh%Position(1,J)
-   y%TowerLn2Mesh%TranslationDisp(2,J) = -1.*m%RtHS%rO(3) - y%TowerLn2Mesh%Position(2,J)
+   y%TowerLn2Mesh%TranslationDisp(1,J) =     m%RtHS%rO(1) - y%TowerLn2Mesh%Position(1,J) + p%PtfmRefxt
+   y%TowerLn2Mesh%TranslationDisp(2,J) = -1.*m%RtHS%rO(3) - y%TowerLn2Mesh%Position(2,J) + p%PtfmRefyt
    y%TowerLn2Mesh%TranslationDisp(3,J) =     m%RtHS%rO(2) - y%TowerLn2Mesh%Position(3,J) + p%PtfmRefzt
    
    y%TowerLn2Mesh%Orientation(1,1,J)   =     m%CoordSys%b1(1)
@@ -1713,8 +1832,8 @@ END IF
    ! p%TwrNodes+2 is the tower base:
    J = p%TwrNodes+2
 
-   y%TowerLn2Mesh%TranslationDisp(1,J) =     m%RtHS%rZ(1) + m%RtHS%rZT0(1) - y%TowerLn2Mesh%Position(1,J)
-   y%TowerLn2Mesh%TranslationDisp(2,J) = -1.*m%RtHS%rZ(3) - m%RtHS%rZT0(3) - y%TowerLn2Mesh%Position(2,J)
+   y%TowerLn2Mesh%TranslationDisp(1,J) =     m%RtHS%rZ(1) + m%RtHS%rZT0(1) - y%TowerLn2Mesh%Position(1,J) + p%PtfmRefxt
+   y%TowerLn2Mesh%TranslationDisp(2,J) = -1.*m%RtHS%rZ(3) - m%RtHS%rZT0(3) - y%TowerLn2Mesh%Position(2,J) + p%PtfmRefyt
    y%TowerLn2Mesh%TranslationDisp(3,J) =     m%RtHS%rZ(2) + m%RtHS%rZT0(2) - y%TowerLn2Mesh%Position(3,J) + p%PtfmRefzt
       
    y%TowerLn2Mesh%Orientation(1,1,J)   =     m%CoordSys%a1(1)
@@ -1749,8 +1868,16 @@ END IF
    
    y%Yaw      = x%QT( DOF_Yaw)
    y%YawRate  = x%QDT(DOF_Yaw)
-   y%YawAngle = x%QT( DOF_Yaw) + x%QT(DOF_Y)  !crude approximation for yaw error... (without subtracting it from the wind direction)   
-   y%BlPitch  = u%BlPitchCom !OtherState%BlPitch
+   y%YawAngle = x%QT( DOF_Yaw) + x%QT(DOF_Y)  !crude approximation for yaw error... (without subtracting it from the wind direction)
+   DO K=1,p%NumBl
+      IF ( p%DOF_Flag(DOF_BP(K)) ) THEN
+         y%BlPRate(K) = x%QDT( DOF_BP(K) )
+         y%BlPitch(K) = x%QT(  DOF_BP(K) )
+      ELSE
+         y%BlPRate(K) = 0.0_ReKi
+         y%BlPitch(K) = u%BlPitchCom(K)
+      END IF
+   END DO
    y%LSS_Spd  = x%QDT(DOF_GeAz)
    y%HSS_Spd  = ABS(p%GBRatio)*x%QDT(DOF_GeAz)
    y%RotSpeed = x%QDT(DOF_GeAz) + x%QDT(DOF_DrTr)
@@ -1789,7 +1916,10 @@ END IF
    y%NcIMURAxs = m%AllOuts(NcIMURAxs)*D2R                  ! Nacelle roll    acceleration (rad/s^2) -- this is in the shaft (tilted) coordinate system, instead of the nacelle (nontilted) coordinate system
    y%NcIMURAys = m%AllOuts(NcIMURAys)*D2R                  ! Nacelle nodding acceleration (rad/s^2)
    y%NcIMURAzs = m%AllOuts(NcIMURAzs)*D2R                  ! Nacelle yaw     acceleration (rad/s^2) -- this is in the shaft (tilted) coordinate system, instead of the nacelle (nontilted) coordinate system
-   
+   y%LSShftFxa = m%AllOuts(LSShftFxa)*1000.                ! Rotating low-speed shaft force x (GL co-ords) (N)
+   y%LSShftFys = m%AllOuts(LSShftFys)*1000.                ! Nonrotating low-speed shaft force y (GL co-ords) (N)
+   y%LSShftFzs = m%AllOuts(LSShftFzs)*1000.                ! Nonrotating low-speed shaft force z (GL co-ords) (N)
+
                
    RETURN
    
@@ -1819,6 +1949,8 @@ SUBROUTINE ED_CalcContStateDeriv( t, u, p, x, xd, z, OtherState, m, dxdt, ErrSta
    INTEGER(IntKi)                         :: ErrStat2          ! The error status code
    CHARACTER(ErrMsgLen)                   :: ErrMsg2           ! The error message, if an error occurred
    CHARACTER(*), PARAMETER                :: RoutineName = 'ED_CalcContStateDeriv'
+   Real(R8Ki)                             :: YawFriMz          ! External loading on yaw bearing not including inertial contributions
+
    
       ! Initialize ErrStat
 
@@ -1840,10 +1972,12 @@ SUBROUTINE ED_CalcContStateDeriv( t, u, p, x, xd, z, OtherState, m, dxdt, ErrSta
          IF (ErrStat >= AbortErrLev) RETURN
    
       CALL CalculatePositions(        p, x, m%CoordSys,    m%RtHS ) ! calculate positions
-      CALL CalculateAngularPosVelPAcc(p, x, m%CoordSys,    m%RtHS ) ! calculate angular positions, velocities, and partial accelerations, including partial angular quantities
+      CALL CalculateAngularPosVelPAcc(p, x, m%CoordSys,    m%RtHS, ErrStat2, ErrMsg2 ) ! calculate angular positions, velocities, and partial accelerations, including partial angular quantities
       CALL CalculateLinearVelPAcc(    p, x, m%CoordSys,    m%RtHS ) ! calculate linear velocities and partial accelerations
       CALL CalculateForcesMoments(    p, x, m%CoordSys, u, m%RtHS ) ! calculate the forces and moments (requires AeroBladeForces and AeroBladeMoments)            
-      
+         call setErrStat(ErrStat2,ErrMsg2,ErrStat,ErrMsg,RoutineName)
+         IF (ErrStat >= AbortErrLev) RETURN
+
    END IF
       
    !.....................................
@@ -1856,6 +1990,12 @@ SUBROUTINE ED_CalcContStateDeriv( t, u, p, x, xd, z, OtherState, m, dxdt, ErrSta
    CALL Teeter  ( t, p, m%RtHS%TeetAng, m%RtHS%TeetAngVel, m%RtHS%TeetMom ) ! Compute moment from teeter     springs and dampers, TeetMom; NOTE: TeetMom will be zero for a 3-blader since TeetAng = TeetAngVel = 0
    CALL RFurling( t, p, x%QT(DOF_RFrl),          x%QDT(DOF_RFrl),            m%RtHS%RFrlMom ) ! Compute moment from rotor-furl springs and dampers, RFrlMom
    CALL TFurling( t, p, x%QT(DOF_TFrl),          x%QDT(DOF_TFrl),            m%RtHS%TFrlMom ) ! Compute moment from tail-furl  springs and dampers, TFrlMom
+   ! Compute the yaw friction torque
+   YawFriMz=DOT_PRODUCT( m%RtHS%MomBNcRtt, m%CoordSys%d2 ) + u%YawMom
+   m%YawFriMz = YawFriMz
+   
+   CALL YawFriction( t, p, m%FrcONcRt, m%MomONcRt, YawFriMz, OtherState%OmegaTn, OtherState%OmegaDotTn, m%RtHS%YawFriMom )  !Compute yaw Friction #RRD
+
    
    !bjj: note m%RtHS%GBoxEffFac needed in OtherState only to fix HSSBrTrq (and used in FillAugMat)
    m%RtHS%GBoxEffFac  = p%GBoxEff**OtherState%SgnPrvLSTQ      ! = GBoxEff if SgnPrvLSTQ = 1 OR 1/GBoxEff if SgnPrvLSTQ = -1
@@ -1909,7 +2049,9 @@ END IF
    ENDDO             ! I - All active (enabled) DOFs
 
    m%QD2T = dxdt%QDT
-      
+
+   ! If computing AeroMaps, put accelerations where velocities would be located
+   if (p%CompAeroMaps) dxdt%QT = dxdt%QDT
    
       ! Let's calculate the sign (+/-1) of the low-speed shaft torque for this time step and store it in SgnPrvLSTQ.
       !  This will be used during the next call to RtHS (bjj: currently violates framework, but DOE wants a hack for HSS brake).
@@ -1983,9 +2125,10 @@ END SUBROUTINE ED_CalcConstrStateResidual
 
 !----------------------------------------------------------------------------------------------------------------------------------
 !> This subroutine sets the parameters, based on the data stored in InputFileData
-SUBROUTINE ED_SetParameters( InputFileData, p, ErrStat, ErrMsg )
+SUBROUTINE ED_SetParameters( InitInp, InputFileData, p, ErrStat, ErrMsg )
 !..................................................................................................................................
 
+   TYPE(ED_InitInputType),   INTENT(IN   )    :: InitInp        !< Input data for initialization routine
    TYPE(ED_InputFile),       INTENT(IN)       :: InputFileData  !< Data stored in the module's input file
    TYPE(ED_ParameterType),   INTENT(INOUT)    :: p              !< The module's parameter data
    INTEGER(IntKi),           INTENT(OUT)      :: ErrStat        !< The error status code
@@ -2004,7 +2147,7 @@ SUBROUTINE ED_SetParameters( InputFileData, p, ErrStat, ErrMsg )
 
 
       ! Set parameters from primary input file
-   CALL SetPrimaryParameters( p, InputFileData, ErrStat2, ErrMsg2  )
+   CALL SetPrimaryParameters( InitInp, p, InputFileData, ErrStat2, ErrMsg2  )
       CALL CheckError( ErrStat2, ErrMsg2 )
       IF ( ErrStat >= AbortErrLev ) RETURN
 
@@ -2092,9 +2235,10 @@ SUBROUTINE Init_DOFparameters( InputFileData, p, ErrStat, ErrMsg )
    ErrStat = ErrID_None
    ErrMsg  = ''
 
-
-   IF ( p%NumBl == 2 )  THEN
-      p%NDOF = 22
+   IF ( p%NumBl == 1 )  THEN
+      p%NDOF = 19
+   ELSEIF ( p%NumBl == 2 )  THEN
+      p%NDOF = 24
    ELSE
       p%NDOF = ED_MaxDOFs
    ENDIF
@@ -2119,6 +2263,10 @@ SUBROUTINE Init_DOFparameters( InputFileData, p, ErrStat, ErrMsg )
 
 
    DO K = 1,p%NumBl
+      p%DOF_Flag( DOF_BP(K  ) ) = InputFileData%PitchDOF
+      p%DOF_Desc( DOF_BP(K  ) ) = 'Blade pitch DOF of blade '//TRIM(Num2LStr( K ))// &
+                                  ' (internal DOF index = DOF_BP('         //TRIM(Num2LStr( K ))//'  )), rad'
+
       p%DOF_Flag( DOF_BF(K,1) ) = InputFileData%FlapDOF1
       p%DOF_Desc( DOF_BF(K,1) ) = '1st flapwise bending-mode DOF of blade '//TRIM(Num2LStr( K ))// &
                                   ' (internal DOF index = DOF_BF('         //TRIM(Num2LStr( K ))//',1)), m'
@@ -2198,7 +2346,7 @@ SUBROUTINE Init_DOFparameters( InputFileData, p, ErrStat, ErrMsg )
 
 
 !bjj was   ALLOCATE ( p%DOFs%PSBE(p%NumBl,3), p%DOFs%PSE(p%NumBl,p%NDOF),  STAT=ErrStat )
-   ALLOCATE ( p%DOFs%PSBE(p%NumBl,(NumBE+NumBF)), p%DOFs%PSE(p%NumBl,p%NDOF),  STAT=ErrStat )
+   ALLOCATE ( p%DOFs%PSBE(p%NumBl,(1+NumBE+NumBF)), p%DOFs%PSE(p%NumBl,p%NDOF),  STAT=ErrStat )
    IF ( ErrStat /= 0 )  THEN
       CALL ExitThisRoutine( ErrID_Fatal, ' Could not allocate memory for the ActiveAOFs PSBE and PSE arrays.' )
       RETURN
@@ -2227,10 +2375,10 @@ SUBROUTINE Init_DOFparameters( InputFileData, p, ErrStat, ErrMsg )
 
    IF ( p%NumBl == 2 )  THEN ! 2-blader
       p%NPH = 12                         ! Number of DOFs that contribute to the angular velocity of the hub            (body H) in the inertia frame.
-      p%NPM = 15                         ! Number of DOFs that contribute to the angular velocity of the blade elements (body M) in the inertia frame.
+      p%NPM = 16                         ! Number of DOFs that contribute to the angular velocity of the blade elements (body M) in the inertia frame.
    ELSE                    ! 3-blader
       p%NPH = 11                         ! Number of DOFs that contribute to the angular velocity of the hub            (body H) in the inertia frame.
-      p%NPM = 14                         ! Number of DOFs that contribute to the angular velocity of the blade elements (body M) in the inertia frame.
+      p%NPM = 15                         ! Number of DOFs that contribute to the angular velocity of the blade elements (body M) in the inertia frame.
    ENDIF
 
 
@@ -2250,7 +2398,7 @@ SUBROUTINE Init_DOFparameters( InputFileData, p, ErrStat, ErrMsg )
          ! Array of DOF indices (pointers) that contribute to the angular velocity of the blade elements (body M) in the inertia frame:
       DO K = 1,p%NumBl ! Loop through all blades
          p%PM(K,:) = (/ DOF_R, DOF_P, DOF_Y, DOF_TFA1, DOF_TSS1, DOF_TFA2, DOF_TSS2, DOF_Yaw, DOF_RFrl, DOF_GeAz, DOF_DrTr, &
-                        DOF_Teet,  DOF_BF(K,1) , DOF_BE(K,1)    , DOF_BF(K,2)          /)
+                        DOF_Teet,  DOF_BP(K) , DOF_BF(K,1) , DOF_BE(K,1)    , DOF_BF(K,2)          /)
       ENDDO          ! K - All blades
 
    ELSE  ! 3-blader
@@ -2258,7 +2406,7 @@ SUBROUTINE Init_DOFparameters( InputFileData, p, ErrStat, ErrMsg )
          ! Array of DOF indices (pointers) that contribute to the angular velocity of the blade elements (body M) in the inertia frame:
       DO K = 1,p%NumBl ! Loop through all blades
          p%PM(K,:) = (/ DOF_R, DOF_P, DOF_Y, DOF_TFA1, DOF_TSS1, DOF_TFA2, DOF_TSS2, DOF_Yaw, DOF_RFrl, DOF_GeAz, DOF_DrTr, &
-                                   DOF_BF(K,1) , DOF_BE(K,1)    , DOF_BF(K,2)         /)
+                                   DOF_BP(K) , DOF_BF(K,1) , DOF_BE(K,1)    , DOF_BF(K,2)         /)
       ENDDO          ! K - All blades
 
    ENDIF
@@ -2438,28 +2586,21 @@ END SUBROUTINE Alloc_CoordSys
 SUBROUTINE SetBladeParameters( p, BladeInData, BladeMeshData, ErrStat, ErrMsg )
 !..................................................................................................................................
 
-   TYPE(ED_ParameterType),        INTENT(INOUT)  :: p                                   !< The parameters of the structural dynamics module
-   TYPE(BladeInputData),          INTENT(IN)     :: BladeInData(:)                      !< Program input data for all blades
-   TYPE(ED_BladeMeshInputData),   INTENT(IN)     :: BladeMeshData(:)                    !< Program input mesh data for all blades
-   INTEGER(IntKi),                INTENT(OUT)    :: ErrStat                             !< Error status
-   CHARACTER(*),                  INTENT(OUT)    :: ErrMsg                              !< Error message
+   TYPE(ED_ParameterType),                      INTENT(INOUT)  :: p                 !< The parameters of the structural dynamics module
+   TYPE(BladeInputData),         ALLOCATABLE,   INTENT(IN)     :: BladeInData(:)    !< Program input data for all blades
+   TYPE(ED_BladeMeshInputData),  ALLOCATABLE,   INTENT(IN)     :: BladeMeshData(:)  !< Program input mesh data for all blades
+   INTEGER(IntKi),                              INTENT(OUT)    :: ErrStat           !< Error status
+   CHARACTER(*),                                INTENT(OUT)    :: ErrMsg            !< Error message
 
       ! Local variables:
-   REAL(ReKi)                                    :: x                                   ! Fractional location between two points in linear interpolation
-   INTEGER(IntKi )                               :: K                                   ! Blade number
-   INTEGER(IntKi )                               :: J                                   ! Index for the node arrays
-   INTEGER(IntKi)                                :: InterpInd                           ! Index for the interpolation routine
-   LOGICAL                                       :: SetAdmVals                          ! Logical to determine if Adams inputs should be set
+   REAL(ReKi)                                                  :: x                 ! Fractional location between two points in linear interpolation
+   INTEGER(IntKi )                                             :: K                 ! Blade number
+   INTEGER(IntKi )                                             :: J                 ! Index for the node arrays
+   INTEGER(IntKi)                                              :: InterpInd         ! Index for the interpolation routine
 
       ! initialize variables
    ErrStat = ErrID_None
    ErrMsg  = ''
-
-   IF (p%BD4Blades) THEN
-      SetAdmVals = .FALSE.
-   ELSE
-      SetAdmVals = ALLOCATED( BladeInData(1)%GJStff )
-   END IF
    
 
    ! ..............................................................................................................................
@@ -2480,7 +2621,7 @@ SUBROUTINE SetBladeParameters( p, BladeInData, BladeMeshData, ErrStat, ErrMsg )
 
       ! .......... Allocate arrays for the blade parameters being set in this routine ..........:
 
-   CALL Alloc_BladeParameters( p, SetAdmVals, ErrStat, ErrMsg )
+   CALL Alloc_BladeParameters( p, ErrStat, ErrMsg )
    IF ( ErrStat /= ErrID_None ) RETURN
 
    
@@ -2536,22 +2677,10 @@ SUBROUTINE SetBladeParameters( p, BladeInData, BladeMeshData, ErrStat, ErrMsg )
       !    Input      Interp    Description
       !    -----      ------    -----------
       !    BlFract    RNodesNorm Fractional radius (0 at root, 1 at tip)
-      !    PitchAx    PitchAxis  Pitch axis (0 at LE, 1 at TE)
       !    StrcTwst   ThetaS     Structural twist
       !    BMassDen   MassB      Lineal mass density
       !    FlpStff    StiffBF    Flapwise stiffness
       !    EdgStff    StiffBE    Edgewise stiffness
-      !    GJStff     StiffBGJ   Blade torsional stiffness
-      !    EAStff     StiffBEA   Blade extensional stiffness
-      !    Alpha      BAlpha     Blade flap/twist coupling coefficient
-      !    FlpIner    InerBFlp   Blade flap (about local structural yb-axis) mass inertia per unit length
-      !    EdgIner    InerBEdg   Blade edge (about local structural xb-axis) mass inertia per unit length
-      !    PrecrvRef  RefAxisxb  Blade offset for defining the reference axis from the pitch axis for precurved blades (along xb-axis)
-      !    PreswpRef  RefAxisyb  Blade offset for defining the reference axis from the pitch axis for preswept  blades (along yb-axis)
-      !    FlpcgOf    cgOffBFlp  Blade flap mass cg offset
-      !    EdgcgOf    cgOffBEdg  Blade edge mass cg offset
-      !    FlpEAOf    EAOffBFlp  Blade flap elastic axis offset
-      !    EdgEAOf    EAOffBEdg  Blade edge elastic axis offset
 
 
          ! Define RNodesNorm() which is common to all the blades:
@@ -2572,11 +2701,8 @@ SUBROUTINE SetBladeParameters( p, BladeInData, BladeMeshData, ErrStat, ErrMsg )
          DO J=1,p%BldNodes
 
                ! Get the index into BlFract for all of the arrays, using the NWTC Subroutine Library
-            !p%ThetaS  (K,J) = InterpStp( p%RNodesNorm(J), BladeInData(K)%BlFract, BladeInData(K)%StrcTwst, &
-            !                             InterpInd, BladeInData(K)%NBlInpSt )
-            p%PitchAxis(K,J) = InterpStp( p%RNodesNorm(J), BladeInData(K)%BlFract, BladeInData(K)%PitchAx, &
-                                         InterpInd, BladeInData(K)%NBlInpSt )
-
+            p%ThetaS   (K,J) = InterpStp( p%RNodesNorm(J), BladeInData(K)%BlFract, BladeInData(K)%StrcTwst, &
+                                          InterpInd, BladeInData(K)%NBlInpSt )
 
                ! The remaining arrays will have the same x value for the linear interpolation,
                ! so we'll do it manually (with a local subroutine) instead of calling the InterpStp routine again
@@ -2588,34 +2714,11 @@ SUBROUTINE SetBladeParameters( p, BladeInData, BladeMeshData, ErrStat, ErrMsg )
                    ( BladeInData(K)%BlFract(InterpInd+1) - BladeInData(K)%BlFract(InterpInd) )
             END IF
 
-            p%ThetaS  (K,J) = InterpAry( x, BladeInData(K)%StrcTwst, InterpInd )
             p%MassB   (K,J) = InterpAry( x, BladeInData(K)%BMassDen, InterpInd )
             p%StiffBF (K,J) = InterpAry( x, BladeInData(K)%FlpStff , InterpInd )
             p%StiffBE (K,J) = InterpAry( x, BladeInData(K)%EdgStff , InterpInd )
 
-            IF ( SetAdmVals ) THEN
-               p%StiffBGJ (K,J) = InterpAry( x, BladeInData(K)%GJStff   , InterpInd )
-               p%StiffBEA (K,J) = InterpAry( x, BladeInData(K)%EAStff   , InterpInd )
-               p%BAlpha   (K,J) = InterpAry( x, BladeInData(K)%Alpha    , InterpInd )
-               p%InerBFlp (K,J) = InterpAry( x, BladeInData(K)%FlpIner  , InterpInd )
-               p%InerBEdg (K,J) = InterpAry( x, BladeInData(K)%EdgIner  , InterpInd )
-               p%RefAxisxb(K,J) = InterpAry( x, BladeInData(K)%PrecrvRef, InterpInd )
-               p%RefAxisyb(K,J) = InterpAry( x, BladeInData(K)%PreswpRef, InterpInd )
-               p%cgOffBFlp(K,J) = InterpAry( x, BladeInData(K)%FlpcgOf  , InterpInd )
-               p%cgOffBEdg(K,J) = InterpAry( x, BladeInData(K)%EdgcgOf  , InterpInd )
-               p%EAOffBFlp(K,J) = InterpAry( x, BladeInData(K)%FlpEAOf  , InterpInd )
-               p%EAOffBEdg(K,J) = InterpAry( x, BladeInData(K)%EdgEAOf  , InterpInd )
-            END IF
-
-
-
          END DO ! J (Blade nodes)
-
-         IF ( SetAdmVals ) THEN
-               ! Set the valus for the tip node
-            p%RefAxisxb(K,p%TipNode) = BladeInData(K)%PrecrvRef( BladeInData(K)%NBlInpSt )
-            p%RefAxisyb(K,p%TipNode) = BladeInData(K)%PreswpRef( BladeInData(K)%NBlInpSt )
-         END IF
 
 
             ! Set the blade damping and stiffness tuner
@@ -2682,11 +2785,10 @@ CONTAINS
 END SUBROUTINE SetBladeParameters
 !----------------------------------------------------------------------------------------------------------------------------------
 !> This routine allocates arrays for the blade parameters.
-SUBROUTINE Alloc_BladeParameters( p, AllocAdams, ErrStat, ErrMsg )
+SUBROUTINE Alloc_BladeParameters( p, ErrStat, ErrMsg )
 !..................................................................................................................................
 
    TYPE(ED_ParameterType),   INTENT(INOUT)  :: p                                   !< The parameters of the structural dynamics module
-   LOGICAL,                  INTENT(IN)     :: AllocAdams                          !< Logical to determine if Adams inputs should be allocated
    INTEGER(IntKi),           INTENT(OUT)    :: ErrStat                             !< Error status
    CHARACTER(*),             INTENT(OUT)    :: ErrMsg                              !< Err msg
 
@@ -2702,8 +2804,7 @@ SUBROUTINE Alloc_BladeParameters( p, AllocAdams, ErrStat, ErrMsg )
 
       ! Allocate arrays to hold blade data at the analysis nodes.
    CALL AllocAry  ( p%RNodesNorm,              p%BldNodes, 'RNodesNorm' , ErrStat, ErrMsg ); IF ( ErrStat /= ErrID_None ) RETURN
-   CALL AllocAry  ( p%PitchAxis,   p%NumBl,    p%BldNodes, 'PitchAxis'  , ErrStat, ErrMsg ); IF ( ErrStat /= ErrID_None ) RETURN
-   
+
    ALLOCATE( p%ThetaS( p%NumBl,0:P%TipNode) &
            , p%CThetaS(p%NumBl,0:P%TipNode) &
            , p%SThetaS(p%NumBl,0:P%TipNode), STAT=ErrStat ) 
@@ -2717,31 +2818,6 @@ SUBROUTINE Alloc_BladeParameters( p, AllocAdams, ErrStat, ErrMsg )
    CALL AllocAry  ( p%StiffBF,     p%NumBl,    p%BldNodes, 'StiffBF'    , ErrStat, ErrMsg ); IF ( ErrStat /= ErrID_None ) RETURN
    CALL AllocAry  ( p%StiffBE,     p%NumBl,    p%BldNodes, 'StiffBE'    , ErrStat, ErrMsg ); IF ( ErrStat /= ErrID_None ) RETURN
 
-
-   IF ( AllocAdams ) THEN
-      CALL AllocAry  ( p%StiffBGJ,    p%NumBl,    p%BldNodes, 'StiffBGJ'   , ErrStat, ErrMsg )
-      IF ( ErrStat /= ErrID_None ) RETURN
-      CALL AllocAry  ( p%StiffBEA,    p%NumBl,    p%BldNodes, 'StiffBEA'   , ErrStat, ErrMsg )
-      IF ( ErrStat /= ErrID_None ) RETURN
-      CALL AllocAry  ( p%BAlpha,      p%NumBl,    p%BldNodes, 'BAlpha'     , ErrStat, ErrMsg )
-      IF ( ErrStat /= ErrID_None ) RETURN
-      CALL AllocAry  ( p%InerBFlp,    p%NumBl,    p%BldNodes, 'InerBFlp'   , ErrStat, ErrMsg )
-      IF ( ErrStat /= ErrID_None ) RETURN
-      CALL AllocAry  ( p%InerBEdg,    p%NumBl,    p%BldNodes, 'InerBEdg'   , ErrStat, ErrMsg )
-      IF ( ErrStat /= ErrID_None ) RETURN
-      CALL AllocAry  ( p%RefAxisxb,   p%NumBl,    p%TipNode,  'RefAxisxb'  , ErrStat, ErrMsg )
-      IF ( ErrStat /= ErrID_None ) RETURN
-      CALL AllocAry  ( p%RefAxisyb,   p%NumBl,    p%TipNode,  'RefAxisyb'  , ErrStat, ErrMsg )
-      IF ( ErrStat /= ErrID_None ) RETURN
-      CALL AllocAry  ( p%cgOffBFlp,   p%NumBl,    p%BldNodes, 'cgOffBFlp'  , ErrStat, ErrMsg )
-      IF ( ErrStat /= ErrID_None ) RETURN
-      CALL AllocAry  ( p%cgOffBEdg,   p%NumBl,    p%BldNodes, 'cgOffBEdg'  , ErrStat, ErrMsg )
-      IF ( ErrStat /= ErrID_None ) RETURN
-      CALL AllocAry  ( p%EAOffBFlp,   p%NumBl,    p%BldNodes, 'EAOffBFlp'  , ErrStat, ErrMsg )
-      IF ( ErrStat /= ErrID_None ) RETURN
-      CALL AllocAry  ( p%EAOffBEdg,   p%NumBl,    p%BldNodes, 'EAOffBEdg'  , ErrStat, ErrMsg )
-      IF ( ErrStat /= ErrID_None ) RETURN
-   END IF
 
    CALL AllocAry  ( p%BldEDamp,    p%NumBl,    NumBE,      'BldEDamp'   , ErrStat, ErrMsg )
    IF ( ErrStat /= ErrID_None ) RETURN
@@ -2764,11 +2840,10 @@ SUBROUTINE Alloc_BladeParameters( p, AllocAdams, ErrStat, ErrMsg )
 END SUBROUTINE Alloc_BladeParameters
 !----------------------------------------------------------------------------------------------------------------------------------
 !> This routine allocates arrays for the tower parameters.
-SUBROUTINE Alloc_TowerParameters( p, AllocAdams, ErrStat, ErrMsg )
+SUBROUTINE Alloc_TowerParameters( p, ErrStat, ErrMsg )
 !..................................................................................................................................
 
    TYPE(ED_ParameterType),   INTENT(INOUT)  :: p                                   !< The parameters of the structural dynamics module
-   LOGICAL,                  INTENT(IN)     :: AllocAdams                          !< Logical to determine if Adams inputs should be allocated
    INTEGER(IntKi),           INTENT(OUT)    :: ErrStat                             !< Error status
    CHARACTER(*),             INTENT(OUT)    :: ErrMsg                              !< Err msg
 
@@ -2789,20 +2864,6 @@ SUBROUTINE Alloc_TowerParameters( p, AllocAdams, ErrStat, ErrMsg )
    CALL AllocAry  ( p%StiffTSS,      p%TwrNodes, 'StiffTSS'  , ErrStat, ErrMsg )
    IF ( ErrStat /= ErrID_None ) RETURN
 
-   IF ( AllocAdams ) THEN
-      CALL AllocAry  ( p%StiffTGJ,      p%TwrNodes, 'StiffTGJ'  , ErrStat, ErrMsg )
-      IF ( ErrStat /= ErrID_None ) RETURN
-      CALL AllocAry  ( p%StiffTEA,      p%TwrNodes, 'StiffTEA'  , ErrStat, ErrMsg )
-      IF ( ErrStat /= ErrID_None ) RETURN
-      CALL AllocAry  ( p%InerTFA,       p%TwrNodes, 'InerTFA'   , ErrStat, ErrMsg )
-      IF ( ErrStat /= ErrID_None ) RETURN
-      CALL AllocAry  ( p%InerTSS,       p%TwrNodes, 'InerTSS'   , ErrStat, ErrMsg )
-      IF ( ErrStat /= ErrID_None ) RETURN
-      CALL AllocAry  ( p%cgOffTFA,      p%TwrNodes, 'cgOffTFA'  , ErrStat, ErrMsg )
-      IF ( ErrStat /= ErrID_None ) RETURN
-      CALL AllocAry  ( p%cgOffTSS,      p%TwrNodes, 'cgOffTSS'  , ErrStat, ErrMsg )
-      IF ( ErrStat /= ErrID_None ) RETURN
-   END IF
 
    !   ! these are for HydroDyn?
    !CALL AllocAry  ( p%DiamT,         p%TwrNodes, 'DiamT'     , ErrStat, ErrMsg )
@@ -2855,8 +2916,6 @@ SUBROUTINE SetOtherParameters( p, InputFileData, ErrStat, ErrMsg )
    CALL AllocAry( p%FreqBE,   p%NumBl, NumBE, 3_IntKi,              'FreqBE',    ErrStat, ErrMsg ); IF ( ErrStat /= ErrID_None ) RETURN
    CALL AllocAry( p%FreqBF,   p%NumBl, NumBF, 3_IntKi,              'FreqBF',    ErrStat, ErrMsg ); IF ( ErrStat /= ErrID_None ) RETURN
    CALL AllocAry( p%BldMass,  p%NumBl,                              'BldMass',   ErrStat, ErrMsg ); IF ( ErrStat /= ErrID_None ) RETURN
-   CALL AllocAry( p%rSAerCenn1,p%NumBl,p%BldNodes,  'rSAerCenn1',  ErrStat, ErrMsg ); IF ( ErrStat /= ErrID_None ) RETURN
-   CALL AllocAry( p%rSAerCenn2,p%NumBl,p%BldNodes,  'rSAerCenn2',  ErrStat, ErrMsg ); IF ( ErrStat /= ErrID_None ) RETURN
    CALL AllocAry(p%BElmntMass, p%BldNodes, p%NumBl, 'BElmntMass', ErrStat, ErrMsg ); IF ( ErrStat /= ErrID_None ) RETURN
    CALL AllocAry(p%TElmntMass, p%TwrNodes,          'TElmntMass', ErrStat, ErrMsg ); IF ( ErrStat /= ErrID_None ) RETURN
 
@@ -2889,308 +2948,161 @@ SUBROUTINE SetOtherParameters( p, InputFileData, ErrStat, ErrMsg )
 
    CALL Coeff(p, InputFileData, ErrStat, ErrMsg)
    IF ( ErrStat /= ErrID_None ) RETURN
-   
-   
 END SUBROUTINE SetOtherParameters
+
+
 !----------------------------------------------------------------------------------------------------------------------------------
 !> This routine allocates arrays in the RtHndSide data structure.
 !! It requires p\%TwrNodes, p\%NumBl, p\%TipNode, p\%NDOF, p\%BldNodes to be set before calling this routine.
 SUBROUTINE Alloc_RtHS( RtHS, p, ErrStat, ErrMsg  )
-!..................................................................................................................................
-
    TYPE(ED_RtHndSide),       INTENT(INOUT)  :: RtHS                         !< RtHndSide data type
    TYPE(ED_ParameterType),   INTENT(IN)     :: p                            !< Parameters of the structural dynamics module
    INTEGER(IntKi),           INTENT(OUT)    :: ErrStat                      !< Error status
    CHARACTER(*),             INTENT(OUT)    :: ErrMsg                       !< Error message
 
    ! local variables:
+   integer(IntKi)                           :: ErrStat2
+   character(ErrMsgLen)                     :: ErrMsg2
    INTEGER(IntKi),   PARAMETER              :: Dims = 3                     ! The position arrays all must be allocated with a dimension for X,Y,and Z
    CHARACTER(*),     PARAMETER              :: RoutineName = 'Alloc_RtHS'
 
-      ! positions:
-  !CALL AllocAry( RtHS%rZT,       Dims, p%TwrNodes,        'rZT',       ErrStat, ErrMsg );   IF ( ErrStat /= ErrID_None ) RETURN
-   CALL AllocAry( RtHS%rT,        Dims, p%TwrNodes,        'rT',        ErrStat, ErrMsg );   IF ( ErrStat /= ErrID_None ) RETURN
-   CALL AllocAry( RtHS%rT0T,      Dims, p%TwrNodes,        'rT0T',      ErrStat, ErrMsg );   IF ( ErrStat /= ErrID_None ) RETURN
-  !CALL AllocAry( RtHS%rQS,       Dims, p%NumBl,p%TipNode, 'rQS',       ErrStat, ErrMsg );   IF ( ErrStat /= ErrID_None ) RETURN
-  !CALL AllocAry( RtHS%rS,        Dims, p%NumBl,p%TipNode, 'rS',        ErrStat, ErrMsg );   IF ( ErrStat /= ErrID_None ) RETURN
-   CALL AllocAry( RtHS%rS0S,      Dims, p%NumBl,p%TipNode, 'rS0S',      ErrStat, ErrMsg );   IF ( ErrStat /= ErrID_None ) RETURN
-   CALL AllocAry( RtHS%rPS0,      Dims, p%NumBl,           'rPS0',      ErrStat, ErrMsg );   IF ( ErrStat /= ErrID_None ) RETURN
-   CALL AllocAry( RtHS%rSAerCen,  Dims, p%TipNode, p%NumBl,'rSAerCen',  ErrStat, ErrMsg );   IF ( ErrStat /= ErrID_None ) RETURN
+   ! positions:
+  !call AllocAry( RtHS%rZT,       Dims, p%TwrNodes,        'rZT',      ErrStat2, ErrMsg2 );  if (Failed()) return;  RtHS%rZT      = 0.0_ReKi
+   call AllocAry( RtHS%rT,        Dims, p%TwrNodes,        'rT',       ErrStat2, ErrMsg2 );  if (Failed()) return;  RtHS%rT       = 0.0_ReKi
+   call AllocAry( RtHS%rT0T,      Dims, p%TwrNodes,        'rT0T',     ErrStat2, ErrMsg2 );  if (Failed()) return;  RtHS%rT0T     = 0.0_ReKi
+  !call AllocAry( RtHS%rQS,       Dims, p%NumBl,p%TipNode, 'rQS',      ErrStat2, ErrMsg2 );  if (Failed()) return;  RtHS%rQS      = 0.0_ReKi
+  !call AllocAry( RtHS%rS,        Dims, p%NumBl,p%TipNode, 'rS',       ErrStat2, ErrMsg2 );  if (Failed()) return;  RtHS%rS       = 0.0_ReKi
+   call AllocAry( RtHS%rS0S,      Dims, p%NumBl,p%TipNode, 'rS0S',     ErrStat2, ErrMsg2 );  if (Failed()) return;  RtHS%rS0S     = 0.0_ReKi
+   call AllocAry( RtHS%rPS0,      Dims, p%NumBl,           'rPS0',     ErrStat2, ErrMsg2 );  if (Failed()) return;  RtHS%rPS0     = 0.0_ReKi
   
-      ! tower
-   allocate(RtHS%rZT(      Dims,  0:p%TwrNodes), &
-            RtHS%AngPosEF( Dims,  0:p%TwrNodes), &
-            RtHS%AngPosXF( Dims,  0:p%TwrNodes), &
-            RtHS%AngVelEF( Dims,  0:p%TwrNodes), &
-            RtHS%LinVelET( Dims,  0:p%TwrNodes), &
-            RtHS%AngAccEFt(Dims,  0:p%TwrNodes), &
-            RtHS%LinAccETt(Dims,  0:p%TwrNodes), &
-      STAT=ErrStat)
-      if (ErrStat /= 0) then
-         ErrStat = ErrID_Fatal
-         ErrMsg  = "Error allocating rZT, AngPosEF, AngPosXF, LinVelET, AngVelEF, LinAccETt, and AngAccEFt arrays."
-         RETURN
-      end if
-               
+   ! tower
+   allocate(RtHS%rZT(      Dims, 0:p%TwrNodes), STAT=ErrStat2); if (Failed0('rZT      ')) return;   RtHS%rZT       = 0.0_ReKi
+   allocate(RtHS%AngPosEF( Dims, 0:p%TwrNodes), STAT=ErrStat2); if (Failed0('AngPosEF ')) return;   RtHS%AngPosEF  = 0.0_ReKi
+   allocate(RtHS%AngPosXF( Dims, 0:p%TwrNodes), STAT=ErrStat2); if (Failed0('AngPosXF ')) return;   RtHS%AngPosXF  = 0.0_ReKi
+   allocate(RtHS%AngVelEF( Dims, 0:p%TwrNodes), STAT=ErrStat2); if (Failed0('AngVelEF ')) return;   RtHS%AngVelEF  = 0.0_ReKi
+   allocate(RtHS%LinVelET( Dims, 0:p%TwrNodes), STAT=ErrStat2); if (Failed0('LinVelET ')) return;   RtHS%LinVelET  = 0.0_ReKi
+   allocate(RtHS%AngAccEFt(Dims, 0:p%TwrNodes), STAT=ErrStat2); if (Failed0('AngAccEFt')) return;   RtHS%AngAccEFt = 0.0_ReKi
+   allocate(RtHS%LinAccETt(Dims, 0:p%TwrNodes), STAT=ErrStat2); if (Failed0('LinAccETt')) return;   RtHS%LinAccETt = 0.0_ReKi
       
-      ! blades
-   allocate(RtHS%rS( Dims, p%NumBl,0:p%TipNode), &
-            RtHS%rQS(Dims, p%NumBl,0:p%TipNode), STAT=ErrStat)
-      if (ErrStat /= 0) then
-         ErrStat = ErrID_Fatal
-         ErrMsg  = "Error allocating rS and rQS."
-         RETURN
-      end if
+   ! blades
+   allocate(RtHS%rS( Dims, p%NumBl, 0:p%TipNode), STAT=ErrStat2); if (Failed0('rS ')) return;   RtHS%rS  = 0.0_ReKi
+   allocate(RtHS%rQS(Dims, p%NumBl, 0:p%TipNode), STAT=ErrStat2); if (Failed0('rQS')) return;   RtHS%rQS = 0.0_ReKi
+
+   ! angular velocities (including partial angular velocities):
+   !call AllocAry( RtHS%AngVelEF,  Dims, p%TwrNodes, 'AngVelEF', ErrStat2, ErrMsg2 );  if (Failed()) return;  RtHS%AngVelEF = 0.0_ReKi
+   !call AllocAry( RtHS%AngPosEF,  Dims, p%TwrNodes, 'AngPosEF', ErrStat2, ErrMsg2 );  if (Failed()) return;  RtHS%AngPosEF = 0.0_ReKi
+   !call AllocAry( RtHS%AngPosXF,  Dims, p%TwrNodes, 'AngPosXF', ErrStat2, ErrMsg2 );  if (Failed()) return;  RtHS%AngPosXF = 0.0_ReKi
+
+
+   ! These angular velocities are allocated to start numbering a dimension with 0 instead of 1:
+   allocate(RtHS%PAngVelEB(                    p%NDOF,0:1,Dims), STAT=ErrStat2);  if (Failed0('PAngVelEB')) return;  RtHS%PAngVelEB = 0.0_ReKi
+   allocate(RtHS%PAngVelER(                    p%NDOF,0:1,Dims), STAT=ErrStat2);  if (Failed0('PAngVelER')) return;  RtHS%PAngVelER = 0.0_ReKi
+   allocate(RtHS%PAngVelEX(                    p%NDOF,0:1,Dims), STAT=ErrStat2);  if (Failed0('PAngVelEX')) return;  RtHS%PAngVelEX = 0.0_ReKi
+   allocate(RtHS%PAngVelEA(                    p%NDOF,0:1,Dims), STAT=ErrStat2);  if (Failed0('PAngVelEA')) return;  RtHS%PAngVelEA = 0.0_ReKi
+   allocate(RtHS%PAngVelEF(0:p%TwrNodes,       p%NDOF,0:1,Dims), STAT=ErrStat2);  if (Failed0('PAngVelEF')) return;  RtHS%PAngVelEF = 0.0_ReKi
+   allocate(RtHS%PAngVelEG(                    p%NDOF,0:1,Dims), STAT=ErrStat2);  if (Failed0('PAngVelEG')) return;  RtHS%PAngVelEG = 0.0_ReKi
+   allocate(RtHS%PAngVelEH(                    p%NDOF,0:1,Dims), STAT=ErrStat2);  if (Failed0('PAngVelEH')) return;  RtHS%PAngVelEH = 0.0_ReKi
+   allocate(RtHS%PAngVelEL(                    p%NDOF,0:1,Dims), STAT=ErrStat2);  if (Failed0('PAngVelEL')) return;  RtHS%PAngVelEL = 0.0_ReKi
+   allocate(RtHS%PAngVelEM(p%NumBl,0:p%TipNode,p%NDOF,0:1,Dims), STAT=ErrStat2);  if (Failed0('PAngVelEM')) return;  RtHS%PAngVelEM = 0.0_ReKi
+   allocate(RtHS%PAngVelEN(                    p%NDOF,0:1,Dims), STAT=ErrStat2);  if (Failed0('PAngVelEN')) return;  RtHS%PAngVelEN = 0.0_ReKi
+
+   ! angular accelerations:
+   !CALL AllocAry( RtHS%AngAccEFt, Dims, p%TwrNodes,         'AngAccEFt', ErrStat2, ErrMsg2 ); 
+
+   ! linear velocities (including partial linear velocities):
+   !CALL AllocAry( RtHS%LinVelET,  Dims, p%TwrNodes,         'LinVelET',  ErrStat2, ErrMsg2 ); 
+   !CALL AllocAry( RtHS%LinVelESm2,                 p%NumBl, 'LinVelESm2',ErrStat2, ErrMsg2 );           ! The m2-component (closest to tip) of LinVelES
+   allocate(RtHS%LinVelES( Dims, 0:p%TipNode, p%NumBl), STAT=ErrStat2); if (Failed0('LinVelES')) return; RtHS%LinVelES  = 0.0_ReKi
+   allocate(RtHS%AngVelEM( Dims, 0:p%TipNode, p%NumBl), STAT=ErrStat2); if (Failed0('AngVelEM')) return; RtHS%AngVelEM  = 0.0_ReKi
    
+   ! These linear velocities are allocated to start numbering a dimension with 0 instead of 1:
+   allocate(RtHS%PLinVelEIMU(p%NDOF,0:1,Dims), STAT=ErrStat2);                   if (Failed0('PLinVelEIMU')) return;  RtHS%PLinVelEIMU = 0.0_ReKi;
+   allocate(RtHS%PLinVelEO(p%NDOF,0:1,Dims), STAT=ErrStat2);                     if (Failed0('PLinVelEO  ')) return;  RtHS%PLinVelEO   = 0.0_ReKi;
+   allocate(RtHS%PLinVelES(p%NumBl,0:p%TipNode,p%NDOF,0:1,Dims), STAT=ErrStat2); if (Failed0('PLinVelES  ')) return;  RtHS%PLinVelES   = 0.0_ReKi;
+   allocate(RtHS%PLinVelET(0:p%TwrNodes,p%NDOF,0:1,Dims), STAT=ErrStat2);        if (Failed0('PLinVelET  ')) return;  RtHS%PLinVelET   = 0.0_ReKi;
+   allocate(RtHS%PLinVelEZ(p%NDOF,0:1,Dims), STAT=ErrStat2);                     if (Failed0('PLinVelEZ  ')) return;  RtHS%PLinVelEZ   = 0.0_ReKi;
+   allocate(RtHS%PLinVelEC(p%NDOF,0:1,3), STAT=ErrStat2);                        if (Failed0('PLinVelEC  ')) return;  RtHS%PLinVelEC   = 0.0_ReKi;
+   allocate(RtHS%PLinVelED(p%NDOF,0:1,3), STAT=ErrStat2);                        if (Failed0('PLinVelED  ')) return;  RtHS%PLinVelED   = 0.0_ReKi;
+   allocate(RtHS%PLinVelEI(p%NDOF,0:1,3), STAT=ErrStat2);                        if (Failed0('PLinVelEI  ')) return;  RtHS%PLinVelEI   = 0.0_ReKi;
+   allocate(RtHS%PLinVelEJ(p%NDOF,0:1,3), STAT=ErrStat2);                        if (Failed0('PLinVelEJ  ')) return;  RtHS%PLinVelEJ   = 0.0_ReKi;
+   allocate(RtHS%PLinVelEP(p%NDOF,0:1,3), STAT=ErrStat2);                        if (Failed0('PLinVelEP  ')) return;  RtHS%PLinVelEP   = 0.0_ReKi;
+   allocate(RtHS%PLinVelEQ(p%NDOF,0:1,3), STAT=ErrStat2);                        if (Failed0('PLinVelEQ  ')) return;  RtHS%PLinVelEQ   = 0.0_ReKi;
+   allocate(RtHS%PLinVelEU(p%NDOF,0:1,3), STAT=ErrStat2);                        if (Failed0('PLinVelEU  ')) return;  RtHS%PLinVelEU   = 0.0_ReKi;
+   allocate(RtHS%PLinVelEV(p%NDOF,0:1,3), STAT=ErrStat2);                        if (Failed0('PLinVelEV  ')) return;  RtHS%PLinVelEV   = 0.0_ReKi;
+   allocate(RtHS%PLinVelEW(p%NDOF,0:1,3), STAT=ErrStat2);                        if (Failed0('PLinVelEW  ')) return;  RtHS%PLinVelEW   = 0.0_ReKi;
+   allocate(RtHS%PLinVelEY(p%NDOF,0:1,3), STAT=ErrStat2);                        if (Failed0('PLinVelEY  ')) return;  RtHS%PLinVelEY   = 0.0_ReKi;
+   allocate(RtHS%LinAccESt(Dims, p%NumBl, 0:p%TipNode), STAT=ErrStat2);          if (Failed0('LinAccESt  ')) return;  RtHS%LinAccESt   = 0.0_ReKi;
+   allocate(RtHS%AngAccEKt(Dims, 0:p%TipNode, p%NumBl), STAT=ErrStat2);          if (Failed0('AngAccEKt  ')) return;  RtHS%AngAccEKt   = 0.0_ReKi;
+   allocate(RtHS%AngPosHM( Dims, p%NumBl, 0:p%TipNode), STAT=ErrStat2);          if (Failed0('AngPosHM   ')) return;  RtHS%AngPosHM    = 0.0_ReKi;
 
-      ! angular velocities (including partial angular velocities):
-   !CALL AllocAry( RtHS%AngVelEF,  Dims, p%TwrNodes,        'AngVelEF',  ErrStat, ErrMsg );   IF ( ErrStat /= ErrID_None ) RETURN
-   !CALL AllocAry( RtHS%AngPosEF,  Dims, p%TwrNodes,        'AngPosEF',  ErrStat, ErrMsg );   IF ( ErrStat /= ErrID_None ) RETURN
-   !CALL AllocAry( RtHS%AngPosXF,  Dims, p%TwrNodes,        'AngPosXF',  ErrStat, ErrMsg );   IF ( ErrStat /= ErrID_None ) RETURN
+   !call AllocAry( RtHS%LinAccESt, Dims, p%NumBl, p%TipNode,'LinAccESt', ErrStat2, ErrMsg2);  if ( Failed()) return;  RtHS%LinAccESt  = 0.0_ReKi;
+   !call AllocAry( RtHS%LinAccETt, Dims, p%TwrNodes,        'LinAccETt', ErrStat2, ErrMsg2);  if ( Failed()) return;  RtHS%LinAccETt  = 0.0_ReKi
+   call AllocAry( RtHS%PFrcS0B,   Dims, p%NumBl,p%NDOF,    'PFrcS0B  ', ErrStat2, ErrMsg2);  if ( Failed()) return;  RtHS%PFrcS0B   = 0.0_ReKi
+   call AllocAry( RtHS%FrcS0Bt,   Dims, p%NumBl,           'FrcS0Bt  ', ErrStat2, ErrMsg2);  if ( Failed()) return;  RtHS%FrcS0Bt   = 0.0_ReKi
+   call AllocAry( RtHS%PMomH0B,   Dims, p%NumBl, p%NDOF,   'PMomH0B  ', ErrStat2, ErrMsg2);  if ( Failed()) return;  RtHS%PMomH0B   = 0.0_ReKi
+   call AllocAry( RtHS%MomH0Bt,   Dims, p%NumBl,           'MomH0Bt  ', ErrStat2, ErrMsg2);  if ( Failed()) return;  RtHS%MomH0Bt   = 0.0_ReKi
+   call AllocAry( RtHS%PFrcPRot,  Dims, p%NDOF,            'PFrcPRot ', ErrStat2, ErrMsg2);  if ( Failed()) return;  RtHS%PFrcPRot  = 0.0_ReKi
+   call AllocAry( RtHS%PMomLPRot, Dims, p%NDOF,            'PMomLPRot', ErrStat2, ErrMsg2);  if ( Failed()) return;  RtHS%PMomLPRot = 0.0_ReKi
+   call AllocAry( RtHS%PMomNGnRt, Dims, p%NDOF,            'PMomNGnRt', ErrStat2, ErrMsg2);  if ( Failed()) return;  RtHS%PMomNGnRt = 0.0_ReKi
+   call AllocAry( RtHS%PMomNTail, Dims, p%NDOF,            'PMomNTail', ErrStat2, ErrMsg2);  if ( Failed()) return;  RtHS%PMomNTail = 0.0_ReKi
+   call AllocAry( RtHS%PFrcONcRt, Dims, p%NDOF,            'PFrcONcRt', ErrStat2, ErrMsg2);  if ( Failed()) return;  RtHS%PFrcONcRt = 0.0_ReKi
+   call AllocAry( RtHS%PMomBNcRt, Dims, p%NDOF,            'PMomBNcRt', ErrStat2, ErrMsg2);  if ( Failed()) return;  RtHS%PMomBNcRt = 0.0_ReKi
+   call AllocAry( RtHS%PFrcT0Trb, Dims, p%NDOF,            'PFrcT0Trb', ErrStat2, ErrMsg2);  if ( Failed()) return;  RtHS%PFrcT0Trb = 0.0_ReKi
+   call AllocAry( RtHS%PMomX0Trb, Dims, p%NDOF,            'PMomX0Trb', ErrStat2, ErrMsg2);  if ( Failed()) return;  RtHS%PMomX0Trb = 0.0_ReKi
+   call AllocAry( RtHS%FSAero,    Dims, p%NumBl,p%BldNodes,'FSAero   ', ErrStat2, ErrMsg2);  if ( Failed()) return;  RtHS%FSAero    = 0.0_ReKi
+   call AllocAry( RtHS%MMAero,    Dims, p%NumBl,p%BldNodes,'MMAero   ', ErrStat2, ErrMsg2);  if ( Failed()) return;  RtHS%MMAero    = 0.0_ReKi
+   call AllocAry( RtHS%FSTipDrag, Dims, p%NumBl,           'FSTipDrag', ErrStat2, ErrMsg2);  if ( Failed()) return;  RtHS%FSTipDrag = 0.0_ReKi
+   call AllocAry( RtHS%PFTHydro,  Dims, p%TwrNodes, p%NDOF,'PFTHydro ', ErrStat2, ErrMsg2);  if ( Failed()) return;  RtHS%PFTHydro  = 0.0_ReKi
+   call AllocAry( RtHS%PMFHydro,  Dims, p%TwrNodes, p%NDOF,'PMFHydro ', ErrStat2, ErrMsg2);  if ( Failed()) return;  RtHS%PMFHydro  = 0.0_ReKi
+   call AllocAry( RtHS%FTHydrot,  Dims, p%TwrNodes,        'FTHydrot ', ErrStat2, ErrMsg2);  if ( Failed()) return;  RtHS%FTHydrot  = 0.0_ReKi
+   call AllocAry( RtHS%MFHydrot,  Dims, p%TwrNodes,        'MFHydrot ', ErrStat2, ErrMsg2);  if ( Failed()) return;  RtHS%MFHydrot  = 0.0_ReKi
 
+   call AllocAry( RtHS%PFrcVGnRt, Dims, p%NDOF,            'PFrcVGnRt', ErrStat2, ErrMsg2);  if ( Failed()) return;  RtHS%PFrcVGnRt = 0.0_ReKi
+   call AllocAry( RtHS%PFrcWTail, Dims, p%NDOF,            'PFrcWTail', ErrStat2, ErrMsg2);  if ( Failed()) return;  RtHS%PFrcWTail = 0.0_ReKi
+   call AllocAry( RtHS%PFrcZAll,  Dims, p%NDOF,            'PFrcZAll ', ErrStat2, ErrMsg2);  if ( Failed()) return;  RtHS%PFrcZAll  = 0.0_ReKi
+   call AllocAry( RtHS%PMomXAll,  Dims, p%NDOF,            'PMomXAll ', ErrStat2, ErrMsg2);  if ( Failed()) return;  RtHS%PMomXAll  = 0.0_ReKi
 
-         ! These angular velocities are allocated to start numbering a dimension with 0 instead of 1:
-   ALLOCATE ( RtHS%PAngVelEB(p%NDOF,0:1,Dims) , STAT=ErrStat )
-   IF ( ErrStat /= 0_IntKi )  THEN
-      ErrStat = ErrID_Fatal
-      ErrMsg = ' Error allocating memory for the PAngVelEB array.'
-      RETURN
-   ENDIF
-
-   ALLOCATE ( RtHS%PAngVelER(p%NDOF,0:1,Dims) , STAT=ErrStat )
-   IF ( ErrStat /= 0_IntKi )  THEN
-      ErrStat = ErrID_Fatal
-      ErrMsg = ' Error allocating memory for the PAngVelER array.'
-      RETURN
-   ENDIF
-
-   ALLOCATE ( RtHS%PAngVelEX(p%NDOF,0:1,Dims) , STAT=ErrStat )
-   IF ( ErrStat /= 0_IntKi )  THEN
-      ErrStat = ErrID_Fatal
-      ErrMsg = ' Error allocating memory for the PAngVelEX array.'
-      RETURN
-   ENDIF
-
-   ALLOCATE ( RtHS%PAngVelEA(p%NDOF,0:1,Dims) , STAT=ErrStat )
-   IF ( ErrStat /= 0_IntKi )  THEN
-      ErrStat = ErrID_Fatal
-      ErrMsg = ' Error allocating memory for the PAngVelEA array.'
-      RETURN
-   ENDIF
-
-   ALLOCATE ( RtHS%PAngVelEF(0:p%TwrNodes, p%NDOF,0:1,Dims) , STAT=ErrStat )
-   IF ( ErrStat /= 0_IntKi )  THEN
-      ErrStat = ErrID_Fatal
-      ErrMsg = ' Error allocating memory for the PAngVelEF array.'
-      RETURN
-   ENDIF
-   ALLOCATE ( RtHS%PAngVelEG(                  p%NDOF,0:1,Dims) , STAT=ErrStat )
-   IF ( ErrStat /= 0_IntKi )  THEN
-      ErrStat = ErrID_Fatal
-      ErrMsg = ' Error allocating memory for the PAngVelEG array.'
-      RETURN
-   ENDIF
-   ALLOCATE ( RtHS%PAngVelEH(                  p%NDOF,0:1,Dims) , STAT=ErrStat )
-   IF ( ErrStat /= 0_IntKi )  THEN
-      ErrStat = ErrID_Fatal
-      ErrMsg = ' Error allocating memory for the PAngVelEH array.'
-      RETURN
-   ENDIF
-   ALLOCATE ( RtHS%PAngVelEL(                  p%NDOF,0:1,Dims) , STAT=ErrStat )
-   IF ( ErrStat /= 0_IntKi )  THEN
-      ErrStat = ErrID_Fatal
-      ErrMsg = ' Error allocating memory for the PAngVelEL array.'
-      RETURN
-   ENDIF
-   ALLOCATE ( RtHS%PAngVelEM(p%NumBl,0:p%TipNode,p%NDOF,0:1,Dims) , STAT=ErrStat )
-   IF ( ErrStat /= 0_IntKi )  THEN
-      ErrStat = ErrID_Fatal
-      ErrMsg = ' Error allocating memory for the PAngVelEM array.'
-      RETURN
-   ENDIF
-   ALLOCATE ( RtHS%PAngVelEN(                  p%NDOF,0:1,Dims) , STAT=ErrStat )
-   IF ( ErrStat /= 0_IntKi )  THEN
-      ErrStat = ErrID_Fatal
-      ErrMsg = ' Error allocating memory for the PAngVelEN array.'
-      RETURN
-   ENDIF
-
-      ! angular accelerations:
-   !CALL AllocAry( RtHS%AngAccEFt, Dims, p%TwrNodes,         'AngAccEFt', ErrStat, ErrMsg );  IF ( ErrStat /= ErrID_None ) RETURN
-
-      ! linear velocities (including partial linear velocities):
-   !CALL AllocAry( RtHS%LinVelET,  Dims, p%TwrNodes,         'LinVelET',  ErrStat, ErrMsg );  IF ( ErrStat /= ErrID_None ) RETURN         
-
-   !CALL AllocAry( RtHS%LinVelESm2,                 p%NumBl, 'LinVelESm2',ErrStat, ErrMsg );  IF ( ErrStat /= ErrID_None ) RETURN ! The m2-component (closest to tip) of LinVelES
-   ALLOCATE( RtHS%LinVelES( Dims, 0:p%TipNode, p%NumBl ), &
-             RtHS%AngVelEM( Dims, 0:p%TipNode, p%NumBl ), STAT=ErrStat )
-   IF (ErrStat /= 0 ) THEN
-      ErrStat = ErrID_Fatal
-      ErrMsg = RoutineName//":Error allocating LinVelES and AngVelEM."
-      RETURN
-   END IF
-   
-            ! These linear velocities are allocated to start numbering a dimension with 0 instead of 1:
-
-   ALLOCATE ( RtHS%PLinVelEIMU(p%NDOF,0:1,Dims) , STAT=ErrStat )
-   IF ( ErrStat /= 0_IntKi )  THEN
-      ErrStat = ErrID_Fatal
-      ErrMsg = ' Error allocating memory for the PLinVelEIMU array.'
-      RETURN
-   ENDIF
-
-   ALLOCATE ( RtHS%PLinVelEO(p%NDOF,0:1,Dims) , STAT=ErrStat )
-   IF ( ErrStat /= 0_IntKi )  THEN
-      ErrStat = ErrID_Fatal
-      ErrMsg = ' Error allocating memory for the PLinVelEO array.'
-      RETURN
-   ENDIF
-
-   ALLOCATE ( RtHS%PLinVelES(p%NumBl,0:p%TipNode,p%NDOF,0:1,Dims) , STAT=ErrStat )
-   IF ( ErrStat /= 0_IntKi )  THEN
-      ErrStat = ErrID_Fatal
-      ErrMsg = ' Error allocating memory for the PLinVelES array.'
-      RETURN
-   ENDIF
-
-   ALLOCATE ( RtHS%PLinVelET(0:p%TwrNodes,p%NDOF,0:1,Dims) , STAT=ErrStat )
-   IF ( ErrStat /= 0_IntKi )  THEN
-      ErrStat = ErrID_Fatal
-      ErrMsg = ' Error allocating memory for the PLinVelET array.'
-      RETURN
-   ENDIF
-
-   ALLOCATE ( RtHS%PLinVelEZ(p%NDOF,0:1,Dims) , STAT=ErrStat )
-   IF ( ErrStat /= 0_IntKi )  THEN
-      ErrStat = ErrID_Fatal
-      ErrMsg = ' Error allocating memory for the PLinVelEZ array.'
-      RETURN
-   ENDIF
-
-   ALLOCATE ( RtHS%PLinVelEC(p%NDOF,0:1,3) , STAT=ErrStat )
-   IF ( ErrStat /= 0_IntKi )  THEN
-      ErrStat = ErrID_Fatal
-      ErrMsg = ' Error allocating memory for the PLinVelEC array.'
-      RETURN
-   ENDIF
-   ALLOCATE ( RtHS%PLinVelED(p%NDOF,0:1,3) , STAT=ErrStat )
-   IF ( ErrStat /= 0_IntKi )  THEN
-      ErrStat = ErrID_Fatal
-      ErrMsg = ' Error allocating memory for the PLinVelED array.'
-      RETURN
-   ENDIF
-   ALLOCATE ( RtHS%PLinVelEI(p%NDOF,0:1,3) , STAT=ErrStat )
-   IF ( ErrStat /= 0_IntKi )  THEN
-      ErrStat = ErrID_Fatal
-      ErrMsg = ' Error allocating memory for the PLinVelEI array.'
-      RETURN
-   ENDIF
-   ALLOCATE ( RtHS%PLinVelEJ(p%NDOF,0:1,3) , STAT=ErrStat )
-   IF ( ErrStat /= 0_IntKi )  THEN
-      ErrStat = ErrID_Fatal
-      ErrMsg = ' Error allocating memory for the PLinVelEJ array.'
-      RETURN
-   ENDIF
-   ALLOCATE ( RtHS%PLinVelEK(p%NDOF,0:1,3) , STAT=ErrStat )
-   IF ( ErrStat /= 0_IntKi )  THEN
-      ErrStat = ErrID_Fatal
-      ErrMsg = ' Error allocating memory for the PLinVelEK array.'
-      RETURN
-   ENDIF
-   ALLOCATE ( RtHS%PLinVelEP(p%NDOF,0:1,3) , STAT=ErrStat )
-   IF ( ErrStat /= 0_IntKi )  THEN
-      ErrStat = ErrID_Fatal
-      ErrMsg = ' Error allocating memory for the PLinVelEP array.'
-      RETURN
-   ENDIF
-   ALLOCATE ( RtHS%PLinVelEQ(p%NDOF,0:1,3) , STAT=ErrStat )
-   IF ( ErrStat /= 0_IntKi )  THEN
-      ErrStat = ErrID_Fatal
-      ErrMsg = ' Error allocating memory for the PLinVelEQ array.'
-      RETURN
-   ENDIF
-   
-   ALLOCATE ( RtHS%PLinVelEU(p%NDOF,0:1,3) , &
-              RtHS%PLinVelEV(p%NDOF,0:1,3) , &
-              RtHS%PLinVelEW(p%NDOF,0:1,3) , &
-              RtHS%PLinVelEY(p%NDOF,0:1,3) , STAT=ErrStat )
-   IF ( ErrStat /= 0_IntKi )  THEN
-      ErrStat = ErrID_Fatal
-      ErrMsg = ' Error allocating memory for the PLinVelEU, PLinVelEV, PLinVelEW and PLinVelEY arrays.'
-      RETURN
-   ENDIF
-
-   
-   ALLOCATE( RtHS%LinAccESt( Dims, p%NumBl, 0:p%TipNode ), STAT=ErrStat )
-   IF ( ErrStat /= 0_IntKi )  THEN
-      ErrStat = ErrID_Fatal
-      ErrMsg = ' Error allocating memory for LinAccESt.'
-      RETURN
-   ENDIF
-
-   ALLOCATE(RtHS%AngPosHM(Dims, p%NumBl, 0:p%TipNode), STAT=ErrStat )
-   IF ( ErrStat /= 0_IntKi )  THEN
-      ErrStat = ErrID_Fatal
-      ErrMsg = ' Error allocating memory for the AngPosHM arrays.'
-      RETURN
-   ENDIF
-
-   !CALL AllocAry( RtHS%LinAccESt, Dims, p%NumBl, p%TipNode,'LinAccESt', ErrStat, ErrMsg );   IF ( ErrStat /= ErrID_None ) RETURN
-   !CALL AllocAry( RtHS%LinAccETt, Dims, p%TwrNodes,        'LinAccETt', ErrStat, ErrMsg );   IF ( ErrStat /= ErrID_None ) RETURN
-   CALL AllocAry( RtHS%PFrcS0B,   Dims, p%NumBl,p%NDOF,    'PFrcS0B',   ErrStat, ErrMsg );   IF ( ErrStat /= ErrID_None ) RETURN
-   CALL AllocAry( RtHS%FrcS0Bt,   Dims, p%NumBl,           'FrcS0Bt',   ErrStat, ErrMsg );   IF ( ErrStat /= ErrID_None ) RETURN
-   CALL AllocAry( RtHS%PMomH0B,   Dims, p%NumBl, p%NDOF,   'PMomH0B',   ErrStat, ErrMsg );   IF ( ErrStat /= ErrID_None ) RETURN
-   CALL AllocAry( RtHS%MomH0Bt,   Dims, p%NumBl,           'MomH0Bt',   ErrStat, ErrMsg );   IF ( ErrStat /= ErrID_None ) RETURN
-   CALL AllocAry( RtHS%PFrcPRot,  Dims, p%NDOF,            'PFrcPRot',  ErrStat, ErrMsg );   IF ( ErrStat /= ErrID_None ) RETURN
-   CALL AllocAry( RtHS%PMomLPRot, Dims, p%NDOF,            'PMomLPRot', ErrStat, ErrMsg );   IF ( ErrStat /= ErrID_None ) RETURN
-   CALL AllocAry( RtHS%PMomNGnRt, Dims, p%NDOF,            'PMomNGnRt', ErrStat, ErrMsg );   IF ( ErrStat /= ErrID_None ) RETURN
-   CALL AllocAry( RtHS%PMomNTail, Dims, p%NDOF,            'PMomNTail', ErrStat, ErrMsg );   IF ( ErrStat /= ErrID_None ) RETURN
-   CALL AllocAry( RtHS%PFrcONcRt, Dims, p%NDOF,            'PFrcONcRt', ErrStat, ErrMsg );   IF ( ErrStat /= ErrID_None ) RETURN
-   CALL AllocAry( RtHS%PMomBNcRt, Dims, p%NDOF,            'PMomBNcRt', ErrStat, ErrMsg );   IF ( ErrStat /= ErrID_None ) RETURN
-   CALL AllocAry( RtHS%PFrcT0Trb, Dims, p%NDOF,            'PFrcT0Trb', ErrStat, ErrMsg );   IF ( ErrStat /= ErrID_None ) RETURN
-   CALL AllocAry( RtHS%PMomX0Trb, Dims, p%NDOF,            'PMomX0Trb', ErrStat, ErrMsg );   IF ( ErrStat /= ErrID_None ) RETURN
-   CALL AllocAry( RtHS%FSAero,    Dims, p%NumBl,p%BldNodes,'FSAero',    ErrStat, ErrMsg );   IF ( ErrStat /= ErrID_None ) RETURN
-   CALL AllocAry( RtHS%MMAero,    Dims, p%NumBl,p%BldNodes,'MMAero',    ErrStat, ErrMsg );   IF ( ErrStat /= ErrID_None ) RETURN
-   CALL AllocAry( RtHS%FSTipDrag, Dims, p%NumBl,           'FSTipDrag', ErrStat, ErrMsg );   IF ( ErrStat /= ErrID_None ) RETURN
-   CALL AllocAry( RtHS%PFTHydro,  Dims, p%TwrNodes, p%NDOF,'PFTHydro',  ErrStat, ErrMsg );   IF ( ErrStat /= ErrID_None ) RETURN
-   CALL AllocAry( RtHS%PMFHydro,  Dims, p%TwrNodes, p%NDOF,'PMFHydro',  ErrStat, ErrMsg );   IF ( ErrStat /= ErrID_None ) RETURN
-   CALL AllocAry( RtHS%FTHydrot,  Dims, p%TwrNodes,        'FTHydrot',  ErrStat, ErrMsg );   IF ( ErrStat /= ErrID_None ) RETURN
-   CALL AllocAry( RtHS%MFHydrot,  Dims, p%TwrNodes,        'MFHydrot',  ErrStat, ErrMsg );   IF ( ErrStat /= ErrID_None ) RETURN
-
-   CALL AllocAry( RtHS%PFrcVGnRt, Dims, p%NDOF,            'PFrcVGnRt', ErrStat, ErrMsg );   IF ( ErrStat /= ErrID_None ) RETURN
-   CALL AllocAry( RtHS%PFrcWTail, Dims, p%NDOF,            'PFrcWTail', ErrStat, ErrMsg );   IF ( ErrStat /= ErrID_None ) RETURN
-   CALL AllocAry( RtHS%PFrcZAll,  Dims, p%NDOF,            'PFrcZAll',  ErrStat, ErrMsg );   IF ( ErrStat /= ErrID_None ) RETURN
-   CALL AllocAry( RtHS%PMomXAll,  Dims, p%NDOF,            'PMomXAll',  ErrStat, ErrMsg );   IF ( ErrStat /= ErrID_None ) RETURN
-
+contains
+   logical function Failed()
+      call SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
+      Failed = ErrStat >= AbortErrLev
+   end function Failed
+   ! check for failed where /= 0 is fatal
+   logical function Failed0(txt)
+      character(*), intent(in) :: txt
+      if (ErrStat2 /= 0) then
+         ErrStat2 = ErrID_Fatal
+         ErrMsg2  = "Could not allocate "//trim(txt)
+         call SetErrStat(ErrStat2, ErrMsg2, ErrStat, ErrMsg2, RoutineName)
+      endif
+      Failed0 = ErrStat >= AbortErrLev
+   end function Failed0
 END SUBROUTINE Alloc_RtHS
+
+
+
 !----------------------------------------------------------------------------------------------------------------------------------
 !> This takes the tower input file data and sets the corresponding tower parameters, performing linear interpolation of the
 !! input data to the specified tower mesh.
 !! It requires p\%TwrFlexL, and p\%TwrNodes to be set first.
-SUBROUTINE SetTowerParameters( p, InputFileData, ErrStat, ErrMsg  )
-!..................................................................................................................................
-
-      ! Passed variables
-
+SUBROUTINE SetTowerParameters( p, InputFileData, ErrStat, ErrMsg )
+   ! Passed variables
    TYPE(ED_ParameterType),   INTENT(INOUT)  :: p                            !< Parameters of the structural dynamics module
    TYPE(ED_InputFile),       INTENT(IN)     :: InputFileData                !< Data stored in the module's input file
    INTEGER(IntKi),           INTENT(OUT)    :: ErrStat                      !< Error status
    CHARACTER(*),             INTENT(OUT)    :: ErrMsg                       !< Error message
 
-      ! Local variables:
-
+   ! Local variables:
    REAL(ReKi)                               :: x                            ! Fractional location between two points in linear interpolation
-   INTEGER(IntKi )                          :: J                            ! Index for the node arrays
+   INTEGER(IntKi)                           :: I, J                         ! Index for the node arrays
    INTEGER(IntKi)                           :: InterpInd                    ! Index for the interpolation routine
-   LOGICAL                                  :: SetAdmVals                   ! Logical to determine if Adams inputs should be set
 
 
       ! Initialize data
    ErrStat   = ErrID_None
    ErrMsg    = ''
-   SetAdmVals = ALLOCATED( InputFileData%TwGJStif )
 
-   CALL Alloc_TowerParameters( p, SetAdmVals, ErrStat, ErrMsg )
+   CALL Alloc_TowerParameters( p, ErrStat, ErrMsg )
    IF ( ErrStat /= ErrID_None ) RETURN
 
 
@@ -3223,12 +3135,6 @@ SUBROUTINE SetTowerParameters( p, InputFileData, ErrStat, ErrMsg  )
    !    TMassDen   MassT      Lineal mass density
    !    TwFAStif   StiffTFA   Tower fore-aft stiffness
    !    TwSSStif   StiffTSS   Tower side-to-side stiffness
-   !    TwGJStif   StiffTGJ   Tower torsional stiffness
-   !    TwEAStif   StiffTEA   Tower extensional stiffness
-   !    TwFAIner   InerTFA    Tower fore-aft (about yt-axis) mass inertia per unit length
-   !    TwSSIner   InerTSS    Tower side-to-side (about xt-axis) mass inertia per unit length
-   !    TwFAcgOf   cgOffTFA   Tower fore-aft mass cg offset
-   !    TwSScgOf   cgOffTSS   Tower side-to-side mass cg offset
 
    InterpInd = 1
 
@@ -3239,19 +3145,26 @@ SUBROUTINE SetTowerParameters( p, InputFileData, ErrStat, ErrMsg  )
       p%MassT     (J) = InterpStp( p%HNodesNorm(J), InputFileData%HtFract, InputFileData%TMassDen, InterpInd, InputFileData%NTwInpSt )
       p%StiffTFA  (J) = InterpStp( p%HNodesNorm(J), InputFileData%HtFract, InputFileData%TwFAStif, InterpInd, InputFileData%NTwInpSt )
       p%StiffTSS  (J) = InterpStp( p%HNodesNorm(J), InputFileData%HtFract, InputFileData%TwSSStif, InterpInd, InputFileData%NTwInpSt )
+
    END DO ! J
 
+   DO J=1,InputFileData%NTwCMass
 
-   IF ( SetAdmVals )  THEN          ! An ADAMS model will be created; thus, read in all the cols.
-      DO J=1,p%TwrNodes
-         p%StiffTGJ  (J) = InterpStp( p%HNodesNorm(J), InputFileData%HtFract, InputFileData%TwGJStif, InterpInd, InputFileData%NTwInpSt )
-         p%StiffTEA  (J) = InterpStp( p%HNodesNorm(J), InputFileData%HtFract, InputFileData%TwEAStif, InterpInd, InputFileData%NTwInpSt )
-         p%InerTFA   (J) = InterpStp( p%HNodesNorm(J), InputFileData%HtFract, InputFileData%TwFAIner, InterpInd, InputFileData%NTwInpSt )
-         p%InerTSS   (J) = InterpStp( p%HNodesNorm(J), InputFileData%HtFract, InputFileData%TwSSIner, InterpInd, InputFileData%NTwInpSt )
-         p%cgOffTFA  (J) = InterpStp( p%HNodesNorm(J), InputFileData%HtFract, InputFileData%TwFAcgOf, InterpInd, InputFileData%NTwInpSt )
-         p%cgOffTSS  (J) = InterpStp( p%HNodesNorm(J), InputFileData%HtFract, InputFileData%TwSScgOf, InterpInd, InputFileData%NTwInpSt )
-      END DO ! J
-   END IF
+         ! Add contributions from concentrated masses. Find the tower element on which the concentrated mass is located.
+      DO I=1,p%TwrNodes
+         IF ( (p%HNodesNorm(I)+0.5*p%DHNodes(I)/p%TwrFlexL) >= InputFileData%TwCMassHtFract(J) ) THEN
+            EXIT
+         END IF
+      END DO
+
+         ! Modify the linear density of the tower element by adding the contribution from the concentrated mass.
+      p%MassT(I) = p%MassT(I) + InputFileData%TwCMass(J) / p%DHNodes(I)
+
+   END DO ! J
+
+   p%MassT = abs(p%MassT)
+   p%StiffTFA = abs(p%StiffTFA)
+   p%StiffTSS = abs(p%StiffTSS)
 
 
    !...............................................................................................................................
@@ -3323,7 +3236,6 @@ SUBROUTINE SetFurlParameters( p, InputFileData, ErrStat, ErrMsg  )
 
    p%RFrlSpr  = InputFileData%RFrlSpr
    p%RFrlDmp  = InputFileData%RFrlDmp
-   p%RFrlCDmp = InputFileData%RFrlCDmp
    p%RFrlUSSP = InputFileData%RFrlUSSP
    p%RFrlDSSP = InputFileData%RFrlDSSP
    p%RFrlDSSpr= InputFileData%RFrlDSSpr
@@ -3335,7 +3247,6 @@ SUBROUTINE SetFurlParameters( p, InputFileData, ErrStat, ErrMsg  )
 
    p%TFrlSpr  = InputFileData%TFrlSpr
    p%TFrlDmp  = InputFileData%TFrlDmp
-   p%TFrlCDmp = InputFileData%TFrlCDmp
    p%TFrlUSSP = InputFileData%TFrlUSSP
    p%TFrlDSSP = InputFileData%TFrlDSSP
    p%TFrlUSSpr= InputFileData%TFrlUSSpr
@@ -3345,26 +3256,15 @@ SUBROUTINE SetFurlParameters( p, InputFileData, ErrStat, ErrMsg  )
    p%TFrlUSDmp= InputFileData%TFrlUSDmp
    p%TFrlDSDmp= InputFileData%TFrlDSDmp
 
-   p%RFrlPntxn = InputFileData%RFrlPntxn
-   p%RFrlPntyn = InputFileData%RFrlPntyn
-   p%RFrlPntzn = InputFileData%RFrlPntzn
+   p%RFrlPnt_n = InputFileData%RFrlPnt_n
 
-   p%TFrlPntxn = InputFileData%TFrlPntxn
-   p%TFrlPntyn = InputFileData%TFrlPntyn
-   p%TFrlPntzn = InputFileData%TFrlPntzn
+   p%TFrlPnt_n = InputFileData%TFrlPnt_n
 
 
       ! Store sine/cosine values instead of some input angles:
 
    p%CShftSkew = COS( REAL(InputFileData%ShftSkew,R8Ki) )
    p%SShftSkew = SIN( REAL(InputFileData%ShftSkew,R8Ki) )
-
-   p%CTFinSkew = COS( REAL(InputFileData%TFinSkew, R8Ki) )
-   p%STFinSkew = SIN( REAL(InputFileData%TFinSkew, R8Ki) )
-   p%CTFinTilt = COS( REAL(InputFileData%TFinTilt, R8Ki) )
-   p%STFinTilt = SIN( REAL(InputFileData%TFinTilt, R8Ki) )
-   p%CTFinBank = COS( REAL(InputFileData%TFinBank, R8Ki) )
-   p%STFinBank = SIN( REAL(InputFileData%TFinBank, R8Ki) )
 
    p%CRFrlSkew = COS( REAL(InputFileData%RFrlSkew, R8Ki) )
    p%SRFrlSkew = SIN( REAL(InputFileData%RFrlSkew, R8Ki) )
@@ -3396,45 +3296,44 @@ SUBROUTINE SetFurlParameters( p, InputFileData, ErrStat, ErrMsg  )
 
       ! Calculate some positions:
 
-   p%rWIxn     = InputFileData%BoomCMxn - p%TFrlPntxn
-   p%rWIyn     = InputFileData%BoomCMyn - p%TFrlPntyn
-   p%rWIzn     = InputFileData%BoomCMzn - p%TFrlPntzn
+   p%rWIxn     = InputFileData%BoomCM_n(1) - p%TFrlPnt_n(1)
+   p%rWIyn     = InputFileData%BoomCM_n(2) - p%TFrlPnt_n(2)
+   p%rWIzn     = InputFileData%BoomCM_n(3) - p%TFrlPnt_n(3)
 
-   p%rWJxn     = InputFileData%TFinCMxn - p%TFrlPntxn
-   p%rWJyn     = InputFileData%TFinCMyn - p%TFrlPntyn
-   p%rWJzn     = InputFileData%TFinCMzn - p%TFrlPntzn
+   p%rWJxn     = InputFileData%TFinCM_n(1) - p%TFrlPnt_n(1)
+   p%rWJyn     = InputFileData%TFinCM_n(2) - p%TFrlPnt_n(2)
+   p%rWJzn     = InputFileData%TFinCM_n(3) - p%TFrlPnt_n(3)
 
-   p%rWKxn     = InputFileData%TFinCPxn - p%TFrlPntxn
-   p%rWKyn     = InputFileData%TFinCPyn - p%TFrlPntyn
-   p%rWKzn     = InputFileData%TFinCPzn - p%TFrlPntzn
+   p%rVDxn     = InputFileData%RFrlCM_n(1) - p%RFrlPnt_n(1)
+   p%rVDyn     = InputFileData%RFrlCM_n(2) - p%RFrlPnt_n(2)
+   p%rVDzn     = InputFileData%RFrlCM_n(3) - p%RFrlPnt_n(3)
 
-   p%rVDxn     = InputFileData%RFrlCMxn - p%RFrlPntxn
-   p%rVDyn     = InputFileData%RFrlCMyn - p%RFrlPntyn
-   p%rVDzn     = InputFileData%RFrlCMzn - p%RFrlPntzn
-
-   p%rVPxn     =        0.0_ReKi        - p%RFrlPntxn
-   p%rVPyn     = InputFileData%Yaw2Shft - p%RFrlPntyn
+   p%rVPxn     =        0.0_ReKi        - p%RFrlPnt_n(1)
+   p%rVPyn     = InputFileData%Yaw2Shft - p%RFrlPnt_n(2)
 
 
       ! Note: These positions are also used for non-furling machines:
 
-   p%rVPzn     = InputFileData%Twr2Shft - p%RFrlPntzn
-   p%rVIMUxn   = InputFileData%NcIMUxn  - p%RFrlPntxn
-   p%rVIMUyn   = InputFileData%NcIMUyn  - p%RFrlPntyn
-   p%rVIMUzn   = InputFileData%NcIMUzn  - p%RFrlPntzn
+   p%rVPzn     = InputFileData%Twr2Shft - p%RFrlPnt_n(3)
+   p%rVIMUxn   = InputFileData%NcIMUxn  - p%RFrlPnt_n(1)
+   p%rVIMUyn   = InputFileData%NcIMUyn  - p%RFrlPnt_n(2)
+   p%rVIMUzn   = InputFileData%NcIMUzn  - p%RFrlPnt_n(3)
 
 END SUBROUTINE SetFurlParameters
 !----------------------------------------------------------------------------------------------------------------------------------
 !> This takes the primary input file data and sets the corresponding parameters.
-SUBROUTINE SetPrimaryParameters( p, InputFileData, ErrStat, ErrMsg  )
+SUBROUTINE SetPrimaryParameters( InitInp, p, InputFileData, ErrStat, ErrMsg  )
 !..................................................................................................................................
 
       ! Passed variables
 
+   TYPE(ED_InitInputType),   INTENT(IN   )  :: InitInp                      !< Input data for initialization routine
    TYPE(ED_ParameterType),   INTENT(INOUT)  :: p                            !< Parameters of the structural dynamics module
    TYPE(ED_InputFile),       INTENT(IN)     :: InputFileData                !< Data stored in the module's input file
    INTEGER(IntKi),           INTENT(OUT)    :: ErrStat                      !< Error status
    CHARACTER(*),             INTENT(OUT)    :: ErrMsg                       !< Error message
+
+   INTEGER(IntKi)                           :: K
 
 !bjj: ERROR CHECKING!!!
 
@@ -3442,8 +3341,10 @@ SUBROUTINE SetPrimaryParameters( p, InputFileData, ErrStat, ErrMsg  )
    ErrStat = ErrID_None
    ErrMsg  = ''
 
+
    !p%Twr2Shft  = InputFileData%Twr2Shft
    !p%HubIner   = InputFileData%HubIner
+   !p%HubIner_Teeter   = InputFileData%HubIner_Teeter
    !p%NacYIner  = InputFileData%NacYIner
 
 
@@ -3455,17 +3356,26 @@ SUBROUTINE SetPrimaryParameters( p, InputFileData, ErrStat, ErrMsg  )
    p%HubRad    = InputFileData%HubRad
    p%method    = InputFileData%method
    p%TwrNodes  = InputFileData%TwrNodes
+   p%MHK       = InitInp%MHK
 
    p%PtfmCMxt = InputFileData%PtfmCMxt
    p%PtfmCMyt = InputFileData%PtfmCMyt   
    
    p%DT        = InputFileData%DT
-   p%Gravity   = InputFileData%Gravity
    p%OverHang  = InputFileData%OverHang
    p%ShftGagL  = InputFileData%ShftGagL
-   p%TowerHt   = InputFileData%TowerHt
-   p%TowerBsHt = InputFileData%TowerBsHt
-   p%PtfmRefzt = InputFileData%PtfmRefzt
+
+   p%PtfmRefxt = InputFileData%PtfmRefxt
+   p%PtfmRefyt = InputFileData%PtfmRefyt
+   IF ( InitInp%MHK == MHK_FixedBottom ) THEN
+      p%TowerHt   = InputFileData%TowerHt - InitInp%WtrDpth
+      p%TowerBsHt = InputFileData%TowerBsHt - InitInp%WtrDpth
+      p%PtfmRefzt = InputFileData%PtfmRefzt - InitInp%WtrDpth
+   ELSE
+      p%TowerHt   = InputFileData%TowerHt
+      p%TowerBsHt = InputFileData%TowerBsHt
+      p%PtfmRefzt = InputFileData%PtfmRefzt
+   END IF
    
    p%HubMass   = InputFileData%HubMass
    p%GenIner   = InputFileData%GenIner
@@ -3475,6 +3385,9 @@ SUBROUTINE SetPrimaryParameters( p, InputFileData, ErrStat, ErrMsg  )
    p%PtfmRIner = InputFileData%PtfmRIner
    p%PtfmPIner = InputFileData%PtfmPIner
    p%PtfmYIner = InputFileData%PtfmYIner
+   p%PtfmXYIner = InputFileData%PtfmXYIner
+   p%PtfmYZIner = InputFileData%PtfmYZIner
+   p%PtfmXZIner = InputFileData%PtfmXZIner
    p%GBoxEff   = InputFileData%GBoxEff
    p%GBRatio   = InputFileData%GBRatio
    p%DTTorSpr  = InputFileData%DTTorSpr
@@ -3514,14 +3427,37 @@ SUBROUTINE SetPrimaryParameters( p, InputFileData, ErrStat, ErrMsg  )
       p%TeetHSSp = 0.0
    END IF
 
+      ! Yaw friction model inputs
+   p%YawFrctMod  = InputFileData%YawFrctMod
+   p%M_CD        = InputFileData%M_CD
+   p%M_FCD       = InputFileData%M_FCD
+   p%M_MCD       = InputFileData%M_MCD
+   p%M_CSmax     = InputFileData%M_CSmax
+   p%M_FCSmax    = InputFileData%M_FCSmax
+   p%M_MCSmax    = InputFileData%M_MCSmax
+   p%sig_v       = InputFileData%sig_v
+   p%sig_v2      = InputFileData%sig_v2
+   p%OmgCut      = InputFileData%OmgCut
+
    
    CALL AllocAry( p%TipMass, p%NumBl, 'TipMass', ErrStat, ErrMsg )
    IF ( ErrStat >= AbortErrLev ) RETURN
-   p%TipMass   = InputFileData%TipMass
+   p%TipMass   = InputFileData%TipMass(1:p%NumBl)
+
+   CALL AllocAry( p%PitchIner, p%NumBl, 'PitchIner', ErrStat, ErrMsg )
+   IF ( ErrStat >= AbortErrLev ) RETURN
+   p%PitchIner = InputFileData%PBrIner(1:p%NumBl)
+   IF (.not.p%BD4Blades) THEN
+      p%PitchIner = p%PitchIner + InputFileData%BlPIner(1:p%NumBl)
+   END IF
 
       ! initialize all of the DOF parameters:
    CALL Init_DOFparameters( InputFileData, p, ErrStat, ErrMsg ) !sets p%NDOF and p%NAug
       IF (ErrStat >= AbortErrLev) RETURN
+
+   DO K = 1,p%NumBl
+      IF ( .not.p%DOF_Flag(DOF_BP(K)) )  p%PitchIner(K) = 0.0_ReKi
+   END DO
 
       ! Set parameters for output channels:
    CALL SetOutParam(InputFileData%OutList, p, ErrStat, ErrMsg ) ! requires: p%NumOuts, p%NumBl, p%NBlGages, p%NTwGages; sets: p%OutParam.
@@ -3546,7 +3482,13 @@ SUBROUTINE SetPrimaryParameters( p, InputFileData, ErrStat, ErrMsg  )
    p%BldFlexL  = p%TipRad    - p%HubRad                                            ! Length of the flexible portion of the blade.
    if (p%BD4Blades) p%BldFlexL = 0.0_ReKi
    
-   p%rZYzt     = InputFileData%PtfmCMzt - p%PtfmRefzt
+   p%rZYxt = InputFileData%PtfmCMxt - p%PtfmRefxt
+   p%rZYyt = InputFileData%PtfmCMyt - p%PtfmRefyt
+   IF ( InitInp%MHK == MHK_FixedBottom ) THEN
+      p%rZYzt     = InputFileData%PtfmCMzt - InitInp%WtrDpth - p%PtfmRefzt
+   ELSE
+      p%rZYzt     = InputFileData%PtfmCMzt - p%PtfmRefzt
+   END IF
 
    !...............................................................................................................................
    ! set cosine and sine of Precone and Delta3 angles:
@@ -3621,7 +3563,6 @@ SUBROUTINE SetPrimaryParameters( p, InputFileData, ErrStat, ErrMsg  )
    !p%NcIMUyn   = InputFileData%NcIMUyn
    !p%NcIMUzn   = InputFileData%NcIMUzn
 
-
    ! plus everything else from FAST_Initialize
 
 
@@ -3664,10 +3605,11 @@ SUBROUTINE Init_ContStates( x, p, InputFileData, OtherState, ErrStat, ErrMsg  )
       InitQE1 = 0.0_ReKi
    END IF
    
-      
+   x%QT ( DOF_BP(1:p%NumBl  ) ) = InputFileData%BlPitch(1:p%NumBl)
    x%QT ( DOF_BF(1:p%NumBl,1) ) = InitQF1   ! These come from InitBlDefl().
    x%QT ( DOF_BF(1:p%NumBl,2) ) = InitQF2   ! These come from InitBlDefl().
    x%QT ( DOF_BE(1:p%NumBl,1) ) = InitQE1   ! These come from InitBlDefl().
+   x%QDT( DOF_BP(1:p%NumBl  ) ) = 0.0
    x%QDT( DOF_BF(1:p%NumBl,1) ) = 0.0
    x%QDT( DOF_BF(1:p%NumBl,2) ) = 0.0
    x%QDT( DOF_BE(1:p%NumBl,1) ) = 0.0
@@ -3873,6 +3815,10 @@ SUBROUTINE Init_MiscOtherStates( m, OtherState, p, x, InputFileData, ErrStat, Er
    OtherState%HSSBrTrqC  = 0.0_ReKi
    OtherState%SgnPrvLSTQ = 1
    OtherState%SgnLSTQ    = 1
+   OtherState%OmegaTn = 0.0_R8Ki
+   OtherState%OmegaDotTn = 0.0_R8Ki
+   OtherState%Mfhat = 0.0_ReKi
+   OtherState%YawFriMfp = 0.0_ReKi
    
    
 END SUBROUTINE Init_MiscOtherStates
@@ -3890,455 +3836,515 @@ END SUBROUTINE Init_MiscOtherStates
 !!  the sign is set to 0 if the channel is invalid.
 !! It sets assumes the value p%NumOuts has been set before this routine has been called, and it sets the values of p%OutParam here.
 !! 
-!! This routine was generated by Write_ChckOutLst.m using the parameters listed in OutListParameters.xlsx at 08-Jun-2020 17:05:31.
+!! This routine was generated by Write_ChckOutLst.m using the parameters listed in OutListParameters.xlsx.
 SUBROUTINE SetOutParam(OutList, p, ErrStat, ErrMsg )
 !..................................................................................................................................
-
+   
    IMPLICIT                        NONE
-
+   
       ! Passed variables
-
-   CHARACTER(ChanLen),        INTENT(IN)     :: OutList(:)                        !< The list out user-requested outputs
+   
+   CHARACTER(ChanLen),        INTENT(IN)     :: OutList(:)                        !< The list of user-requested outputs
    TYPE(ED_ParameterType),    INTENT(INOUT)  :: p                                 !< The module parameters
    INTEGER(IntKi),            INTENT(OUT)    :: ErrStat                           !< The error status code
    CHARACTER(*),              INTENT(OUT)    :: ErrMsg                            !< The error message, if an error occurred
-
+   
       ! Local variables
-
+   
    INTEGER                      :: ErrStat2                                        ! temporary (local) error status
    INTEGER                      :: I                                               ! Generic loop-counting index
    INTEGER                      :: J                                               ! Generic loop-counting index
    INTEGER                      :: INDX                                            ! Index for valid arrays
-   INTEGER                      :: startIndx                                       ! Index for BeamDyn
-
-   LOGICAL                      :: CheckOutListAgain                               ! Flag used to determine if output parameter starting with "M" is valid (or the negative of another parameter)
+   INTEGER                      :: startIndx                                       ! Index for using BeamDyn for Blades
    LOGICAL                      :: InvalidOutput(0:MaxOutPts)                      ! This array determines if the output channel is valid for this configuration
-   CHARACTER(ChanLen)           :: OutListTmp                                      ! A string to temporarily hold OutList(I)
    CHARACTER(*), PARAMETER      :: RoutineName = "SetOutParam"
-
-   CHARACTER(OutStrLenM1), PARAMETER  :: ValidParamAry(978) =  (/ &                  ! This lists the names of the allowed parameters, which must be sorted alphabetically
-                               "AZIMUTH  ","BLDPITCH1","BLDPITCH2","BLDPITCH3","BLPITCH1 ","BLPITCH2 ","BLPITCH3 ", &
-                               "GENACCEL ","GENSPEED ","HSSBRTQ  ","HSSHFTA  ","HSSHFTPWR","HSSHFTTQ ","HSSHFTV  ", &
-                               "IPDEFL1  ","IPDEFL2  ","IPDEFL3  ","LSSGAGA  ","LSSGAGAXA","LSSGAGAXS","LSSGAGFXA", &
-                               "LSSGAGFXS","LSSGAGFYA","LSSGAGFYS","LSSGAGFZA","LSSGAGFZS","LSSGAGMXA","LSSGAGMXS", &
-                               "LSSGAGMYA","LSSGAGMYS","LSSGAGMZA","LSSGAGMZS","LSSGAGP  ","LSSGAGPXA","LSSGAGPXS", &
-                               "LSSGAGV  ","LSSGAGVXA","LSSGAGVXS","LSSHFTFXA","LSSHFTFXS","LSSHFTFYA","LSSHFTFYS", &
-                               "LSSHFTFZA","LSSHFTFZS","LSSHFTMXA","LSSHFTMXS","LSSHFTPWR","LSSHFTTQ ","LSSTIPA  ", &
-                               "LSSTIPAXA","LSSTIPAXS","LSSTIPMYA","LSSTIPMYS","LSSTIPMZA","LSSTIPMZS","LSSTIPP  ", &
-                               "LSSTIPPXA","LSSTIPPXS","LSSTIPV  ","LSSTIPVXA","LSSTIPVXS","NACYAW   ","NACYAWA  ", &
-                               "NACYAWP  ","NACYAWV  ","NCIMURAXS","NCIMURAYS","NCIMURAZS","NCIMURVXS","NCIMURVYS", &
-                               "NCIMURVZS","NCIMUTAXS","NCIMUTAYS","NCIMUTAZS","NCIMUTVXS","NCIMUTVYS","NCIMUTVZS", &
-                               "OOPDEFL1 ","OOPDEFL2 ","OOPDEFL3 ","PTCHDEFL1","PTCHDEFL2","PTCHDEFL3","PTCHPMZB1", &
-                               "PTCHPMZB2","PTCHPMZB3","PTCHPMZC1","PTCHPMZC2","PTCHPMZC3","PTFMHEAVE","PTFMPITCH", &
-                               "PTFMRAXI ","PTFMRAXT ","PTFMRAYI ","PTFMRAYT ","PTFMRAZI ","PTFMRAZT ","PTFMRDXI ", &
-                               "PTFMRDYI ","PTFMRDZI ","PTFMROLL ","PTFMRVXI ","PTFMRVXT ","PTFMRVYI ","PTFMRVYT ", &
-                               "PTFMRVZI ","PTFMRVZT ","PTFMSURGE","PTFMSWAY ","PTFMTAXI ","PTFMTAXT ","PTFMTAYI ", &
-                               "PTFMTAYT ","PTFMTAZI ","PTFMTAZT ","PTFMTDXI ","PTFMTDXT ","PTFMTDYI ","PTFMTDYT ", &
-                               "PTFMTDZI ","PTFMTDZT ","PTFMTVXI ","PTFMTVXT ","PTFMTVYI ","PTFMTVYT ","PTFMTVZI ", &
-                               "PTFMTVZT ","PTFMYAW  ","QD2_B1E1 ","QD2_B1F1 ","QD2_B1F2 ","QD2_B2E1 ","QD2_B2F1 ", &
-                               "QD2_B2F2 ","QD2_B3E1 ","QD2_B3F1 ","QD2_B3F2 ","QD2_DRTR ","QD2_GEAZ ","QD2_HV   ", &
-                               "QD2_P    ","QD2_R    ","QD2_RFRL ","QD2_SG   ","QD2_SW   ","QD2_TEET ","QD2_TFA1 ", &
-                               "QD2_TFA2 ","QD2_TFRL ","QD2_TSS1 ","QD2_TSS2 ","QD2_Y    ","QD2_YAW  ","QD_B1E1  ", &
-                               "QD_B1F1  ","QD_B1F2  ","QD_B2E1  ","QD_B2F1  ","QD_B2F2  ","QD_B3E1  ","QD_B3F1  ", &
-                               "QD_B3F2  ","QD_DRTR  ","QD_GEAZ  ","QD_HV    ","QD_P     ","QD_R     ","QD_RFRL  ", &
-                               "QD_SG    ","QD_SW    ","QD_TEET  ","QD_TFA1  ","QD_TFA2  ","QD_TFRL  ","QD_TSS1  ", &
-                               "QD_TSS2  ","QD_Y     ","QD_YAW   ","Q_B1E1   ","Q_B1F1   ","Q_B1F2   ","Q_B2E1   ", &
-                               "Q_B2F1   ","Q_B2F2   ","Q_B3E1   ","Q_B3F1   ","Q_B3F2   ","Q_DRTR   ","Q_GEAZ   ", &
-                               "Q_HV     ","Q_P      ","Q_R      ","Q_RFRL   ","Q_SG     ","Q_SW     ","Q_TEET   ", &
-                               "Q_TFA1   ","Q_TFA2   ","Q_TFRL   ","Q_TSS1   ","Q_TSS2   ","Q_Y      ","Q_YAW    ", &
-                               "RFRLBRM  ","ROLLDEFL1","ROLLDEFL2","ROLLDEFL3","ROOTFXB1 ","ROOTFXB2 ","ROOTFXB3 ", &
-                               "ROOTFXC1 ","ROOTFXC2 ","ROOTFXC3 ","ROOTFYB1 ","ROOTFYB2 ","ROOTFYB3 ","ROOTFYC1 ", &
-                               "ROOTFYC2 ","ROOTFYC3 ","ROOTFZB1 ","ROOTFZB2 ","ROOTFZB3 ","ROOTFZC1 ","ROOTFZC2 ", &
-                               "ROOTFZC3 ","ROOTMEDG1","ROOTMEDG2","ROOTMEDG3","ROOTMFLP1","ROOTMFLP2","ROOTMFLP3", &
-                               "ROOTMIP1 ","ROOTMIP2 ","ROOTMIP3 ","ROOTMOOP1","ROOTMOOP2","ROOTMOOP3","ROOTMXB1 ", &
-                               "ROOTMXB2 ","ROOTMXB3 ","ROOTMXC1 ","ROOTMXC2 ","ROOTMXC3 ","ROOTMYB1 ","ROOTMYB2 ", &
-                               "ROOTMYB3 ","ROOTMYC1 ","ROOTMYC2 ","ROOTMYC3 ","ROOTMZB1 ","ROOTMZB2 ","ROOTMZB3 ", &
-                               "ROOTMZC1 ","ROOTMZC2 ","ROOTMZC3 ","ROTACCEL ","ROTFURL  ","ROTFURLA ","ROTFURLP ", &
-                               "ROTFURLV ","ROTPWR   ","ROTSPEED ","ROTTEETA ","ROTTEETP ","ROTTEETV ","ROTTHRUST", &
-                               "ROTTORQ  ","SPN1ALXB1","SPN1ALXB2","SPN1ALXB3","SPN1ALYB1","SPN1ALYB2","SPN1ALYB3", &
-                               "SPN1ALZB1","SPN1ALZB2","SPN1ALZB3","SPN1FLXB1","SPN1FLXB2","SPN1FLXB3","SPN1FLYB1", &
-                               "SPN1FLYB2","SPN1FLYB3","SPN1FLZB1","SPN1FLZB2","SPN1FLZB3","SPN1MLXB1","SPN1MLXB2", &
-                               "SPN1MLXB3","SPN1MLYB1","SPN1MLYB2","SPN1MLYB3","SPN1MLZB1","SPN1MLZB2","SPN1MLZB3", &
-                               "SPN1RDXB1","SPN1RDXB2","SPN1RDXB3","SPN1RDYB1","SPN1RDYB2","SPN1RDYB3","SPN1RDZB1", &
-                               "SPN1RDZB2","SPN1RDZB3","SPN1TDXB1","SPN1TDXB2","SPN1TDXB3","SPN1TDYB1","SPN1TDYB2", &
-                               "SPN1TDYB3","SPN1TDZB1","SPN1TDZB2","SPN1TDZB3","SPN2ALXB1","SPN2ALXB2","SPN2ALXB3", &
-                               "SPN2ALYB1","SPN2ALYB2","SPN2ALYB3","SPN2ALZB1","SPN2ALZB2","SPN2ALZB3","SPN2FLXB1", &
-                               "SPN2FLXB2","SPN2FLXB3","SPN2FLYB1","SPN2FLYB2","SPN2FLYB3","SPN2FLZB1","SPN2FLZB2", &
-                               "SPN2FLZB3","SPN2MLXB1","SPN2MLXB2","SPN2MLXB3","SPN2MLYB1","SPN2MLYB2","SPN2MLYB3", &
-                               "SPN2MLZB1","SPN2MLZB2","SPN2MLZB3","SPN2RDXB1","SPN2RDXB2","SPN2RDXB3","SPN2RDYB1", &
-                               "SPN2RDYB2","SPN2RDYB3","SPN2RDZB1","SPN2RDZB2","SPN2RDZB3","SPN2TDXB1","SPN2TDXB2", &
-                               "SPN2TDXB3","SPN2TDYB1","SPN2TDYB2","SPN2TDYB3","SPN2TDZB1","SPN2TDZB2","SPN2TDZB3", &
-                               "SPN3ALXB1","SPN3ALXB2","SPN3ALXB3","SPN3ALYB1","SPN3ALYB2","SPN3ALYB3","SPN3ALZB1", &
-                               "SPN3ALZB2","SPN3ALZB3","SPN3FLXB1","SPN3FLXB2","SPN3FLXB3","SPN3FLYB1","SPN3FLYB2", &
-                               "SPN3FLYB3","SPN3FLZB1","SPN3FLZB2","SPN3FLZB3","SPN3MLXB1","SPN3MLXB2","SPN3MLXB3", &
-                               "SPN3MLYB1","SPN3MLYB2","SPN3MLYB3","SPN3MLZB1","SPN3MLZB2","SPN3MLZB3","SPN3RDXB1", &
-                               "SPN3RDXB2","SPN3RDXB3","SPN3RDYB1","SPN3RDYB2","SPN3RDYB3","SPN3RDZB1","SPN3RDZB2", &
-                               "SPN3RDZB3","SPN3TDXB1","SPN3TDXB2","SPN3TDXB3","SPN3TDYB1","SPN3TDYB2","SPN3TDYB3", &
-                               "SPN3TDZB1","SPN3TDZB2","SPN3TDZB3","SPN4ALXB1","SPN4ALXB2","SPN4ALXB3","SPN4ALYB1", &
-                               "SPN4ALYB2","SPN4ALYB3","SPN4ALZB1","SPN4ALZB2","SPN4ALZB3","SPN4FLXB1","SPN4FLXB2", &
-                               "SPN4FLXB3","SPN4FLYB1","SPN4FLYB2","SPN4FLYB3","SPN4FLZB1","SPN4FLZB2","SPN4FLZB3", &
-                               "SPN4MLXB1","SPN4MLXB2","SPN4MLXB3","SPN4MLYB1","SPN4MLYB2","SPN4MLYB3","SPN4MLZB1", &
-                               "SPN4MLZB2","SPN4MLZB3","SPN4RDXB1","SPN4RDXB2","SPN4RDXB3","SPN4RDYB1","SPN4RDYB2", &
-                               "SPN4RDYB3","SPN4RDZB1","SPN4RDZB2","SPN4RDZB3","SPN4TDXB1","SPN4TDXB2","SPN4TDXB3", &
-                               "SPN4TDYB1","SPN4TDYB2","SPN4TDYB3","SPN4TDZB1","SPN4TDZB2","SPN4TDZB3","SPN5ALXB1", &
-                               "SPN5ALXB2","SPN5ALXB3","SPN5ALYB1","SPN5ALYB2","SPN5ALYB3","SPN5ALZB1","SPN5ALZB2", &
-                               "SPN5ALZB3","SPN5FLXB1","SPN5FLXB2","SPN5FLXB3","SPN5FLYB1","SPN5FLYB2","SPN5FLYB3", &
-                               "SPN5FLZB1","SPN5FLZB2","SPN5FLZB3","SPN5MLXB1","SPN5MLXB2","SPN5MLXB3","SPN5MLYB1", &
-                               "SPN5MLYB2","SPN5MLYB3","SPN5MLZB1","SPN5MLZB2","SPN5MLZB3","SPN5RDXB1","SPN5RDXB2", &
-                               "SPN5RDXB3","SPN5RDYB1","SPN5RDYB2","SPN5RDYB3","SPN5RDZB1","SPN5RDZB2","SPN5RDZB3", &
-                               "SPN5TDXB1","SPN5TDXB2","SPN5TDXB3","SPN5TDYB1","SPN5TDYB2","SPN5TDYB3","SPN5TDZB1", &
-                               "SPN5TDZB2","SPN5TDZB3","SPN6ALXB1","SPN6ALXB2","SPN6ALXB3","SPN6ALYB1","SPN6ALYB2", &
-                               "SPN6ALYB3","SPN6ALZB1","SPN6ALZB2","SPN6ALZB3","SPN6FLXB1","SPN6FLXB2","SPN6FLXB3", &
-                               "SPN6FLYB1","SPN6FLYB2","SPN6FLYB3","SPN6FLZB1","SPN6FLZB2","SPN6FLZB3","SPN6MLXB1", &
-                               "SPN6MLXB2","SPN6MLXB3","SPN6MLYB1","SPN6MLYB2","SPN6MLYB3","SPN6MLZB1","SPN6MLZB2", &
-                               "SPN6MLZB3","SPN6RDXB1","SPN6RDXB2","SPN6RDXB3","SPN6RDYB1","SPN6RDYB2","SPN6RDYB3", &
-                               "SPN6RDZB1","SPN6RDZB2","SPN6RDZB3","SPN6TDXB1","SPN6TDXB2","SPN6TDXB3","SPN6TDYB1", &
-                               "SPN6TDYB2","SPN6TDYB3","SPN6TDZB1","SPN6TDZB2","SPN6TDZB3","SPN7ALXB1","SPN7ALXB2", &
-                               "SPN7ALXB3","SPN7ALYB1","SPN7ALYB2","SPN7ALYB3","SPN7ALZB1","SPN7ALZB2","SPN7ALZB3", &
-                               "SPN7FLXB1","SPN7FLXB2","SPN7FLXB3","SPN7FLYB1","SPN7FLYB2","SPN7FLYB3","SPN7FLZB1", &
-                               "SPN7FLZB2","SPN7FLZB3","SPN7MLXB1","SPN7MLXB2","SPN7MLXB3","SPN7MLYB1","SPN7MLYB2", &
-                               "SPN7MLYB3","SPN7MLZB1","SPN7MLZB2","SPN7MLZB3","SPN7RDXB1","SPN7RDXB2","SPN7RDXB3", &
-                               "SPN7RDYB1","SPN7RDYB2","SPN7RDYB3","SPN7RDZB1","SPN7RDZB2","SPN7RDZB3","SPN7TDXB1", &
-                               "SPN7TDXB2","SPN7TDXB3","SPN7TDYB1","SPN7TDYB2","SPN7TDYB3","SPN7TDZB1","SPN7TDZB2", &
-                               "SPN7TDZB3","SPN8ALXB1","SPN8ALXB2","SPN8ALXB3","SPN8ALYB1","SPN8ALYB2","SPN8ALYB3", &
-                               "SPN8ALZB1","SPN8ALZB2","SPN8ALZB3","SPN8FLXB1","SPN8FLXB2","SPN8FLXB3","SPN8FLYB1", &
-                               "SPN8FLYB2","SPN8FLYB3","SPN8FLZB1","SPN8FLZB2","SPN8FLZB3","SPN8MLXB1","SPN8MLXB2", &
-                               "SPN8MLXB3","SPN8MLYB1","SPN8MLYB2","SPN8MLYB3","SPN8MLZB1","SPN8MLZB2","SPN8MLZB3", &
-                               "SPN8RDXB1","SPN8RDXB2","SPN8RDXB3","SPN8RDYB1","SPN8RDYB2","SPN8RDYB3","SPN8RDZB1", &
-                               "SPN8RDZB2","SPN8RDZB3","SPN8TDXB1","SPN8TDXB2","SPN8TDXB3","SPN8TDYB1","SPN8TDYB2", &
-                               "SPN8TDYB3","SPN8TDZB1","SPN8TDZB2","SPN8TDZB3","SPN9ALXB1","SPN9ALXB2","SPN9ALXB3", &
-                               "SPN9ALYB1","SPN9ALYB2","SPN9ALYB3","SPN9ALZB1","SPN9ALZB2","SPN9ALZB3","SPN9FLXB1", &
-                               "SPN9FLXB2","SPN9FLXB3","SPN9FLYB1","SPN9FLYB2","SPN9FLYB3","SPN9FLZB1","SPN9FLZB2", &
-                               "SPN9FLZB3","SPN9MLXB1","SPN9MLXB2","SPN9MLXB3","SPN9MLYB1","SPN9MLYB2","SPN9MLYB3", &
-                               "SPN9MLZB1","SPN9MLZB2","SPN9MLZB3","SPN9RDXB1","SPN9RDXB2","SPN9RDXB3","SPN9RDYB1", &
-                               "SPN9RDYB2","SPN9RDYB3","SPN9RDZB1","SPN9RDZB2","SPN9RDZB3","SPN9TDXB1","SPN9TDXB2", &
-                               "SPN9TDXB3","SPN9TDYB1","SPN9TDYB2","SPN9TDYB3","SPN9TDZB1","SPN9TDZB2","SPN9TDZB3", &
-                               "TAILFURL ","TAILFURLA","TAILFURLP","TAILFURLV","TEETAYA  ","TEETDEFL ","TEETPYA  ", &
-                               "TEETVYA  ","TFRLBRM  ","TIP2TWR1 ","TIP2TWR2 ","TIP2TWR3 ","TIPALXB1 ","TIPALXB2 ", &
-                               "TIPALXB3 ","TIPALYB1 ","TIPALYB2 ","TIPALYB3 ","TIPALZB1 ","TIPALZB2 ","TIPALZB3 ", &
-                               "TIPCLRNC1","TIPCLRNC2","TIPCLRNC3","TIPDXB1  ","TIPDXB2  ","TIPDXB3  ","TIPDXC1  ", &
-                               "TIPDXC2  ","TIPDXC3  ","TIPDYB1  ","TIPDYB2  ","TIPDYB3  ","TIPDYC1  ","TIPDYC2  ", &
-                               "TIPDYC3  ","TIPDZB1  ","TIPDZB2  ","TIPDZB3  ","TIPDZC1  ","TIPDZC2  ","TIPDZC3  ", &
-                               "TIPRDXB1 ","TIPRDXB2 ","TIPRDXB3 ","TIPRDYB1 ","TIPRDYB2 ","TIPRDYB3 ","TIPRDZB1 ", &
-                               "TIPRDZB2 ","TIPRDZB3 ","TIPRDZC1 ","TIPRDZC2 ","TIPRDZC3 ","TTDSPAX  ","TTDSPFA  ", &
-                               "TTDSPPTCH","TTDSPROLL","TTDSPSS  ","TTDSPTWST","TWHT1ALXT","TWHT1ALYT","TWHT1ALZT", &
-                               "TWHT1FLXT","TWHT1FLYT","TWHT1FLZT","TWHT1MLXT","TWHT1MLYT","TWHT1MLZT","TWHT1RDXT", &
-                               "TWHT1RDYT","TWHT1RDZT","TWHT1RPXI","TWHT1RPYI","TWHT1RPZI","TWHT1TDXT","TWHT1TDYT", &
-                               "TWHT1TDZT","TWHT1TPXI","TWHT1TPYI","TWHT1TPZI","TWHT2ALXT","TWHT2ALYT","TWHT2ALZT", &
-                               "TWHT2FLXT","TWHT2FLYT","TWHT2FLZT","TWHT2MLXT","TWHT2MLYT","TWHT2MLZT","TWHT2RDXT", &
-                               "TWHT2RDYT","TWHT2RDZT","TWHT2RPXI","TWHT2RPYI","TWHT2RPZI","TWHT2TDXT","TWHT2TDYT", &
-                               "TWHT2TDZT","TWHT2TPXI","TWHT2TPYI","TWHT2TPZI","TWHT3ALXT","TWHT3ALYT","TWHT3ALZT", &
-                               "TWHT3FLXT","TWHT3FLYT","TWHT3FLZT","TWHT3MLXT","TWHT3MLYT","TWHT3MLZT","TWHT3RDXT", &
-                               "TWHT3RDYT","TWHT3RDZT","TWHT3RPXI","TWHT3RPYI","TWHT3RPZI","TWHT3TDXT","TWHT3TDYT", &
-                               "TWHT3TDZT","TWHT3TPXI","TWHT3TPYI","TWHT3TPZI","TWHT4ALXT","TWHT4ALYT","TWHT4ALZT", &
-                               "TWHT4FLXT","TWHT4FLYT","TWHT4FLZT","TWHT4MLXT","TWHT4MLYT","TWHT4MLZT","TWHT4RDXT", &
-                               "TWHT4RDYT","TWHT4RDZT","TWHT4RPXI","TWHT4RPYI","TWHT4RPZI","TWHT4TDXT","TWHT4TDYT", &
-                               "TWHT4TDZT","TWHT4TPXI","TWHT4TPYI","TWHT4TPZI","TWHT5ALXT","TWHT5ALYT","TWHT5ALZT", &
-                               "TWHT5FLXT","TWHT5FLYT","TWHT5FLZT","TWHT5MLXT","TWHT5MLYT","TWHT5MLZT","TWHT5RDXT", &
-                               "TWHT5RDYT","TWHT5RDZT","TWHT5RPXI","TWHT5RPYI","TWHT5RPZI","TWHT5TDXT","TWHT5TDYT", &
-                               "TWHT5TDZT","TWHT5TPXI","TWHT5TPYI","TWHT5TPZI","TWHT6ALXT","TWHT6ALYT","TWHT6ALZT", &
-                               "TWHT6FLXT","TWHT6FLYT","TWHT6FLZT","TWHT6MLXT","TWHT6MLYT","TWHT6MLZT","TWHT6RDXT", &
-                               "TWHT6RDYT","TWHT6RDZT","TWHT6RPXI","TWHT6RPYI","TWHT6RPZI","TWHT6TDXT","TWHT6TDYT", &
-                               "TWHT6TDZT","TWHT6TPXI","TWHT6TPYI","TWHT6TPZI","TWHT7ALXT","TWHT7ALYT","TWHT7ALZT", &
-                               "TWHT7FLXT","TWHT7FLYT","TWHT7FLZT","TWHT7MLXT","TWHT7MLYT","TWHT7MLZT","TWHT7RDXT", &
-                               "TWHT7RDYT","TWHT7RDZT","TWHT7RPXI","TWHT7RPYI","TWHT7RPZI","TWHT7TDXT","TWHT7TDYT", &
-                               "TWHT7TDZT","TWHT7TPXI","TWHT7TPYI","TWHT7TPZI","TWHT8ALXT","TWHT8ALYT","TWHT8ALZT", &
-                               "TWHT8FLXT","TWHT8FLYT","TWHT8FLZT","TWHT8MLXT","TWHT8MLYT","TWHT8MLZT","TWHT8RDXT", &
-                               "TWHT8RDYT","TWHT8RDZT","TWHT8RPXI","TWHT8RPYI","TWHT8RPZI","TWHT8TDXT","TWHT8TDYT", &
-                               "TWHT8TDZT","TWHT8TPXI","TWHT8TPYI","TWHT8TPZI","TWHT9ALXT","TWHT9ALYT","TWHT9ALZT", &
-                               "TWHT9FLXT","TWHT9FLYT","TWHT9FLZT","TWHT9MLXT","TWHT9MLYT","TWHT9MLZT","TWHT9RDXT", &
-                               "TWHT9RDYT","TWHT9RDZT","TWHT9RPXI","TWHT9RPYI","TWHT9RPZI","TWHT9TDXT","TWHT9TDYT", &
-                               "TWHT9TDZT","TWHT9TPXI","TWHT9TPYI","TWHT9TPZI","TWRBSFXT ","TWRBSFYT ","TWRBSFZT ", &
-                               "TWRBSMXT ","TWRBSMYT ","TWRBSMZT ","TWRCLRNC1","TWRCLRNC2","TWRCLRNC3","TWRTPTDXI", &
-                               "TWRTPTDYI","TWRTPTDZI","TWSTDEFL1","TWSTDEFL2","TWSTDEFL3","YAWACCEL ","YAWAZN   ", &
-                               "YAWAZP   ","YAWBRFXN ","YAWBRFXP ","YAWBRFYN ","YAWBRFYP ","YAWBRFZN ","YAWBRFZP ", &
-                               "YAWBRMXN ","YAWBRMXP ","YAWBRMYN ","YAWBRMYP ","YAWBRMZN ","YAWBRMZP ","YAWBRRAXP", &
-                               "YAWBRRAYP","YAWBRRAZP","YAWBRRDXT","YAWBRRDYT","YAWBRRDZT","YAWBRRVXP","YAWBRRVYP", &
-                               "YAWBRRVZP","YAWBRTAXP","YAWBRTAYP","YAWBRTAZP","YAWBRTDXI","YAWBRTDXP","YAWBRTDXT", &
-                               "YAWBRTDYI","YAWBRTDYP","YAWBRTDYT","YAWBRTDZI","YAWBRTDZP","YAWBRTDZT","YAWPOS   ", &
-                               "YAWPZN   ","YAWPZP   ","YAWRATE  ","YAWVZN   ","YAWVZP   "/)
-   INTEGER(IntKi), PARAMETER :: ParamIndxAry(978) =  (/ &                            ! This lists the index into AllOuts(:) of the allowed parameters ValidParamAry(:)
-                                LSSTipPxa , PtchPMzc1 , PtchPMzc2 , PtchPMzc3 , PtchPMzc1 , PtchPMzc2 , PtchPMzc3 , &
-                                  HSShftA ,   HSShftV ,   HSSBrTq ,   HSShftA , HSShftPwr ,  HSShftTq ,   HSShftV , &
-                                  TipDyc1 ,   TipDyc2 ,   TipDyc3 , LSSGagAxa , LSSGagAxa , LSSGagAxa , LSShftFxa , &
-                                LSShftFxa , LSShftFya , LSShftFys , LSShftFza , LSShftFzs , LSShftMxa , LSShftMxa , &
-                                LSSGagMya , LSSGagMys , LSSGagMza , LSSGagMzs , LSSGagPxa , LSSGagPxa , LSSGagPxa , &
-                                LSSGagVxa , LSSGagVxa , LSSGagVxa , LSShftFxa , LSShftFxa , LSShftFya , LSShftFys , &
-                                LSShftFza , LSShftFzs , LSShftMxa , LSShftMxa ,    RotPwr , LSShftMxa , LSSTipAxa , &
-                                LSSTipAxa , LSSTipAxa , LSSTipMya , LSSTipMys , LSSTipMza , LSSTipMzs , LSSTipPxa , &
-                                LSSTipPxa , LSSTipPxa , LSSTipVxa , LSSTipVxa , LSSTipVxa ,    YawPzn ,    YawAzn , &
-                                   YawPzn ,    YawVzn , NcIMURAxs , NcIMURAys , NcIMURAzs , NcIMURVxs , NcIMURVys , &
-                                NcIMURVzs , NcIMUTAxs , NcIMUTAys , NcIMUTAzs , NcIMUTVxs , NcIMUTVys , NcIMUTVzs , &
-                                  TipDxc1 ,   TipDxc2 ,   TipDxc3 ,  TipRDyb1 ,  TipRDyb2 ,  TipRDyb3 , PtchPMzc1 , &
-                                PtchPMzc2 , PtchPMzc3 , PtchPMzc1 , PtchPMzc2 , PtchPMzc3 ,  PtfmTDzi ,  PtfmRDyi , &
-                                 PtfmRAxi ,  PtfmRAxt ,  PtfmRAyi ,  PtfmRAyt ,  PtfmRAzi ,  PtfmRAzt ,  PtfmRDxi , &
-                                 PtfmRDyi ,  PtfmRDzi ,  PtfmRDxi ,  PtfmRVxi ,  PtfmRVxt ,  PtfmRVyi ,  PtfmRVyt , &
-                                 PtfmRVzi ,  PtfmRVzt ,  PtfmTDxi ,  PtfmTDyi ,  PtfmTAxi ,  PtfmTAxt ,  PtfmTAyi , &
-                                 PtfmTAyt ,  PtfmTAzi ,  PtfmTAzt ,  PtfmTDxi ,  PtfmTDxt ,  PtfmTDyi ,  PtfmTDyt , &
-                                 PtfmTDzi ,  PtfmTDzt ,  PtfmTVxi ,  PtfmTVxt ,  PtfmTVyi ,  PtfmTVyt ,  PtfmTVzi , &
-                                 PtfmTVzt ,  PtfmRDzi ,  QD2_B1E1 ,  QD2_B1F1 ,  QD2_B1F2 ,  QD2_B2E1 ,  QD2_B2F1 , &
-                                 QD2_B2F2 ,  QD2_B3E1 ,  QD2_B3F1 ,  QD2_B3F2 ,  QD2_DrTr ,  QD2_GeAz ,    QD2_Hv , &
-                                    QD2_P ,     QD2_R ,  QD2_RFrl ,    QD2_Sg ,    QD2_Sw ,  QD2_Teet ,  QD2_TFA1 , &
-                                 QD2_TFA2 ,  QD2_TFrl ,  QD2_TSS1 ,  QD2_TSS2 ,     QD2_Y ,   QD2_Yaw ,   QD_B1E1 , &
-                                  QD_B1F1 ,   QD_B1F2 ,   QD_B2E1 ,   QD_B2F1 ,   QD_B2F2 ,   QD_B3E1 ,   QD_B3F1 , &
-                                  QD_B3F2 ,   QD_DrTr ,   QD_GeAz ,     QD_Hv ,      QD_P ,      QD_R ,   QD_RFrl , &
-                                    QD_Sg ,     QD_Sw ,   QD_Teet ,   QD_TFA1 ,   QD_TFA2 ,   QD_TFrl ,   QD_TSS1 , &
-                                  QD_TSS2 ,      QD_Y ,    QD_Yaw ,    Q_B1E1 ,    Q_B1F1 ,    Q_B1F2 ,    Q_B2E1 , &
-                                   Q_B2F1 ,    Q_B2F2 ,    Q_B3E1 ,    Q_B3F1 ,    Q_B3F2 ,    Q_DrTr ,    Q_GeAz , &
-                                     Q_Hv ,       Q_P ,       Q_R ,    Q_RFrl ,      Q_Sg ,      Q_Sw ,    Q_Teet , &
-                                   Q_TFA1 ,    Q_TFA2 ,    Q_TFrl ,    Q_TSS1 ,    Q_TSS2 ,       Q_Y ,     Q_Yaw , &
-                                  RFrlBrM ,  TipRDxb1 ,  TipRDxb2 ,  TipRDxb3 ,  RootFxb1 ,  RootFxb2 ,  RootFxb3 , &
-                                 RootFxc1 ,  RootFxc2 ,  RootFxc3 ,  RootFyb1 ,  RootFyb2 ,  RootFyb3 ,  RootFyc1 , &
-                                 RootFyc2 ,  RootFyc3 ,  RootFzc1 ,  RootFzc2 ,  RootFzc3 ,  RootFzc1 ,  RootFzc2 , &
-                                 RootFzc3 ,  RootMxb1 ,  RootMxb2 ,  RootMxb3 ,  RootMyb1 ,  RootMyb2 ,  RootMyb3 , &
-                                 RootMxc1 ,  RootMxc2 ,  RootMxc3 ,  RootMyc1 ,  RootMyc2 ,  RootMyc3 ,  RootMxb1 , &
-                                 RootMxb2 ,  RootMxb3 ,  RootMxc1 ,  RootMxc2 ,  RootMxc3 ,  RootMyb1 ,  RootMyb2 , &
-                                 RootMyb3 ,  RootMyc1 ,  RootMyc2 ,  RootMyc3 ,  RootMzc1 ,  RootMzc2 ,  RootMzc3 , &
-                                 RootMzc1 ,  RootMzc2 ,  RootMzc3 , LSSTipAxa ,  RotFurlP ,  RotFurlA ,  RotFurlP , &
-                                 RotFurlV ,    RotPwr , LSSTipVxa ,   TeetAya ,   TeetPya ,   TeetVya , LSShftFxa , &
-                                LSShftMxa , Spn1ALxb1 , Spn1ALxb2 , Spn1ALxb3 , Spn1ALyb1 , Spn1ALyb2 , Spn1ALyb3 , &
-                                Spn1ALzb1 , Spn1ALzb2 , Spn1ALzb3 , Spn1FLxb1 , Spn1FLxb2 , Spn1FLxb3 , Spn1FLyb1 , &
-                                Spn1FLyb2 , Spn1FLyb3 , Spn1FLzb1 , Spn1FLzb2 , Spn1FLzb3 , Spn1MLxb1 , Spn1MLxb2 , &
-                                Spn1MLxb3 , Spn1MLyb1 , Spn1MLyb2 , Spn1MLyb3 , Spn1MLzb1 , Spn1MLzb2 , Spn1MLzb3 , &
-                                Spn1RDxb1 , Spn1RDxb2 , Spn1RDxb3 , Spn1RDyb1 , Spn1RDyb2 , Spn1RDyb3 , Spn1RDzb1 , &
-                                Spn1RDzb2 , Spn1RDzb3 , Spn1TDxb1 , Spn1TDxb2 , Spn1TDxb3 , Spn1TDyb1 , Spn1TDyb2 , &
-                                Spn1TDyb3 , Spn1TDzb1 , Spn1TDzb2 , Spn1TDzb3 , Spn2ALxb1 , Spn2ALxb2 , Spn2ALxb3 , &
-                                Spn2ALyb1 , Spn2ALyb2 , Spn2ALyb3 , Spn2ALzb1 , Spn2ALzb2 , Spn2ALzb3 , Spn2FLxb1 , &
-                                Spn2FLxb2 , Spn2FLxb3 , Spn2FLyb1 , Spn2FLyb2 , Spn2FLyb3 , Spn2FLzb1 , Spn2FLzb2 , &
-                                Spn2FLzb3 , Spn2MLxb1 , Spn2MLxb2 , Spn2MLxb3 , Spn2MLyb1 , Spn2MLyb2 , Spn2MLyb3 , &
-                                Spn2MLzb1 , Spn2MLzb2 , Spn2MLzb3 , Spn2RDxb1 , Spn2RDxb2 , Spn2RDxb3 , Spn2RDyb1 , &
-                                Spn2RDyb2 , Spn2RDyb3 , Spn2RDzb1 , Spn2RDzb2 , Spn2RDzb3 , Spn2TDxb1 , Spn2TDxb2 , &
-                                Spn2TDxb3 , Spn2TDyb1 , Spn2TDyb2 , Spn2TDyb3 , Spn2TDzb1 , Spn2TDzb2 , Spn2TDzb3 , &
-                                Spn3ALxb1 , Spn3ALxb2 , Spn3ALxb3 , Spn3ALyb1 , Spn3ALyb2 , Spn3ALyb3 , Spn3ALzb1 , &
-                                Spn3ALzb2 , Spn3ALzb3 , Spn3FLxb1 , Spn3FLxb2 , Spn3FLxb3 , Spn3FLyb1 , Spn3FLyb2 , &
-                                Spn3FLyb3 , Spn3FLzb1 , Spn3FLzb2 , Spn3FLzb3 , Spn3MLxb1 , Spn3MLxb2 , Spn3MLxb3 , &
-                                Spn3MLyb1 , Spn3MLyb2 , Spn3MLyb3 , Spn3MLzb1 , Spn3MLzb2 , Spn3MLzb3 , Spn3RDxb1 , &
-                                Spn3RDxb2 , Spn3RDxb3 , Spn3RDyb1 , Spn3RDyb2 , Spn3RDyb3 , Spn3RDzb1 , Spn3RDzb2 , &
-                                Spn3RDzb3 , Spn3TDxb1 , Spn3TDxb2 , Spn3TDxb3 , Spn3TDyb1 , Spn3TDyb2 , Spn3TDyb3 , &
-                                Spn3TDzb1 , Spn3TDzb2 , Spn3TDzb3 , Spn4ALxb1 , Spn4ALxb2 , Spn4ALxb3 , Spn4ALyb1 , &
-                                Spn4ALyb2 , Spn4ALyb3 , Spn4ALzb1 , Spn4ALzb2 , Spn4ALzb3 , Spn4FLxb1 , Spn4FLxb2 , &
-                                Spn4FLxb3 , Spn4FLyb1 , Spn4FLyb2 , Spn4FLyb3 , Spn4FLzb1 , Spn4FLzb2 , Spn4FLzb3 , &
-                                Spn4MLxb1 , Spn4MLxb2 , Spn4MLxb3 , Spn4MLyb1 , Spn4MLyb2 , Spn4MLyb3 , Spn4MLzb1 , &
-                                Spn4MLzb2 , Spn4MLzb3 , Spn4RDxb1 , Spn4RDxb2 , Spn4RDxb3 , Spn4RDyb1 , Spn4RDyb2 , &
-                                Spn4RDyb3 , Spn4RDzb1 , Spn4RDzb2 , Spn4RDzb3 , Spn4TDxb1 , Spn4TDxb2 , Spn4TDxb3 , &
-                                Spn4TDyb1 , Spn4TDyb2 , Spn4TDyb3 , Spn4TDzb1 , Spn4TDzb2 , Spn4TDzb3 , Spn5ALxb1 , &
-                                Spn5ALxb2 , Spn5ALxb3 , Spn5ALyb1 , Spn5ALyb2 , Spn5ALyb3 , Spn5ALzb1 , Spn5ALzb2 , &
-                                Spn5ALzb3 , Spn5FLxb1 , Spn5FLxb2 , Spn5FLxb3 , Spn5FLyb1 , Spn5FLyb2 , Spn5FLyb3 , &
-                                Spn5FLzb1 , Spn5FLzb2 , Spn5FLzb3 , Spn5MLxb1 , Spn5MLxb2 , Spn5MLxb3 , Spn5MLyb1 , &
-                                Spn5MLyb2 , Spn5MLyb3 , Spn5MLzb1 , Spn5MLzb2 , Spn5MLzb3 , Spn5RDxb1 , Spn5RDxb2 , &
-                                Spn5RDxb3 , Spn5RDyb1 , Spn5RDyb2 , Spn5RDyb3 , Spn5RDzb1 , Spn5RDzb2 , Spn5RDzb3 , &
-                                Spn5TDxb1 , Spn5TDxb2 , Spn5TDxb3 , Spn5TDyb1 , Spn5TDyb2 , Spn5TDyb3 , Spn5TDzb1 , &
-                                Spn5TDzb2 , Spn5TDzb3 , Spn6ALxb1 , Spn6ALxb2 , Spn6ALxb3 , Spn6ALyb1 , Spn6ALyb2 , &
-                                Spn6ALyb3 , Spn6ALzb1 , Spn6ALzb2 , Spn6ALzb3 , Spn6FLxb1 , Spn6FLxb2 , Spn6FLxb3 , &
-                                Spn6FLyb1 , Spn6FLyb2 , Spn6FLyb3 , Spn6FLzb1 , Spn6FLzb2 , Spn6FLzb3 , Spn6MLxb1 , &
-                                Spn6MLxb2 , Spn6MLxb3 , Spn6MLyb1 , Spn6MLyb2 , Spn6MLyb3 , Spn6MLzb1 , Spn6MLzb2 , &
-                                Spn6MLzb3 , Spn6RDxb1 , Spn6RDxb2 , Spn6RDxb3 , Spn6RDyb1 , Spn6RDyb2 , Spn6RDyb3 , &
-                                Spn6RDzb1 , Spn6RDzb2 , Spn6RDzb3 , Spn6TDxb1 , Spn6TDxb2 , Spn6TDxb3 , Spn6TDyb1 , &
-                                Spn6TDyb2 , Spn6TDyb3 , Spn6TDzb1 , Spn6TDzb2 , Spn6TDzb3 , Spn7ALxb1 , Spn7ALxb2 , &
-                                Spn7ALxb3 , Spn7ALyb1 , Spn7ALyb2 , Spn7ALyb3 , Spn7ALzb1 , Spn7ALzb2 , Spn7ALzb3 , &
-                                Spn7FLxb1 , Spn7FLxb2 , Spn7FLxb3 , Spn7FLyb1 , Spn7FLyb2 , Spn7FLyb3 , Spn7FLzb1 , &
-                                Spn7FLzb2 , Spn7FLzb3 , Spn7MLxb1 , Spn7MLxb2 , Spn7MLxb3 , Spn7MLyb1 , Spn7MLyb2 , &
-                                Spn7MLyb3 , Spn7MLzb1 , Spn7MLzb2 , Spn7MLzb3 , Spn7RDxb1 , Spn7RDxb2 , Spn7RDxb3 , &
-                                Spn7RDyb1 , Spn7RDyb2 , Spn7RDyb3 , Spn7RDzb1 , Spn7RDzb2 , Spn7RDzb3 , Spn7TDxb1 , &
-                                Spn7TDxb2 , Spn7TDxb3 , Spn7TDyb1 , Spn7TDyb2 , Spn7TDyb3 , Spn7TDzb1 , Spn7TDzb2 , &
-                                Spn7TDzb3 , Spn8ALxb1 , Spn8ALxb2 , Spn8ALxb3 , Spn8ALyb1 , Spn8ALyb2 , Spn8ALyb3 , &
-                                Spn8ALzb1 , Spn8ALzb2 , Spn8ALzb3 , Spn8FLxb1 , Spn8FLxb2 , Spn8FLxb3 , Spn8FLyb1 , &
-                                Spn8FLyb2 , Spn8FLyb3 , Spn8FLzb1 , Spn8FLzb2 , Spn8FLzb3 , Spn8MLxb1 , Spn8MLxb2 , &
-                                Spn8MLxb3 , Spn8MLyb1 , Spn8MLyb2 , Spn8MLyb3 , Spn8MLzb1 , Spn8MLzb2 , Spn8MLzb3 , &
-                                Spn8RDxb1 , Spn8RDxb2 , Spn8RDxb3 , Spn8RDyb1 , Spn8RDyb2 , Spn8RDyb3 , Spn8RDzb1 , &
-                                Spn8RDzb2 , Spn8RDzb3 , Spn8TDxb1 , Spn8TDxb2 , Spn8TDxb3 , Spn8TDyb1 , Spn8TDyb2 , &
-                                Spn8TDyb3 , Spn8TDzb1 , Spn8TDzb2 , Spn8TDzb3 , Spn9ALxb1 , Spn9ALxb2 , Spn9ALxb3 , &
-                                Spn9ALyb1 , Spn9ALyb2 , Spn9ALyb3 , Spn9ALzb1 , Spn9ALzb2 , Spn9ALzb3 , Spn9FLxb1 , &
-                                Spn9FLxb2 , Spn9FLxb3 , Spn9FLyb1 , Spn9FLyb2 , Spn9FLyb3 , Spn9FLzb1 , Spn9FLzb2 , &
-                                Spn9FLzb3 , Spn9MLxb1 , Spn9MLxb2 , Spn9MLxb3 , Spn9MLyb1 , Spn9MLyb2 , Spn9MLyb3 , &
-                                Spn9MLzb1 , Spn9MLzb2 , Spn9MLzb3 , Spn9RDxb1 , Spn9RDxb2 , Spn9RDxb3 , Spn9RDyb1 , &
-                                Spn9RDyb2 , Spn9RDyb3 , Spn9RDzb1 , Spn9RDzb2 , Spn9RDzb3 , Spn9TDxb1 , Spn9TDxb2 , &
-                                Spn9TDxb3 , Spn9TDyb1 , Spn9TDyb2 , Spn9TDyb3 , Spn9TDzb1 , Spn9TDzb2 , Spn9TDzb3 , &
-                                TailFurlP , TailFurlA , TailFurlP , TailFurlV ,   TeetAya ,   TeetPya ,   TeetPya , &
-                                  TeetVya ,   TFrlBrM , TipClrnc1 , TipClrnc2 , TipClrnc3 ,  TipALxb1 ,  TipALxb2 , &
-                                 TipALxb3 ,  TipALyb1 ,  TipALyb2 ,  TipALyb3 ,  TipALzb1 ,  TipALzb2 ,  TipALzb3 , &
-                                TipClrnc1 , TipClrnc2 , TipClrnc3 ,   TipDxb1 ,   TipDxb2 ,   TipDxb3 ,   TipDxc1 , &
-                                  TipDxc2 ,   TipDxc3 ,   TipDyb1 ,   TipDyb2 ,   TipDyb3 ,   TipDyc1 ,   TipDyc2 , &
-                                  TipDyc3 ,   TipDzc1 ,   TipDzc2 ,   TipDzc3 ,   TipDzc1 ,   TipDzc2 ,   TipDzc3 , &
-                                 TipRDxb1 ,  TipRDxb2 ,  TipRDxb3 ,  TipRDyb1 ,  TipRDyb2 ,  TipRDyb3 ,  TipRDzc1 , &
-                                 TipRDzc2 ,  TipRDzc3 ,  TipRDzc1 ,  TipRDzc2 ,  TipRDzc3 , YawBrTDzt , YawBrTDxt , &
-                                YawBrRDyt , YawBrRDxt , YawBrTDyt , YawBrRDzt , TwHt1ALxt , TwHt1ALyt , TwHt1ALzt , &
-                                TwHt1FLxt , TwHt1FLyt , TwHt1FLzt , TwHt1MLxt , TwHt1MLyt , TwHt1MLzt , TwHt1RDxt , &
-                                TwHt1RDyt , TwHt1RDzt , TwHt1RPxi , TwHt1RPyi , TwHt1RPzi , TwHt1TDxt , TwHt1TDyt , &
-                                TwHt1TDzt , TwHt1TPxi , TwHt1TPyi , TwHt1TPzi , TwHt2ALxt , TwHt2ALyt , TwHt2ALzt , &
-                                TwHt2FLxt , TwHt2FLyt , TwHt2FLzt , TwHt2MLxt , TwHt2MLyt , TwHt2MLzt , TwHt2RDxt , &
-                                TwHt2RDyt , TwHt2RDzt , TwHt2RPxi , TwHt2RPyi , TwHt2RPzi , TwHt2TDxt , TwHt2TDyt , &
-                                TwHt2TDzt , TwHt2TPxi , TwHt2TPyi , TwHt2TPzi , TwHt3ALxt , TwHt3ALyt , TwHt3ALzt , &
-                                TwHt3FLxt , TwHt3FLyt , TwHt3FLzt , TwHt3MLxt , TwHt3MLyt , TwHt3MLzt , TwHt3RDxt , &
-                                TwHt3RDyt , TwHt3RDzt , TwHt3RPxi , TwHt3RPyi , TwHt3RPzi , TwHt3TDxt , TwHt3TDyt , &
-                                TwHt3TDzt , TwHt3TPxi , TwHt3TPyi , TwHt3TPzi , TwHt4ALxt , TwHt4ALyt , TwHt4ALzt , &
-                                TwHt4FLxt , TwHt4FLyt , TwHt4FLzt , TwHt4MLxt , TwHt4MLyt , TwHt4MLzt , TwHt4RDxt , &
-                                TwHt4RDyt , TwHt4RDzt , TwHt4RPxi , TwHt4RPyi , TwHt4RPzi , TwHt4TDxt , TwHt4TDyt , &
-                                TwHt4TDzt , TwHt4TPxi , TwHt4TPyi , TwHt4TPzi , TwHt5ALxt , TwHt5ALyt , TwHt5ALzt , &
-                                TwHt5FLxt , TwHt5FLyt , TwHt5FLzt , TwHt5MLxt , TwHt5MLyt , TwHt5MLzt , TwHt5RDxt , &
-                                TwHt5RDyt , TwHt5RDzt , TwHt5RPxi , TwHt5RPyi , TwHt5RPzi , TwHt5TDxt , TwHt5TDyt , &
-                                TwHt5TDzt , TwHt5TPxi , TwHt5TPyi , TwHt5TPzi , TwHt6ALxt , TwHt6ALyt , TwHt6ALzt , &
-                                TwHt6FLxt , TwHt6FLyt , TwHt6FLzt , TwHt6MLxt , TwHt6MLyt , TwHt6MLzt , TwHt6RDxt , &
-                                TwHt6RDyt , TwHt6RDzt , TwHt6RPxi , TwHt6RPyi , TwHt6RPzi , TwHt6TDxt , TwHt6TDyt , &
-                                TwHt6TDzt , TwHt6TPxi , TwHt6TPyi , TwHt6TPzi , TwHt7ALxt , TwHt7ALyt , TwHt7ALzt , &
-                                TwHt7FLxt , TwHt7FLyt , TwHt7FLzt , TwHt7MLxt , TwHt7MLyt , TwHt7MLzt , TwHt7RDxt , &
-                                TwHt7RDyt , TwHt7RDzt , TwHt7RPxi , TwHt7RPyi , TwHt7RPzi , TwHt7TDxt , TwHt7TDyt , &
-                                TwHt7TDzt , TwHt7TPxi , TwHt7TPyi , TwHt7TPzi , TwHt8ALxt , TwHt8ALyt , TwHt8ALzt , &
-                                TwHt8FLxt , TwHt8FLyt , TwHt8FLzt , TwHt8MLxt , TwHt8MLyt , TwHt8MLzt , TwHt8RDxt , &
-                                TwHt8RDyt , TwHt8RDzt , TwHt8RPxi , TwHt8RPyi , TwHt8RPzi , TwHt8TDxt , TwHt8TDyt , &
-                                TwHt8TDzt , TwHt8TPxi , TwHt8TPyi , TwHt8TPzi , TwHt9ALxt , TwHt9ALyt , TwHt9ALzt , &
-                                TwHt9FLxt , TwHt9FLyt , TwHt9FLzt , TwHt9MLxt , TwHt9MLyt , TwHt9MLzt , TwHt9RDxt , &
-                                TwHt9RDyt , TwHt9RDzt , TwHt9RPxi , TwHt9RPyi , TwHt9RPzi , TwHt9TDxt , TwHt9TDyt , &
-                                TwHt9TDzt , TwHt9TPxi , TwHt9TPyi , TwHt9TPzi ,  TwrBsFxt ,  TwrBsFyt ,  TwrBsFzt , &
-                                 TwrBsMxt ,  TwrBsMyt ,  TwrBsMzt , TipClrnc1 , TipClrnc2 , TipClrnc3 , TwrTpTDxi , &
-                                TwrTpTDyi , TwrTpTDzi ,  TipRDzc1 ,  TipRDzc2 ,  TipRDzc3 ,    YawAzn ,    YawAzn , &
-                                   YawAzn ,  YawBrFxn ,  YawBrFxp ,  YawBrFyn ,  YawBrFyp ,  YawBrFzn ,  YawBrFzn , &
-                                 YawBrMxn ,  YawBrMxp ,  YawBrMyn ,  YawBrMyp ,  YawBrMzn ,  YawBrMzn , YawBrRAxp , &
-                                YawBrRAyp , YawBrRAzp , YawBrRDxt , YawBrRDyt , YawBrRDzt , YawBrRVxp , YawBrRVyp , &
-                                YawBrRVzp , YawBrTAxp , YawBrTAyp , YawBrTAzp , TwrTpTDxi , YawBrTDxp , YawBrTDxt , &
-                                TwrTpTDyi , YawBrTDyp , YawBrTDyt , TwrTpTDzi , YawBrTDzp , YawBrTDzt ,    YawPzn , &
-                                   YawPzn ,    YawPzn ,    YawVzn ,    YawVzn ,    YawVzn /)
-   CHARACTER(ChanLen), PARAMETER :: ParamUnitsAry(978) =  (/ &                     ! This lists the units corresponding to the allowed parameters
-                               "(deg)     ","(deg)     ","(deg)     ","(deg)     ","(deg)     ","(deg)     ","(deg)     ", &
-                               "(deg/s^2) ","(rpm)     ","(kN-m)    ","(deg/s^2) ","(kW)      ","(kN-m)    ","(rpm)     ", &
-                               "(m)       ","(m)       ","(m)       ","(deg/s^2) ","(deg/s^2) ","(deg/s^2) ","(kN)      ", &
-                               "(kN)      ","(kN)      ","(kN)      ","(kN)      ","(kN)      ","(kN-m)    ","(kN-m)    ", &
-                               "(kN-m)    ","(kN-m)    ","(kN-m)    ","(kN-m)    ","(deg)     ","(deg)     ","(deg)     ", &
-                               "(rpm)     ","(rpm)     ","(rpm)     ","(kN)      ","(kN)      ","(kN)      ","(kN)      ", &
-                               "(kN)      ","(kN)      ","(kN-m)    ","(kN-m)    ","(kW)      ","(kN-m)    ","(deg/s^2) ", &
-                               "(deg/s^2) ","(deg/s^2) ","(kN-m)    ","(kN-m)    ","(kN-m)    ","(kN-m)    ","(deg)     ", &
-                               "(deg)     ","(deg)     ","(rpm)     ","(rpm)     ","(rpm)     ","(deg)     ","(deg/s^2) ", &
-                               "(deg)     ","(deg/s)   ","(deg/s^2) ","(deg/s^2) ","(deg/s^2) ","(deg/s)   ","(deg/s)   ", &
-                               "(deg/s)   ","(m/s^2)   ","(m/s^2)   ","(m/s^2)   ","(m/s)     ","(m/s)     ","(m/s)     ", &
-                               "(m)       ","(m)       ","(m)       ","(deg)     ","(deg)     ","(deg)     ","(deg)     ", &
-                               "(deg)     ","(deg)     ","(deg)     ","(deg)     ","(deg)     ","(m)       ","(deg)     ", &
-                               "(deg/s^2) ","(deg/s^2) ","(deg/s^2) ","(deg/s^2) ","(deg/s^2) ","(deg/s^2) ","(deg)     ", &
-                               "(deg)     ","(deg)     ","(deg)     ","(deg/s)   ","(deg/s)   ","(deg/s)   ","(deg/s)   ", &
-                               "(deg/s)   ","(deg/s)   ","(m)       ","(m)       ","(m/s^2)   ","(m/s^2)   ","(m/s^2)   ", &
-                               "(m/s^2)   ","(m/s^2)   ","(m/s^2)   ","(m)       ","(m)       ","(m)       ","(m)       ", &
-                               "(m)       ","(m)       ","(m/s)     ","(m/s)     ","(m/s)     ","(m/s)     ","(m/s)     ", &
-                               "(m/s)     ","(deg)     ","(m/s^2)   ","(m/s^2)   ","(m/s^2)   ","(m/s^2)   ","(m/s^2)   ", &
-                               "(m/s^2)   ","(m/s^2)   ","(m/s^2)   ","(m/s^2)   ","(rad/s^2) ","(rad/s^2) ","(m/s^2)   ", &
-                               "(rad/s^2) ","(rad/s^2) ","(rad/s^2) ","(m/s^2)   ","(m/s^2)   ","(rad/s^2) ","(m/s^2)   ", &
-                               "(m/s^2)   ","(rad/s^2) ","(m/s^2)   ","(m/s^2)   ","(rad/s^2) ","(rad/s^2) ","(m/s)     ", &
-                               "(m/s)     ","(m/s)     ","(m/s)     ","(m/s)     ","(m/s)     ","(m/s)     ","(m/s)     ", &
-                               "(m/s)     ","(rad/s)   ","(rad/s)   ","(m/s)     ","(rad/s)   ","(rad/s)   ","(rad/s)   ", &
-                               "(m/s)     ","(m/s)     ","(rad/s)   ","(m/s)     ","(m/s)     ","(rad/s)   ","(m/s)     ", &
-                               "(m/s)     ","(rad/s)   ","(rad/s)   ","(m)       ","(m)       ","(m)       ","(m)       ", &
-                               "(m)       ","(m)       ","(m)       ","(m)       ","(m)       ","(rad)     ","(rad)     ", &
-                               "(m)       ","(rad)     ","(rad)     ","(rad)     ","(m)       ","(m)       ","(rad)     ", &
-                               "(m)       ","(m)       ","(rad)     ","(m)       ","(m)       ","(rad)     ","(rad)     ", &
-                               "(kN-m)    ","(deg)     ","(deg)     ","(deg)     ","(kN)      ","(kN)      ","(kN)      ", &
-                               "(kN)      ","(kN)      ","(kN)      ","(kN)      ","(kN)      ","(kN)      ","(kN)      ", &
-                               "(kN)      ","(kN)      ","(kN)      ","(kN)      ","(kN)      ","(kN)      ","(kN)      ", &
-                               "(kN)      ","(kN-m)    ","(kN-m)    ","(kN-m)    ","(kN-m)    ","(kN-m)    ","(kN-m)    ", &
-                               "(kN-m)    ","(kN-m)    ","(kN-m)    ","(kN-m)    ","(kN-m)    ","(kN-m)    ","(kN-m)    ", &
-                               "(kN-m)    ","(kN-m)    ","(kN-m)    ","(kN-m)    ","(kN-m)    ","(kN-m)    ","(kN-m)    ", &
-                               "(kN-m)    ","(kN-m)    ","(kN-m)    ","(kN-m)    ","(kN-m)    ","(kN-m)    ","(kN-m)    ", &
-                               "(kN-m)    ","(kN-m)    ","(kN-m)    ","(deg/s^2) ","(deg)     ","(deg/s^2) ","(deg)     ", &
-                               "(deg/s)   ","(kW)      ","(rpm)     ","(deg/s^2) ","(deg)     ","(deg/s)   ","(kN)      ", &
-                               "(kN-m)    ","(m/s^2)   ","(m/s^2)   ","(m/s^2)   ","(m/s^2)   ","(m/s^2)   ","(m/s^2)   ", &
-                               "(m/s^2)   ","(m/s^2)   ","(m/s^2)   ","(kN)      ","(kN)      ","(kN)      ","(kN)      ", &
-                               "(kN)      ","(kN)      ","(kN)      ","(kN)      ","(kN)      ","(kN-m)    ","(kN-m)    ", &
-                               "(kN-m)    ","(kN-m)    ","(kN-m)    ","(kN-m)    ","(kN-m)    ","(kN-m)    ","(kN-m)    ", &
-                               "(deg)     ","(deg)     ","(deg)     ","(deg)     ","(deg)     ","(deg)     ","(deg)     ", &
-                               "(deg)     ","(deg)     ","(m)       ","(m)       ","(m)       ","(m)       ","(m)       ", &
-                               "(m)       ","(m)       ","(m)       ","(m)       ","(m/s^2)   ","(m/s^2)   ","(m/s^2)   ", &
-                               "(m/s^2)   ","(m/s^2)   ","(m/s^2)   ","(m/s^2)   ","(m/s^2)   ","(m/s^2)   ","(kN)      ", &
-                               "(kN)      ","(kN)      ","(kN)      ","(kN)      ","(kN)      ","(kN)      ","(kN)      ", &
-                               "(kN)      ","(kN-m)    ","(kN-m)    ","(kN-m)    ","(kN-m)    ","(kN-m)    ","(kN-m)    ", &
-                               "(kN-m)    ","(kN-m)    ","(kN-m)    ","(deg)     ","(deg)     ","(deg)     ","(deg)     ", &
-                               "(deg)     ","(deg)     ","(deg)     ","(deg)     ","(deg)     ","(m)       ","(m)       ", &
-                               "(m)       ","(m)       ","(m)       ","(m)       ","(m)       ","(m)       ","(m)       ", &
-                               "(m/s^2)   ","(m/s^2)   ","(m/s^2)   ","(m/s^2)   ","(m/s^2)   ","(m/s^2)   ","(m/s^2)   ", &
-                               "(m/s^2)   ","(m/s^2)   ","(kN)      ","(kN)      ","(kN)      ","(kN)      ","(kN)      ", &
-                               "(kN)      ","(kN)      ","(kN)      ","(kN)      ","(kN-m)    ","(kN-m)    ","(kN-m)    ", &
-                               "(kN-m)    ","(kN-m)    ","(kN-m)    ","(kN-m)    ","(kN-m)    ","(kN-m)    ","(deg)     ", &
-                               "(deg)     ","(deg)     ","(deg)     ","(deg)     ","(deg)     ","(deg)     ","(deg)     ", &
-                               "(deg)     ","(m)       ","(m)       ","(m)       ","(m)       ","(m)       ","(m)       ", &
-                               "(m)       ","(m)       ","(m)       ","(m/s^2)   ","(m/s^2)   ","(m/s^2)   ","(m/s^2)   ", &
-                               "(m/s^2)   ","(m/s^2)   ","(m/s^2)   ","(m/s^2)   ","(m/s^2)   ","(kN)      ","(kN)      ", &
-                               "(kN)      ","(kN)      ","(kN)      ","(kN)      ","(kN)      ","(kN)      ","(kN)      ", &
-                               "(kN-m)    ","(kN-m)    ","(kN-m)    ","(kN-m)    ","(kN-m)    ","(kN-m)    ","(kN-m)    ", &
-                               "(kN-m)    ","(kN-m)    ","(deg)     ","(deg)     ","(deg)     ","(deg)     ","(deg)     ", &
-                               "(deg)     ","(deg)     ","(deg)     ","(deg)     ","(m)       ","(m)       ","(m)       ", &
-                               "(m)       ","(m)       ","(m)       ","(m)       ","(m)       ","(m)       ","(m/s^2)   ", &
-                               "(m/s^2)   ","(m/s^2)   ","(m/s^2)   ","(m/s^2)   ","(m/s^2)   ","(m/s^2)   ","(m/s^2)   ", &
-                               "(m/s^2)   ","(kN)      ","(kN)      ","(kN)      ","(kN)      ","(kN)      ","(kN)      ", &
-                               "(kN)      ","(kN)      ","(kN)      ","(kN-m)    ","(kN-m)    ","(kN-m)    ","(kN-m)    ", &
-                               "(kN-m)    ","(kN-m)    ","(kN-m)    ","(kN-m)    ","(kN-m)    ","(deg)     ","(deg)     ", &
-                               "(deg)     ","(deg)     ","(deg)     ","(deg)     ","(deg)     ","(deg)     ","(deg)     ", &
-                               "(m)       ","(m)       ","(m)       ","(m)       ","(m)       ","(m)       ","(m)       ", &
-                               "(m)       ","(m)       ","(m/s^2)   ","(m/s^2)   ","(m/s^2)   ","(m/s^2)   ","(m/s^2)   ", &
-                               "(m/s^2)   ","(m/s^2)   ","(m/s^2)   ","(m/s^2)   ","(kN)      ","(kN)      ","(kN)      ", &
-                               "(kN)      ","(kN)      ","(kN)      ","(kN)      ","(kN)      ","(kN)      ","(kN-m)    ", &
-                               "(kN-m)    ","(kN-m)    ","(kN-m)    ","(kN-m)    ","(kN-m)    ","(kN-m)    ","(kN-m)    ", &
-                               "(kN-m)    ","(deg)     ","(deg)     ","(deg)     ","(deg)     ","(deg)     ","(deg)     ", &
-                               "(deg)     ","(deg)     ","(deg)     ","(m)       ","(m)       ","(m)       ","(m)       ", &
-                               "(m)       ","(m)       ","(m)       ","(m)       ","(m)       ","(m/s^2)   ","(m/s^2)   ", &
-                               "(m/s^2)   ","(m/s^2)   ","(m/s^2)   ","(m/s^2)   ","(m/s^2)   ","(m/s^2)   ","(m/s^2)   ", &
-                               "(kN)      ","(kN)      ","(kN)      ","(kN)      ","(kN)      ","(kN)      ","(kN)      ", &
-                               "(kN)      ","(kN)      ","(kN-m)    ","(kN-m)    ","(kN-m)    ","(kN-m)    ","(kN-m)    ", &
-                               "(kN-m)    ","(kN-m)    ","(kN-m)    ","(kN-m)    ","(deg)     ","(deg)     ","(deg)     ", &
-                               "(deg)     ","(deg)     ","(deg)     ","(deg)     ","(deg)     ","(deg)     ","(m)       ", &
-                               "(m)       ","(m)       ","(m)       ","(m)       ","(m)       ","(m)       ","(m)       ", &
-                               "(m)       ","(m/s^2)   ","(m/s^2)   ","(m/s^2)   ","(m/s^2)   ","(m/s^2)   ","(m/s^2)   ", &
-                               "(m/s^2)   ","(m/s^2)   ","(m/s^2)   ","(kN)      ","(kN)      ","(kN)      ","(kN)      ", &
-                               "(kN)      ","(kN)      ","(kN)      ","(kN)      ","(kN)      ","(kN-m)    ","(kN-m)    ", &
-                               "(kN-m)    ","(kN-m)    ","(kN-m)    ","(kN-m)    ","(kN-m)    ","(kN-m)    ","(kN-m)    ", &
-                               "(deg)     ","(deg)     ","(deg)     ","(deg)     ","(deg)     ","(deg)     ","(deg)     ", &
-                               "(deg)     ","(deg)     ","(m)       ","(m)       ","(m)       ","(m)       ","(m)       ", &
-                               "(m)       ","(m)       ","(m)       ","(m)       ","(m/s^2)   ","(m/s^2)   ","(m/s^2)   ", &
-                               "(m/s^2)   ","(m/s^2)   ","(m/s^2)   ","(m/s^2)   ","(m/s^2)   ","(m/s^2)   ","(kN)      ", &
-                               "(kN)      ","(kN)      ","(kN)      ","(kN)      ","(kN)      ","(kN)      ","(kN)      ", &
-                               "(kN)      ","(kN-m)    ","(kN-m)    ","(kN-m)    ","(kN-m)    ","(kN-m)    ","(kN-m)    ", &
-                               "(kN-m)    ","(kN-m)    ","(kN-m)    ","(deg)     ","(deg)     ","(deg)     ","(deg)     ", &
-                               "(deg)     ","(deg)     ","(deg)     ","(deg)     ","(deg)     ","(m)       ","(m)       ", &
-                               "(m)       ","(m)       ","(m)       ","(m)       ","(m)       ","(m)       ","(m)       ", &
-                               "(deg)     ","(deg/s^2) ","(deg)     ","(deg/s)   ","(deg/s^2) ","(deg)     ","(deg)     ", &
-                               "(deg/s)   ","(kN-m)    ","(m)       ","(m)       ","(m)       ","(m/s^2)   ","(m/s^2)   ", &
-                               "(m/s^2)   ","(m/s^2)   ","(m/s^2)   ","(m/s^2)   ","(m/s^2)   ","(m/s^2)   ","(m/s^2)   ", &
-                               "(m)       ","(m)       ","(m)       ","(m)       ","(m)       ","(m)       ","(m)       ", &
-                               "(m)       ","(m)       ","(m)       ","(m)       ","(m)       ","(m)       ","(m)       ", &
-                               "(m)       ","(m)       ","(m)       ","(m)       ","(m)       ","(m)       ","(m)       ", &
-                               "(deg)     ","(deg)     ","(deg)     ","(deg)     ","(deg)     ","(deg)     ","(deg)     ", &
-                               "(deg)     ","(deg)     ","(deg)     ","(deg)     ","(deg)     ","(m)       ","(m)       ", &
-                               "(deg)     ","(deg)     ","(m)       ","(deg)     ","(m/s^2)   ","(m/s^2)   ","(m/s^2)   ", &
-                               "(kN)      ","(kN)      ","(kN)      ","(kN-m)    ","(kN-m)    ","(kN-m)    ","(deg)     ", &
-                               "(deg)     ","(deg)     ","(deg)     ","(deg)     ","(deg)     ","(m)       ","(m)       ", &
-                               "(m)       ","(m)       ","(m)       ","(m)       ","(m/s^2)   ","(m/s^2)   ","(m/s^2)   ", &
-                               "(kN)      ","(kN)      ","(kN)      ","(kN-m)    ","(kN-m)    ","(kN-m)    ","(deg)     ", &
-                               "(deg)     ","(deg)     ","(deg)     ","(deg)     ","(deg)     ","(m)       ","(m)       ", &
-                               "(m)       ","(m)       ","(m)       ","(m)       ","(m/s^2)   ","(m/s^2)   ","(m/s^2)   ", &
-                               "(kN)      ","(kN)      ","(kN)      ","(kN-m)    ","(kN-m)    ","(kN-m)    ","(deg)     ", &
-                               "(deg)     ","(deg)     ","(deg)     ","(deg)     ","(deg)     ","(m)       ","(m)       ", &
-                               "(m)       ","(m)       ","(m)       ","(m)       ","(m/s^2)   ","(m/s^2)   ","(m/s^2)   ", &
-                               "(kN)      ","(kN)      ","(kN)      ","(kN-m)    ","(kN-m)    ","(kN-m)    ","(deg)     ", &
-                               "(deg)     ","(deg)     ","(deg)     ","(deg)     ","(deg)     ","(m)       ","(m)       ", &
-                               "(m)       ","(m)       ","(m)       ","(m)       ","(m/s^2)   ","(m/s^2)   ","(m/s^2)   ", &
-                               "(kN)      ","(kN)      ","(kN)      ","(kN-m)    ","(kN-m)    ","(kN-m)    ","(deg)     ", &
-                               "(deg)     ","(deg)     ","(deg)     ","(deg)     ","(deg)     ","(m)       ","(m)       ", &
-                               "(m)       ","(m)       ","(m)       ","(m)       ","(m/s^2)   ","(m/s^2)   ","(m/s^2)   ", &
-                               "(kN)      ","(kN)      ","(kN)      ","(kN-m)    ","(kN-m)    ","(kN-m)    ","(deg)     ", &
-                               "(deg)     ","(deg)     ","(deg)     ","(deg)     ","(deg)     ","(m)       ","(m)       ", &
-                               "(m)       ","(m)       ","(m)       ","(m)       ","(m/s^2)   ","(m/s^2)   ","(m/s^2)   ", &
-                               "(kN)      ","(kN)      ","(kN)      ","(kN-m)    ","(kN-m)    ","(kN-m)    ","(deg)     ", &
-                               "(deg)     ","(deg)     ","(deg)     ","(deg)     ","(deg)     ","(m)       ","(m)       ", &
-                               "(m)       ","(m)       ","(m)       ","(m)       ","(m/s^2)   ","(m/s^2)   ","(m/s^2)   ", &
-                               "(kN)      ","(kN)      ","(kN)      ","(kN-m)    ","(kN-m)    ","(kN-m)    ","(deg)     ", &
-                               "(deg)     ","(deg)     ","(deg)     ","(deg)     ","(deg)     ","(m)       ","(m)       ", &
-                               "(m)       ","(m)       ","(m)       ","(m)       ","(m/s^2)   ","(m/s^2)   ","(m/s^2)   ", &
-                               "(kN)      ","(kN)      ","(kN)      ","(kN-m)    ","(kN-m)    ","(kN-m)    ","(deg)     ", &
-                               "(deg)     ","(deg)     ","(deg)     ","(deg)     ","(deg)     ","(m)       ","(m)       ", &
-                               "(m)       ","(m)       ","(m)       ","(m)       ","(kN)      ","(kN)      ","(kN)      ", &
-                               "(kN-m)    ","(kN-m)    ","(kN-m)    ","(m)       ","(m)       ","(m)       ","(m)       ", &
-                               "(m)       ","(m)       ","(deg)     ","(deg)     ","(deg)     ","(deg/s^2) ","(deg/s^2) ", &
-                               "(deg/s^2) ","(kN)      ","(kN)      ","(kN)      ","(kN)      ","(kN)      ","(kN)      ", &
-                               "(kN-m)    ","(kN-m)    ","(kN-m)    ","(kN-m)    ","(kN-m)    ","(kN-m)    ","(deg/s^2) ", &
-                               "(deg/s^2) ","(deg/s^2) ","(deg)     ","(deg)     ","(deg)     ","(deg/s)   ","(deg/s)   ", &
-                               "(deg/s)   ","(m/s^2)   ","(m/s^2)   ","(m/s^2)   ","(m)       ","(m)       ","(m)       ", &
-                               "(m)       ","(m)       ","(m)       ","(m)       ","(m)       ","(m)       ","(deg)     ", &
-                               "(deg)     ","(deg)     ","(deg/s)   ","(deg/s)   ","(deg/s)   "/)
+   
+   CHARACTER(OutStrLenM1), PARAMETER  :: ValidParamAry(1121) =  (/  &   ! This lists the names of the allowed parameters, which must be sorted alphabetically
+                               "AZIMUTH   ","BLDPACC1  ","BLDPACC2  ","BLDPACC3  ","BLDPITCH1 ","BLDPITCH2 ","BLDPITCH3 ", &
+                               "BLDPRATE1 ","BLDPRATE2 ","BLDPRATE3 ","BLPITCH1  ","BLPITCH2  ","BLPITCH3  ","DOMEGAYF  ", &
+                               "GENACCEL  ","GENSPEED  ","HSSBRTQ   ","HSSHFTA   ","HSSHFTPWR ","HSSHFTTQ  ","HSSHFTV   ", &
+                               "IPDEFL1   ","IPDEFL2   ","IPDEFL3   ","LSSGAGA   ","LSSGAGAXA ","LSSGAGAXS ","LSSGAGFXA ", &
+                               "LSSGAGFXS ","LSSGAGFYA ","LSSGAGFYS ","LSSGAGFZA ","LSSGAGFZS ","LSSGAGMXA ","LSSGAGMXS ", &
+                               "LSSGAGMYA ","LSSGAGMYS ","LSSGAGMZA ","LSSGAGMZS ","LSSGAGP   ","LSSGAGPXA ","LSSGAGPXS ", &
+                               "LSSGAGV   ","LSSGAGVXA ","LSSGAGVXS ","LSSHFTFXA ","LSSHFTFXS ","LSSHFTFYA ","LSSHFTFYS ", &
+                               "LSSHFTFZA ","LSSHFTFZS ","LSSHFTMXA ","LSSHFTMXS ","LSSHFTPWR ","LSSHFTTQ  ","LSSTIPA   ", &
+                               "LSSTIPAXA ","LSSTIPAXS ","LSSTIPMYA ","LSSTIPMYS ","LSSTIPMZA ","LSSTIPMZS ","LSSTIPP   ", &
+                               "LSSTIPPXA ","LSSTIPPXS ","LSSTIPV   ","LSSTIPVXA ","LSSTIPVXS ","NACYAW    ","NACYAWA   ", &
+                               "NACYAWP   ","NACYAWV   ","NCIMURAXS ","NCIMURAYS ","NCIMURAZS ","NCIMURVXS ","NCIMURVYS ", &
+                               "NCIMURVZS ","NCIMUTAGXS","NCIMUTAGYS","NCIMUTAGZS","NCIMUTAXS ","NCIMUTAYS ","NCIMUTAZS ", &
+                               "NCIMUTVXS ","NCIMUTVYS ","NCIMUTVZS ","OMEGAYF   ","OOPDEFL1  ","OOPDEFL2  ","OOPDEFL3  ", &
+                               "PTCHDEFL1 ","PTCHDEFL2 ","PTCHDEFL3 ","PTCHPMZB1 ","PTCHPMZB2 ","PTCHPMZB3 ","PTCHPMZC1 ", &
+                               "PTCHPMZC2 ","PTCHPMZC3 ","PTFMHEAVE ","PTFMPITCH ","PTFMRAXI  ","PTFMRAXT  ","PTFMRAYI  ", &
+                               "PTFMRAYT  ","PTFMRAZI  ","PTFMRAZT  ","PTFMRDXI  ","PTFMRDYI  ","PTFMRDZI  ","PTFMROLL  ", &
+                               "PTFMRVXI  ","PTFMRVXT  ","PTFMRVYI  ","PTFMRVYT  ","PTFMRVZI  ","PTFMRVZT  ","PTFMSURGE ", &
+                               "PTFMSWAY  ","PTFMTAGXI ","PTFMTAGXT ","PTFMTAGYI ","PTFMTAGYT ","PTFMTAGZI ","PTFMTAGZT ", &
+                               "PTFMTAXI  ","PTFMTAXT  ","PTFMTAYI  ","PTFMTAYT  ","PTFMTAZI  ","PTFMTAZT  ","PTFMTDXI  ", &
+                               "PTFMTDXT  ","PTFMTDYI  ","PTFMTDYT  ","PTFMTDZI  ","PTFMTDZT  ","PTFMTVXI  ","PTFMTVXT  ", &
+                               "PTFMTVYI  ","PTFMTVYT  ","PTFMTVZI  ","PTFMTVZT  ","PTFMYAW   ","QD2_B1E1  ","QD2_B1F1  ", &
+                               "QD2_B1F2  ","QD2_B2E1  ","QD2_B2F1  ","QD2_B2F2  ","QD2_B3E1  ","QD2_B3F1  ","QD2_B3F2  ", &
+                               "QD2_DRTR  ","QD2_GEAZ  ","QD2_HV    ","QD2_P     ","QD2_R     ","QD2_RFRL  ","QD2_SG    ", &
+                               "QD2_SW    ","QD2_TEET  ","QD2_TFA1  ","QD2_TFA2  ","QD2_TFRL  ","QD2_TSS1  ","QD2_TSS2  ", &
+                               "QD2_Y     ","QD2_YAW   ","QD_B1E1   ","QD_B1F1   ","QD_B1F2   ","QD_B2E1   ","QD_B2F1   ", &
+                               "QD_B2F2   ","QD_B3E1   ","QD_B3F1   ","QD_B3F2   ","QD_DRTR   ","QD_GEAZ   ","QD_HV     ", &
+                               "QD_P      ","QD_R      ","QD_RFRL   ","QD_SG     ","QD_SW     ","QD_TEET   ","QD_TFA1   ", &
+                               "QD_TFA2   ","QD_TFRL   ","QD_TSS1   ","QD_TSS2   ","QD_Y      ","QD_YAW    ","Q_B1E1    ", &
+                               "Q_B1F1    ","Q_B1F2    ","Q_B2E1    ","Q_B2F1    ","Q_B2F2    ","Q_B3E1    ","Q_B3F1    ", &
+                               "Q_B3F2    ","Q_DRTR    ","Q_GEAZ    ","Q_HV      ","Q_P       ","Q_R       ","Q_RFRL    ", &
+                               "Q_SG      ","Q_SW      ","Q_TEET    ","Q_TFA1    ","Q_TFA2    ","Q_TFRL    ","Q_TSS1    ", &
+                               "Q_TSS2    ","Q_Y       ","Q_YAW     ","RFRLBRM   ","ROLLDEFL1 ","ROLLDEFL2 ","ROLLDEFL3 ", &
+                               "ROOTFXB1  ","ROOTFXB2  ","ROOTFXB3  ","ROOTFXC1  ","ROOTFXC2  ","ROOTFXC3  ","ROOTFYB1  ", &
+                               "ROOTFYB2  ","ROOTFYB3  ","ROOTFYC1  ","ROOTFYC2  ","ROOTFYC3  ","ROOTFZB1  ","ROOTFZB2  ", &
+                               "ROOTFZB3  ","ROOTFZC1  ","ROOTFZC2  ","ROOTFZC3  ","ROOTMEDG1 ","ROOTMEDG2 ","ROOTMEDG3 ", &
+                               "ROOTMFLP1 ","ROOTMFLP2 ","ROOTMFLP3 ","ROOTMIP1  ","ROOTMIP2  ","ROOTMIP3  ","ROOTMOOP1 ", &
+                               "ROOTMOOP2 ","ROOTMOOP3 ","ROOTMXB1  ","ROOTMXB2  ","ROOTMXB3  ","ROOTMXC1  ","ROOTMXC2  ", &
+                               "ROOTMXC3  ","ROOTMYB1  ","ROOTMYB2  ","ROOTMYB3  ","ROOTMYC1  ","ROOTMYC2  ","ROOTMYC3  ", &
+                               "ROOTMZB1  ","ROOTMZB2  ","ROOTMZB3  ","ROOTMZC1  ","ROOTMZC2  ","ROOTMZC3  ","ROTACCEL  ", &
+                               "ROTFURL   ","ROTFURLA  ","ROTFURLP  ","ROTFURLV  ","ROTPWR    ","ROTSPEED  ","ROTTEETA  ", &
+                               "ROTTEETP  ","ROTTEETV  ","ROTTHRUST ","ROTTORQ   ","SPN1ALGXB1","SPN1ALGXB2","SPN1ALGXB3", &
+                               "SPN1ALGYB1","SPN1ALGYB2","SPN1ALGYB3","SPN1ALGZB1","SPN1ALGZB2","SPN1ALGZB3","SPN1ALXB1 ", &
+                               "SPN1ALXB2 ","SPN1ALXB3 ","SPN1ALYB1 ","SPN1ALYB2 ","SPN1ALYB3 ","SPN1ALZB1 ","SPN1ALZB2 ", &
+                               "SPN1ALZB3 ","SPN1FLXB1 ","SPN1FLXB2 ","SPN1FLXB3 ","SPN1FLYB1 ","SPN1FLYB2 ","SPN1FLYB3 ", &
+                               "SPN1FLZB1 ","SPN1FLZB2 ","SPN1FLZB3 ","SPN1MLXB1 ","SPN1MLXB2 ","SPN1MLXB3 ","SPN1MLYB1 ", &
+                               "SPN1MLYB2 ","SPN1MLYB3 ","SPN1MLZB1 ","SPN1MLZB2 ","SPN1MLZB3 ","SPN1RDXB1 ","SPN1RDXB2 ", &
+                               "SPN1RDXB3 ","SPN1RDYB1 ","SPN1RDYB2 ","SPN1RDYB3 ","SPN1RDZB1 ","SPN1RDZB2 ","SPN1RDZB3 ", &
+                               "SPN1TDXB1 ","SPN1TDXB2 ","SPN1TDXB3 ","SPN1TDYB1 ","SPN1TDYB2 ","SPN1TDYB3 ","SPN1TDZB1 ", &
+                               "SPN1TDZB2 ","SPN1TDZB3 ","SPN2ALGXB1","SPN2ALGXB2","SPN2ALGXB3","SPN2ALGYB1","SPN2ALGYB2", &
+                               "SPN2ALGYB3","SPN2ALGZB1","SPN2ALGZB2","SPN2ALGZB3","SPN2ALXB1 ","SPN2ALXB2 ","SPN2ALXB3 ", &
+                               "SPN2ALYB1 ","SPN2ALYB2 ","SPN2ALYB3 ","SPN2ALZB1 ","SPN2ALZB2 ","SPN2ALZB3 ","SPN2FLXB1 ", &
+                               "SPN2FLXB2 ","SPN2FLXB3 ","SPN2FLYB1 ","SPN2FLYB2 ","SPN2FLYB3 ","SPN2FLZB1 ","SPN2FLZB2 ", &
+                               "SPN2FLZB3 ","SPN2MLXB1 ","SPN2MLXB2 ","SPN2MLXB3 ","SPN2MLYB1 ","SPN2MLYB2 ","SPN2MLYB3 ", &
+                               "SPN2MLZB1 ","SPN2MLZB2 ","SPN2MLZB3 ","SPN2RDXB1 ","SPN2RDXB2 ","SPN2RDXB3 ","SPN2RDYB1 ", &
+                               "SPN2RDYB2 ","SPN2RDYB3 ","SPN2RDZB1 ","SPN2RDZB2 ","SPN2RDZB3 ","SPN2TDXB1 ","SPN2TDXB2 ", &
+                               "SPN2TDXB3 ","SPN2TDYB1 ","SPN2TDYB2 ","SPN2TDYB3 ","SPN2TDZB1 ","SPN2TDZB2 ","SPN2TDZB3 ", &
+                               "SPN3ALGXB1","SPN3ALGXB2","SPN3ALGXB3","SPN3ALGYB1","SPN3ALGYB2","SPN3ALGYB3","SPN3ALGZB1", &
+                               "SPN3ALGZB2","SPN3ALGZB3","SPN3ALXB1 ","SPN3ALXB2 ","SPN3ALXB3 ","SPN3ALYB1 ","SPN3ALYB2 ", &
+                               "SPN3ALYB3 ","SPN3ALZB1 ","SPN3ALZB2 ","SPN3ALZB3 ","SPN3FLXB1 ","SPN3FLXB2 ","SPN3FLXB3 ", &
+                               "SPN3FLYB1 ","SPN3FLYB2 ","SPN3FLYB3 ","SPN3FLZB1 ","SPN3FLZB2 ","SPN3FLZB3 ","SPN3MLXB1 ", &
+                               "SPN3MLXB2 ","SPN3MLXB3 ","SPN3MLYB1 ","SPN3MLYB2 ","SPN3MLYB3 ","SPN3MLZB1 ","SPN3MLZB2 ", &
+                               "SPN3MLZB3 ","SPN3RDXB1 ","SPN3RDXB2 ","SPN3RDXB3 ","SPN3RDYB1 ","SPN3RDYB2 ","SPN3RDYB3 ", &
+                               "SPN3RDZB1 ","SPN3RDZB2 ","SPN3RDZB3 ","SPN3TDXB1 ","SPN3TDXB2 ","SPN3TDXB3 ","SPN3TDYB1 ", &
+                               "SPN3TDYB2 ","SPN3TDYB3 ","SPN3TDZB1 ","SPN3TDZB2 ","SPN3TDZB3 ","SPN4ALGXB1","SPN4ALGXB2", &
+                               "SPN4ALGXB3","SPN4ALGYB1","SPN4ALGYB2","SPN4ALGYB3","SPN4ALGZB1","SPN4ALGZB2","SPN4ALGZB3", &
+                               "SPN4ALXB1 ","SPN4ALXB2 ","SPN4ALXB3 ","SPN4ALYB1 ","SPN4ALYB2 ","SPN4ALYB3 ","SPN4ALZB1 ", &
+                               "SPN4ALZB2 ","SPN4ALZB3 ","SPN4FLXB1 ","SPN4FLXB2 ","SPN4FLXB3 ","SPN4FLYB1 ","SPN4FLYB2 ", &
+                               "SPN4FLYB3 ","SPN4FLZB1 ","SPN4FLZB2 ","SPN4FLZB3 ","SPN4MLXB1 ","SPN4MLXB2 ","SPN4MLXB3 ", &
+                               "SPN4MLYB1 ","SPN4MLYB2 ","SPN4MLYB3 ","SPN4MLZB1 ","SPN4MLZB2 ","SPN4MLZB3 ","SPN4RDXB1 ", &
+                               "SPN4RDXB2 ","SPN4RDXB3 ","SPN4RDYB1 ","SPN4RDYB2 ","SPN4RDYB3 ","SPN4RDZB1 ","SPN4RDZB2 ", &
+                               "SPN4RDZB3 ","SPN4TDXB1 ","SPN4TDXB2 ","SPN4TDXB3 ","SPN4TDYB1 ","SPN4TDYB2 ","SPN4TDYB3 ", &
+                               "SPN4TDZB1 ","SPN4TDZB2 ","SPN4TDZB3 ","SPN5ALGXB1","SPN5ALGXB2","SPN5ALGXB3","SPN5ALGYB1", &
+                               "SPN5ALGYB2","SPN5ALGYB3","SPN5ALGZB1","SPN5ALGZB2","SPN5ALGZB3","SPN5ALXB1 ","SPN5ALXB2 ", &
+                               "SPN5ALXB3 ","SPN5ALYB1 ","SPN5ALYB2 ","SPN5ALYB3 ","SPN5ALZB1 ","SPN5ALZB2 ","SPN5ALZB3 ", &
+                               "SPN5FLXB1 ","SPN5FLXB2 ","SPN5FLXB3 ","SPN5FLYB1 ","SPN5FLYB2 ","SPN5FLYB3 ","SPN5FLZB1 ", &
+                               "SPN5FLZB2 ","SPN5FLZB3 ","SPN5MLXB1 ","SPN5MLXB2 ","SPN5MLXB3 ","SPN5MLYB1 ","SPN5MLYB2 ", &
+                               "SPN5MLYB3 ","SPN5MLZB1 ","SPN5MLZB2 ","SPN5MLZB3 ","SPN5RDXB1 ","SPN5RDXB2 ","SPN5RDXB3 ", &
+                               "SPN5RDYB1 ","SPN5RDYB2 ","SPN5RDYB3 ","SPN5RDZB1 ","SPN5RDZB2 ","SPN5RDZB3 ","SPN5TDXB1 ", &
+                               "SPN5TDXB2 ","SPN5TDXB3 ","SPN5TDYB1 ","SPN5TDYB2 ","SPN5TDYB3 ","SPN5TDZB1 ","SPN5TDZB2 ", &
+                               "SPN5TDZB3 ","SPN6ALGXB1","SPN6ALGXB2","SPN6ALGXB3","SPN6ALGYB1","SPN6ALGYB2","SPN6ALGYB3", &
+                               "SPN6ALGZB1","SPN6ALGZB2","SPN6ALGZB3","SPN6ALXB1 ","SPN6ALXB2 ","SPN6ALXB3 ","SPN6ALYB1 ", &
+                               "SPN6ALYB2 ","SPN6ALYB3 ","SPN6ALZB1 ","SPN6ALZB2 ","SPN6ALZB3 ","SPN6FLXB1 ","SPN6FLXB2 ", &
+                               "SPN6FLXB3 ","SPN6FLYB1 ","SPN6FLYB2 ","SPN6FLYB3 ","SPN6FLZB1 ","SPN6FLZB2 ","SPN6FLZB3 ", &
+                               "SPN6MLXB1 ","SPN6MLXB2 ","SPN6MLXB3 ","SPN6MLYB1 ","SPN6MLYB2 ","SPN6MLYB3 ","SPN6MLZB1 ", &
+                               "SPN6MLZB2 ","SPN6MLZB3 ","SPN6RDXB1 ","SPN6RDXB2 ","SPN6RDXB3 ","SPN6RDYB1 ","SPN6RDYB2 ", &
+                               "SPN6RDYB3 ","SPN6RDZB1 ","SPN6RDZB2 ","SPN6RDZB3 ","SPN6TDXB1 ","SPN6TDXB2 ","SPN6TDXB3 ", &
+                               "SPN6TDYB1 ","SPN6TDYB2 ","SPN6TDYB3 ","SPN6TDZB1 ","SPN6TDZB2 ","SPN6TDZB3 ","SPN7ALGXB1", &
+                               "SPN7ALGXB2","SPN7ALGXB3","SPN7ALGYB1","SPN7ALGYB2","SPN7ALGYB3","SPN7ALGZB1","SPN7ALGZB2", &
+                               "SPN7ALGZB3","SPN7ALXB1 ","SPN7ALXB2 ","SPN7ALXB3 ","SPN7ALYB1 ","SPN7ALYB2 ","SPN7ALYB3 ", &
+                               "SPN7ALZB1 ","SPN7ALZB2 ","SPN7ALZB3 ","SPN7FLXB1 ","SPN7FLXB2 ","SPN7FLXB3 ","SPN7FLYB1 ", &
+                               "SPN7FLYB2 ","SPN7FLYB3 ","SPN7FLZB1 ","SPN7FLZB2 ","SPN7FLZB3 ","SPN7MLXB1 ","SPN7MLXB2 ", &
+                               "SPN7MLXB3 ","SPN7MLYB1 ","SPN7MLYB2 ","SPN7MLYB3 ","SPN7MLZB1 ","SPN7MLZB2 ","SPN7MLZB3 ", &
+                               "SPN7RDXB1 ","SPN7RDXB2 ","SPN7RDXB3 ","SPN7RDYB1 ","SPN7RDYB2 ","SPN7RDYB3 ","SPN7RDZB1 ", &
+                               "SPN7RDZB2 ","SPN7RDZB3 ","SPN7TDXB1 ","SPN7TDXB2 ","SPN7TDXB3 ","SPN7TDYB1 ","SPN7TDYB2 ", &
+                               "SPN7TDYB3 ","SPN7TDZB1 ","SPN7TDZB2 ","SPN7TDZB3 ","SPN8ALGXB1","SPN8ALGXB2","SPN8ALGXB3", &
+                               "SPN8ALGYB1","SPN8ALGYB2","SPN8ALGYB3","SPN8ALGZB1","SPN8ALGZB2","SPN8ALGZB3","SPN8ALXB1 ", &
+                               "SPN8ALXB2 ","SPN8ALXB3 ","SPN8ALYB1 ","SPN8ALYB2 ","SPN8ALYB3 ","SPN8ALZB1 ","SPN8ALZB2 ", &
+                               "SPN8ALZB3 ","SPN8FLXB1 ","SPN8FLXB2 ","SPN8FLXB3 ","SPN8FLYB1 ","SPN8FLYB2 ","SPN8FLYB3 ", &
+                               "SPN8FLZB1 ","SPN8FLZB2 ","SPN8FLZB3 ","SPN8MLXB1 ","SPN8MLXB2 ","SPN8MLXB3 ","SPN8MLYB1 ", &
+                               "SPN8MLYB2 ","SPN8MLYB3 ","SPN8MLZB1 ","SPN8MLZB2 ","SPN8MLZB3 ","SPN8RDXB1 ","SPN8RDXB2 ", &
+                               "SPN8RDXB3 ","SPN8RDYB1 ","SPN8RDYB2 ","SPN8RDYB3 ","SPN8RDZB1 ","SPN8RDZB2 ","SPN8RDZB3 ", &
+                               "SPN8TDXB1 ","SPN8TDXB2 ","SPN8TDXB3 ","SPN8TDYB1 ","SPN8TDYB2 ","SPN8TDYB3 ","SPN8TDZB1 ", &
+                               "SPN8TDZB2 ","SPN8TDZB3 ","SPN9ALGXB1","SPN9ALGXB2","SPN9ALGXB3","SPN9ALGYB1","SPN9ALGYB2", &
+                               "SPN9ALGYB3","SPN9ALGZB1","SPN9ALGZB2","SPN9ALGZB3","SPN9ALXB1 ","SPN9ALXB2 ","SPN9ALXB3 ", &
+                               "SPN9ALYB1 ","SPN9ALYB2 ","SPN9ALYB3 ","SPN9ALZB1 ","SPN9ALZB2 ","SPN9ALZB3 ","SPN9FLXB1 ", &
+                               "SPN9FLXB2 ","SPN9FLXB3 ","SPN9FLYB1 ","SPN9FLYB2 ","SPN9FLYB3 ","SPN9FLZB1 ","SPN9FLZB2 ", &
+                               "SPN9FLZB3 ","SPN9MLXB1 ","SPN9MLXB2 ","SPN9MLXB3 ","SPN9MLYB1 ","SPN9MLYB2 ","SPN9MLYB3 ", &
+                               "SPN9MLZB1 ","SPN9MLZB2 ","SPN9MLZB3 ","SPN9RDXB1 ","SPN9RDXB2 ","SPN9RDXB3 ","SPN9RDYB1 ", &
+                               "SPN9RDYB2 ","SPN9RDYB3 ","SPN9RDZB1 ","SPN9RDZB2 ","SPN9RDZB3 ","SPN9TDXB1 ","SPN9TDXB2 ", &
+                               "SPN9TDXB3 ","SPN9TDYB1 ","SPN9TDYB2 ","SPN9TDYB3 ","SPN9TDZB1 ","SPN9TDZB2 ","SPN9TDZB3 ", &
+                               "TAILFURL  ","TAILFURLA ","TAILFURLP ","TAILFURLV ","TEETAYA   ","TEETDEFL  ","TEETPYA   ", &
+                               "TEETVYA   ","TFRLBRM   ","TIP2TWR1  ","TIP2TWR2  ","TIP2TWR3  ","TIPALGXB1 ","TIPALGXB2 ", &
+                               "TIPALGXB3 ","TIPALGYB1 ","TIPALGYB2 ","TIPALGYB3 ","TIPALGZB1 ","TIPALGZB2 ","TIPALGZB3 ", &
+                               "TIPALXB1  ","TIPALXB2  ","TIPALXB3  ","TIPALYB1  ","TIPALYB2  ","TIPALYB3  ","TIPALZB1  ", &
+                               "TIPALZB2  ","TIPALZB3  ","TIPCLRNC1 ","TIPCLRNC2 ","TIPCLRNC3 ","TIPDXB1   ","TIPDXB2   ", &
+                               "TIPDXB3   ","TIPDXC1   ","TIPDXC2   ","TIPDXC3   ","TIPDYB1   ","TIPDYB2   ","TIPDYB3   ", &
+                               "TIPDYC1   ","TIPDYC2   ","TIPDYC3   ","TIPDZB1   ","TIPDZB2   ","TIPDZB3   ","TIPDZC1   ", &
+                               "TIPDZC2   ","TIPDZC3   ","TIPRDXB1  ","TIPRDXB2  ","TIPRDXB3  ","TIPRDYB1  ","TIPRDYB2  ", &
+                               "TIPRDYB3  ","TIPRDZB1  ","TIPRDZB2  ","TIPRDZB3  ","TIPRDZC1  ","TIPRDZC2  ","TIPRDZC3  ", &
+                               "TTDSPAX   ","TTDSPFA   ","TTDSPPTCH ","TTDSPROLL ","TTDSPSS   ","TTDSPTWST ","TWHT1ALGXT", &
+                               "TWHT1ALGYT","TWHT1ALGZT","TWHT1ALXT ","TWHT1ALYT ","TWHT1ALZT ","TWHT1FLXT ","TWHT1FLYT ", &
+                               "TWHT1FLZT ","TWHT1MLXT ","TWHT1MLYT ","TWHT1MLZT ","TWHT1RDXT ","TWHT1RDYT ","TWHT1RDZT ", &
+                               "TWHT1RPXI ","TWHT1RPYI ","TWHT1RPZI ","TWHT1TDXT ","TWHT1TDYT ","TWHT1TDZT ","TWHT1TPXI ", &
+                               "TWHT1TPYI ","TWHT1TPZI ","TWHT2ALGXT","TWHT2ALGYT","TWHT2ALGZT","TWHT2ALXT ","TWHT2ALYT ", &
+                               "TWHT2ALZT ","TWHT2FLXT ","TWHT2FLYT ","TWHT2FLZT ","TWHT2MLXT ","TWHT2MLYT ","TWHT2MLZT ", &
+                               "TWHT2RDXT ","TWHT2RDYT ","TWHT2RDZT ","TWHT2RPXI ","TWHT2RPYI ","TWHT2RPZI ","TWHT2TDXT ", &
+                               "TWHT2TDYT ","TWHT2TDZT ","TWHT2TPXI ","TWHT2TPYI ","TWHT2TPZI ","TWHT3ALGXT","TWHT3ALGYT", &
+                               "TWHT3ALGZT","TWHT3ALXT ","TWHT3ALYT ","TWHT3ALZT ","TWHT3FLXT ","TWHT3FLYT ","TWHT3FLZT ", &
+                               "TWHT3MLXT ","TWHT3MLYT ","TWHT3MLZT ","TWHT3RDXT ","TWHT3RDYT ","TWHT3RDZT ","TWHT3RPXI ", &
+                               "TWHT3RPYI ","TWHT3RPZI ","TWHT3TDXT ","TWHT3TDYT ","TWHT3TDZT ","TWHT3TPXI ","TWHT3TPYI ", &
+                               "TWHT3TPZI ","TWHT4ALGXT","TWHT4ALGYT","TWHT4ALGZT","TWHT4ALXT ","TWHT4ALYT ","TWHT4ALZT ", &
+                               "TWHT4FLXT ","TWHT4FLYT ","TWHT4FLZT ","TWHT4MLXT ","TWHT4MLYT ","TWHT4MLZT ","TWHT4RDXT ", &
+                               "TWHT4RDYT ","TWHT4RDZT ","TWHT4RPXI ","TWHT4RPYI ","TWHT4RPZI ","TWHT4TDXT ","TWHT4TDYT ", &
+                               "TWHT4TDZT ","TWHT4TPXI ","TWHT4TPYI ","TWHT4TPZI ","TWHT5ALGXT","TWHT5ALGYT","TWHT5ALGZT", &
+                               "TWHT5ALXT ","TWHT5ALYT ","TWHT5ALZT ","TWHT5FLXT ","TWHT5FLYT ","TWHT5FLZT ","TWHT5MLXT ", &
+                               "TWHT5MLYT ","TWHT5MLZT ","TWHT5RDXT ","TWHT5RDYT ","TWHT5RDZT ","TWHT5RPXI ","TWHT5RPYI ", &
+                               "TWHT5RPZI ","TWHT5TDXT ","TWHT5TDYT ","TWHT5TDZT ","TWHT5TPXI ","TWHT5TPYI ","TWHT5TPZI ", &
+                               "TWHT6ALGXT","TWHT6ALGYT","TWHT6ALGZT","TWHT6ALXT ","TWHT6ALYT ","TWHT6ALZT ","TWHT6FLXT ", &
+                               "TWHT6FLYT ","TWHT6FLZT ","TWHT6MLXT ","TWHT6MLYT ","TWHT6MLZT ","TWHT6RDXT ","TWHT6RDYT ", &
+                               "TWHT6RDZT ","TWHT6RPXI ","TWHT6RPYI ","TWHT6RPZI ","TWHT6TDXT ","TWHT6TDYT ","TWHT6TDZT ", &
+                               "TWHT6TPXI ","TWHT6TPYI ","TWHT6TPZI ","TWHT7ALGXT","TWHT7ALGYT","TWHT7ALGZT","TWHT7ALXT ", &
+                               "TWHT7ALYT ","TWHT7ALZT ","TWHT7FLXT ","TWHT7FLYT ","TWHT7FLZT ","TWHT7MLXT ","TWHT7MLYT ", &
+                               "TWHT7MLZT ","TWHT7RDXT ","TWHT7RDYT ","TWHT7RDZT ","TWHT7RPXI ","TWHT7RPYI ","TWHT7RPZI ", &
+                               "TWHT7TDXT ","TWHT7TDYT ","TWHT7TDZT ","TWHT7TPXI ","TWHT7TPYI ","TWHT7TPZI ","TWHT8ALGXT", &
+                               "TWHT8ALGYT","TWHT8ALGZT","TWHT8ALXT ","TWHT8ALYT ","TWHT8ALZT ","TWHT8FLXT ","TWHT8FLYT ", &
+                               "TWHT8FLZT ","TWHT8MLXT ","TWHT8MLYT ","TWHT8MLZT ","TWHT8RDXT ","TWHT8RDYT ","TWHT8RDZT ", &
+                               "TWHT8RPXI ","TWHT8RPYI ","TWHT8RPZI ","TWHT8TDXT ","TWHT8TDYT ","TWHT8TDZT ","TWHT8TPXI ", &
+                               "TWHT8TPYI ","TWHT8TPZI ","TWHT9ALGXT","TWHT9ALGYT","TWHT9ALGZT","TWHT9ALXT ","TWHT9ALYT ", &
+                               "TWHT9ALZT ","TWHT9FLXT ","TWHT9FLYT ","TWHT9FLZT ","TWHT9MLXT ","TWHT9MLYT ","TWHT9MLZT ", &
+                               "TWHT9RDXT ","TWHT9RDYT ","TWHT9RDZT ","TWHT9RPXI ","TWHT9RPYI ","TWHT9RPZI ","TWHT9TDXT ", &
+                               "TWHT9TDYT ","TWHT9TDZT ","TWHT9TPXI ","TWHT9TPYI ","TWHT9TPZI ","TWRBSFXT  ","TWRBSFYT  ", &
+                               "TWRBSFZT  ","TWRBSMXT  ","TWRBSMYT  ","TWRBSMZT  ","TWRCLRNC1 ","TWRCLRNC2 ","TWRCLRNC3 ", &
+                               "TWRTPTDXI ","TWRTPTDYI ","TWRTPTDZI ","TWSTDEFL1 ","TWSTDEFL2 ","TWSTDEFL3 ","YAWACCEL  ", &
+                               "YAWAZN    ","YAWAZP    ","YAWBRFXN  ","YAWBRFXP  ","YAWBRFYN  ","YAWBRFYP  ","YAWBRFZN  ", &
+                               "YAWBRFZP  ","YAWBRMXN  ","YAWBRMXP  ","YAWBRMYN  ","YAWBRMYP  ","YAWBRMZN  ","YAWBRMZP  ", &
+                               "YAWBRRAXP ","YAWBRRAYP ","YAWBRRAZP ","YAWBRRDXT ","YAWBRRDYT ","YAWBRRDZT ","YAWBRRVXP ", &
+                               "YAWBRRVYP ","YAWBRRVZP ","YAWBRTAGXP","YAWBRTAGYP","YAWBRTAGZP","YAWBRTAXP ","YAWBRTAYP ", &
+                               "YAWBRTAZP ","YAWBRTDXI ","YAWBRTDXP ","YAWBRTDXT ","YAWBRTDYI ","YAWBRTDYP ","YAWBRTDYT ", &
+                               "YAWBRTDZI ","YAWBRTDZP ","YAWBRTDZT ","YAWBRTVXP ","YAWBRTVYP ","YAWBRTVZP ","YAWFRIMFP ", &
+                               "YAWFRIMOM ","YAWFRIMZ  ","YAWPOS    ","YAWPZN    ","YAWPZP    ","YAWRATE   ","YAWVZN    ", &
+                               "YAWVZP    "/)
+   INTEGER(IntKi), PARAMETER :: ParamIndxAry(1121) =  (/ &                            ! This lists the index into AllOuts(:) of the allowed parameters ValidParamAry(:)
+                                 LSSTipPxa ,   BldPAcc1 ,   BldPAcc2 ,   BldPAcc3 ,  PtchPMzc1 ,  PtchPMzc2 ,  PtchPMzc3 , &
+                                 BldPRate1 ,  BldPRate2 ,  BldPRate3 ,  PtchPMzc1 ,  PtchPMzc2 ,  PtchPMzc3 ,   dOmegaYF , &
+                                   HSShftA ,    HSShftV ,    HSSBrTq ,    HSShftA ,  HSShftPwr ,   HSShftTq ,    HSShftV , &
+                                   TipDyc1 ,    TipDyc2 ,    TipDyc3 ,  LSSGagAxa ,  LSSGagAxa ,  LSSGagAxa ,  LSShftFxa , &
+                                 LSShftFxa ,  LSShftFya ,  LSShftFys ,  LSShftFza ,  LSShftFzs ,  LSShftMxa ,  LSShftMxa , &
+                                 LSSGagMya ,  LSSGagMys ,  LSSGagMza ,  LSSGagMzs ,  LSSGagPxa ,  LSSGagPxa ,  LSSGagPxa , &
+                                 LSSGagVxa ,  LSSGagVxa ,  LSSGagVxa ,  LSShftFxa ,  LSShftFxa ,  LSShftFya ,  LSShftFys , &
+                                 LSShftFza ,  LSShftFzs ,  LSShftMxa ,  LSShftMxa ,     RotPwr ,  LSShftMxa ,  LSSTipAxa , &
+                                 LSSTipAxa ,  LSSTipAxa ,  LSSTipMya ,  LSSTipMys ,  LSSTipMza ,  LSSTipMzs ,  LSSTipPxa , &
+                                 LSSTipPxa ,  LSSTipPxa ,  LSSTipVxa ,  LSSTipVxa ,  LSSTipVxa ,     YawPzn ,     YawAzn , &
+                                    YawPzn ,     YawVzn ,  NcIMURAxs ,  NcIMURAys ,  NcIMURAzs ,  NcIMURVxs ,  NcIMURVys , &
+                                 NcIMURVzs , NcIMUTAgxs , NcIMUTAgys , NcIMUTAgzs ,  NcIMUTAxs ,  NcIMUTAys ,  NcIMUTAzs , &
+                                 NcIMUTVxs ,  NcIMUTVys ,  NcIMUTVzs ,    OmegaYF ,    TipDxc1 ,    TipDxc2 ,    TipDxc3 , &
+                                  TipRDyb1 ,   TipRDyb2 ,   TipRDyb3 ,  PtchPMzc1 ,  PtchPMzc2 ,  PtchPMzc3 ,  PtchPMzc1 , &
+                                 PtchPMzc2 ,  PtchPMzc3 ,   PtfmTDzi ,   PtfmRDyi ,   PtfmRAxi ,   PtfmRAxt ,   PtfmRAyi , &
+                                  PtfmRAyt ,   PtfmRAzi ,   PtfmRAzt ,   PtfmRDxi ,   PtfmRDyi ,   PtfmRDzi ,   PtfmRDxi , &
+                                  PtfmRVxi ,   PtfmRVxt ,   PtfmRVyi ,   PtfmRVyt ,   PtfmRVzi ,   PtfmRVzt ,   PtfmTDxi , &
+                                  PtfmTDyi ,  PtfmTAgxi ,  PtfmTAgxt ,  PtfmTAgyi ,  PtfmTAgyt ,  PtfmTAgzi ,  PtfmTAgzt , &
+                                  PtfmTAxi ,   PtfmTAxt ,   PtfmTAyi ,   PtfmTAyt ,   PtfmTAzi ,   PtfmTAzt ,   PtfmTDxi , &
+                                  PtfmTDxt ,   PtfmTDyi ,   PtfmTDyt ,   PtfmTDzi ,   PtfmTDzt ,   PtfmTVxi ,   PtfmTVxt , &
+                                  PtfmTVyi ,   PtfmTVyt ,   PtfmTVzi ,   PtfmTVzt ,   PtfmRDzi ,   QD2_B1E1 ,   QD2_B1F1 , &
+                                  QD2_B1F2 ,   QD2_B2E1 ,   QD2_B2F1 ,   QD2_B2F2 ,   QD2_B3E1 ,   QD2_B3F1 ,   QD2_B3F2 , &
+                                  QD2_DrTr ,   QD2_GeAz ,     QD2_Hv ,      QD2_P ,      QD2_R ,   QD2_RFrl ,     QD2_Sg , &
+                                    QD2_Sw ,   QD2_Teet ,   QD2_TFA1 ,   QD2_TFA2 ,   QD2_TFrl ,   QD2_TSS1 ,   QD2_TSS2 , &
+                                     QD2_Y ,    QD2_Yaw ,    QD_B1E1 ,    QD_B1F1 ,    QD_B1F2 ,    QD_B2E1 ,    QD_B2F1 , &
+                                   QD_B2F2 ,    QD_B3E1 ,    QD_B3F1 ,    QD_B3F2 ,    QD_DrTr ,    QD_GeAz ,      QD_Hv , &
+                                      QD_P ,       QD_R ,    QD_RFrl ,      QD_Sg ,      QD_Sw ,    QD_Teet ,    QD_TFA1 , &
+                                   QD_TFA2 ,    QD_TFrl ,    QD_TSS1 ,    QD_TSS2 ,       QD_Y ,     QD_Yaw ,     Q_B1E1 , &
+                                    Q_B1F1 ,     Q_B1F2 ,     Q_B2E1 ,     Q_B2F1 ,     Q_B2F2 ,     Q_B3E1 ,     Q_B3F1 , &
+                                    Q_B3F2 ,     Q_DrTr ,     Q_GeAz ,       Q_Hv ,        Q_P ,        Q_R ,     Q_RFrl , &
+                                      Q_Sg ,       Q_Sw ,     Q_Teet ,     Q_TFA1 ,     Q_TFA2 ,     Q_TFrl ,     Q_TSS1 , &
+                                    Q_TSS2 ,        Q_Y ,      Q_Yaw ,    RFrlBrM ,   TipRDxb1 ,   TipRDxb2 ,   TipRDxb3 , &
+                                  RootFxb1 ,   RootFxb2 ,   RootFxb3 ,   RootFxc1 ,   RootFxc2 ,   RootFxc3 ,   RootFyb1 , &
+                                  RootFyb2 ,   RootFyb3 ,   RootFyc1 ,   RootFyc2 ,   RootFyc3 ,   RootFzc1 ,   RootFzc2 , &
+                                  RootFzc3 ,   RootFzc1 ,   RootFzc2 ,   RootFzc3 ,   RootMxb1 ,   RootMxb2 ,   RootMxb3 , &
+                                  RootMyb1 ,   RootMyb2 ,   RootMyb3 ,   RootMxc1 ,   RootMxc2 ,   RootMxc3 ,   RootMyc1 , &
+                                  RootMyc2 ,   RootMyc3 ,   RootMxb1 ,   RootMxb2 ,   RootMxb3 ,   RootMxc1 ,   RootMxc2 , &
+                                  RootMxc3 ,   RootMyb1 ,   RootMyb2 ,   RootMyb3 ,   RootMyc1 ,   RootMyc2 ,   RootMyc3 , &
+                                  RootMzc1 ,   RootMzc2 ,   RootMzc3 ,   RootMzc1 ,   RootMzc2 ,   RootMzc3 ,  LSSTipAxa , &
+                                  RotFurlP ,   RotFurlA ,   RotFurlP ,   RotFurlV ,     RotPwr ,  LSSTipVxa ,    TeetAya , &
+                                   TeetPya ,    TeetVya ,  LSShftFxa ,  LSShftMxa , Spn1ALgxb1 , Spn1ALgxb2 , Spn1ALgxb3 , &
+                                Spn1ALgyb1 , Spn1ALgyb2 , Spn1ALgyb3 , Spn1ALgzb1 , Spn1ALgzb2 , Spn1ALgzb3 ,  Spn1ALxb1 , &
+                                 Spn1ALxb2 ,  Spn1ALxb3 ,  Spn1ALyb1 ,  Spn1ALyb2 ,  Spn1ALyb3 ,  Spn1ALzb1 ,  Spn1ALzb2 , &
+                                 Spn1ALzb3 ,  Spn1FLxb1 ,  Spn1FLxb2 ,  Spn1FLxb3 ,  Spn1FLyb1 ,  Spn1FLyb2 ,  Spn1FLyb3 , &
+                                 Spn1FLzb1 ,  Spn1FLzb2 ,  Spn1FLzb3 ,  Spn1MLxb1 ,  Spn1MLxb2 ,  Spn1MLxb3 ,  Spn1MLyb1 , &
+                                 Spn1MLyb2 ,  Spn1MLyb3 ,  Spn1MLzb1 ,  Spn1MLzb2 ,  Spn1MLzb3 ,  Spn1RDxb1 ,  Spn1RDxb2 , &
+                                 Spn1RDxb3 ,  Spn1RDyb1 ,  Spn1RDyb2 ,  Spn1RDyb3 ,  Spn1RDzb1 ,  Spn1RDzb2 ,  Spn1RDzb3 , &
+                                 Spn1TDxb1 ,  Spn1TDxb2 ,  Spn1TDxb3 ,  Spn1TDyb1 ,  Spn1TDyb2 ,  Spn1TDyb3 ,  Spn1TDzb1 , &
+                                 Spn1TDzb2 ,  Spn1TDzb3 , Spn2ALgxb1 , Spn2ALgxb2 , Spn2ALgxb3 , Spn2ALgyb1 , Spn2ALgyb2 , &
+                                Spn2ALgyb3 , Spn2ALgzb1 , Spn2ALgzb2 , Spn2ALgzb3 ,  Spn2ALxb1 ,  Spn2ALxb2 ,  Spn2ALxb3 , &
+                                 Spn2ALyb1 ,  Spn2ALyb2 ,  Spn2ALyb3 ,  Spn2ALzb1 ,  Spn2ALzb2 ,  Spn2ALzb3 ,  Spn2FLxb1 , &
+                                 Spn2FLxb2 ,  Spn2FLxb3 ,  Spn2FLyb1 ,  Spn2FLyb2 ,  Spn2FLyb3 ,  Spn2FLzb1 ,  Spn2FLzb2 , &
+                                 Spn2FLzb3 ,  Spn2MLxb1 ,  Spn2MLxb2 ,  Spn2MLxb3 ,  Spn2MLyb1 ,  Spn2MLyb2 ,  Spn2MLyb3 , &
+                                 Spn2MLzb1 ,  Spn2MLzb2 ,  Spn2MLzb3 ,  Spn2RDxb1 ,  Spn2RDxb2 ,  Spn2RDxb3 ,  Spn2RDyb1 , &
+                                 Spn2RDyb2 ,  Spn2RDyb3 ,  Spn2RDzb1 ,  Spn2RDzb2 ,  Spn2RDzb3 ,  Spn2TDxb1 ,  Spn2TDxb2 , &
+                                 Spn2TDxb3 ,  Spn2TDyb1 ,  Spn2TDyb2 ,  Spn2TDyb3 ,  Spn2TDzb1 ,  Spn2TDzb2 ,  Spn2TDzb3 , &
+                                Spn3ALgxb1 , Spn3ALgxb2 , Spn3ALgxb3 , Spn3ALgyb1 , Spn3ALgyb2 , Spn3ALgyb3 , Spn3ALgzb1 , &
+                                Spn3ALgzb2 , Spn3ALgzb3 ,  Spn3ALxb1 ,  Spn3ALxb2 ,  Spn3ALxb3 ,  Spn3ALyb1 ,  Spn3ALyb2 , &
+                                 Spn3ALyb3 ,  Spn3ALzb1 ,  Spn3ALzb2 ,  Spn3ALzb3 ,  Spn3FLxb1 ,  Spn3FLxb2 ,  Spn3FLxb3 , &
+                                 Spn3FLyb1 ,  Spn3FLyb2 ,  Spn3FLyb3 ,  Spn3FLzb1 ,  Spn3FLzb2 ,  Spn3FLzb3 ,  Spn3MLxb1 , &
+                                 Spn3MLxb2 ,  Spn3MLxb3 ,  Spn3MLyb1 ,  Spn3MLyb2 ,  Spn3MLyb3 ,  Spn3MLzb1 ,  Spn3MLzb2 , &
+                                 Spn3MLzb3 ,  Spn3RDxb1 ,  Spn3RDxb2 ,  Spn3RDxb3 ,  Spn3RDyb1 ,  Spn3RDyb2 ,  Spn3RDyb3 , &
+                                 Spn3RDzb1 ,  Spn3RDzb2 ,  Spn3RDzb3 ,  Spn3TDxb1 ,  Spn3TDxb2 ,  Spn3TDxb3 ,  Spn3TDyb1 , &
+                                 Spn3TDyb2 ,  Spn3TDyb3 ,  Spn3TDzb1 ,  Spn3TDzb2 ,  Spn3TDzb3 , Spn4ALgxb1 , Spn4ALgxb2 , &
+                                Spn4ALgxb3 , Spn4ALgyb1 , Spn4ALgyb2 , Spn4ALgyb3 , Spn4ALgzb1 , Spn4ALgzb2 , Spn4ALgzb3 , &
+                                 Spn4ALxb1 ,  Spn4ALxb2 ,  Spn4ALxb3 ,  Spn4ALyb1 ,  Spn4ALyb2 ,  Spn4ALyb3 ,  Spn4ALzb1 , &
+                                 Spn4ALzb2 ,  Spn4ALzb3 ,  Spn4FLxb1 ,  Spn4FLxb2 ,  Spn4FLxb3 ,  Spn4FLyb1 ,  Spn4FLyb2 , &
+                                 Spn4FLyb3 ,  Spn4FLzb1 ,  Spn4FLzb2 ,  Spn4FLzb3 ,  Spn4MLxb1 ,  Spn4MLxb2 ,  Spn4MLxb3 , &
+                                 Spn4MLyb1 ,  Spn4MLyb2 ,  Spn4MLyb3 ,  Spn4MLzb1 ,  Spn4MLzb2 ,  Spn4MLzb3 ,  Spn4RDxb1 , &
+                                 Spn4RDxb2 ,  Spn4RDxb3 ,  Spn4RDyb1 ,  Spn4RDyb2 ,  Spn4RDyb3 ,  Spn4RDzb1 ,  Spn4RDzb2 , &
+                                 Spn4RDzb3 ,  Spn4TDxb1 ,  Spn4TDxb2 ,  Spn4TDxb3 ,  Spn4TDyb1 ,  Spn4TDyb2 ,  Spn4TDyb3 , &
+                                 Spn4TDzb1 ,  Spn4TDzb2 ,  Spn4TDzb3 , Spn5ALgxb1 , Spn5ALgxb2 , Spn5ALgxb3 , Spn5ALgyb1 , &
+                                Spn5ALgyb2 , Spn5ALgyb3 , Spn5ALgzb1 , Spn5ALgzb2 , Spn5ALgzb3 ,  Spn5ALxb1 ,  Spn5ALxb2 , &
+                                 Spn5ALxb3 ,  Spn5ALyb1 ,  Spn5ALyb2 ,  Spn5ALyb3 ,  Spn5ALzb1 ,  Spn5ALzb2 ,  Spn5ALzb3 , &
+                                 Spn5FLxb1 ,  Spn5FLxb2 ,  Spn5FLxb3 ,  Spn5FLyb1 ,  Spn5FLyb2 ,  Spn5FLyb3 ,  Spn5FLzb1 , &
+                                 Spn5FLzb2 ,  Spn5FLzb3 ,  Spn5MLxb1 ,  Spn5MLxb2 ,  Spn5MLxb3 ,  Spn5MLyb1 ,  Spn5MLyb2 , &
+                                 Spn5MLyb3 ,  Spn5MLzb1 ,  Spn5MLzb2 ,  Spn5MLzb3 ,  Spn5RDxb1 ,  Spn5RDxb2 ,  Spn5RDxb3 , &
+                                 Spn5RDyb1 ,  Spn5RDyb2 ,  Spn5RDyb3 ,  Spn5RDzb1 ,  Spn5RDzb2 ,  Spn5RDzb3 ,  Spn5TDxb1 , &
+                                 Spn5TDxb2 ,  Spn5TDxb3 ,  Spn5TDyb1 ,  Spn5TDyb2 ,  Spn5TDyb3 ,  Spn5TDzb1 ,  Spn5TDzb2 , &
+                                 Spn5TDzb3 , Spn6ALgxb1 , Spn6ALgxb2 , Spn6ALgxb3 , Spn6ALgyb1 , Spn6ALgyb2 , Spn6ALgyb3 , &
+                                Spn6ALgzb1 , Spn6ALgzb2 , Spn6ALgzb3 ,  Spn6ALxb1 ,  Spn6ALxb2 ,  Spn6ALxb3 ,  Spn6ALyb1 , &
+                                 Spn6ALyb2 ,  Spn6ALyb3 ,  Spn6ALzb1 ,  Spn6ALzb2 ,  Spn6ALzb3 ,  Spn6FLxb1 ,  Spn6FLxb2 , &
+                                 Spn6FLxb3 ,  Spn6FLyb1 ,  Spn6FLyb2 ,  Spn6FLyb3 ,  Spn6FLzb1 ,  Spn6FLzb2 ,  Spn6FLzb3 , &
+                                 Spn6MLxb1 ,  Spn6MLxb2 ,  Spn6MLxb3 ,  Spn6MLyb1 ,  Spn6MLyb2 ,  Spn6MLyb3 ,  Spn6MLzb1 , &
+                                 Spn6MLzb2 ,  Spn6MLzb3 ,  Spn6RDxb1 ,  Spn6RDxb2 ,  Spn6RDxb3 ,  Spn6RDyb1 ,  Spn6RDyb2 , &
+                                 Spn6RDyb3 ,  Spn6RDzb1 ,  Spn6RDzb2 ,  Spn6RDzb3 ,  Spn6TDxb1 ,  Spn6TDxb2 ,  Spn6TDxb3 , &
+                                 Spn6TDyb1 ,  Spn6TDyb2 ,  Spn6TDyb3 ,  Spn6TDzb1 ,  Spn6TDzb2 ,  Spn6TDzb3 , Spn7ALgxb1 , &
+                                Spn7ALgxb2 , Spn7ALgxb3 , Spn7ALgyb1 , Spn7ALgyb2 , Spn7ALgyb3 , Spn7ALgzb1 , Spn7ALgzb2 , &
+                                Spn7ALgzb3 ,  Spn7ALxb1 ,  Spn7ALxb2 ,  Spn7ALxb3 ,  Spn7ALyb1 ,  Spn7ALyb2 ,  Spn7ALyb3 , &
+                                 Spn7ALzb1 ,  Spn7ALzb2 ,  Spn7ALzb3 ,  Spn7FLxb1 ,  Spn7FLxb2 ,  Spn7FLxb3 ,  Spn7FLyb1 , &
+                                 Spn7FLyb2 ,  Spn7FLyb3 ,  Spn7FLzb1 ,  Spn7FLzb2 ,  Spn7FLzb3 ,  Spn7MLxb1 ,  Spn7MLxb2 , &
+                                 Spn7MLxb3 ,  Spn7MLyb1 ,  Spn7MLyb2 ,  Spn7MLyb3 ,  Spn7MLzb1 ,  Spn7MLzb2 ,  Spn7MLzb3 , &
+                                 Spn7RDxb1 ,  Spn7RDxb2 ,  Spn7RDxb3 ,  Spn7RDyb1 ,  Spn7RDyb2 ,  Spn7RDyb3 ,  Spn7RDzb1 , &
+                                 Spn7RDzb2 ,  Spn7RDzb3 ,  Spn7TDxb1 ,  Spn7TDxb2 ,  Spn7TDxb3 ,  Spn7TDyb1 ,  Spn7TDyb2 , &
+                                 Spn7TDyb3 ,  Spn7TDzb1 ,  Spn7TDzb2 ,  Spn7TDzb3 , Spn8ALgxb1 , Spn8ALgxb2 , Spn8ALgxb3 , &
+                                Spn8ALgyb1 , Spn8ALgyb2 , Spn8ALgyb3 , Spn8ALgzb1 , Spn8ALgzb2 , Spn8ALgzb3 ,  Spn8ALxb1 , &
+                                 Spn8ALxb2 ,  Spn8ALxb3 ,  Spn8ALyb1 ,  Spn8ALyb2 ,  Spn8ALyb3 ,  Spn8ALzb1 ,  Spn8ALzb2 , &
+                                 Spn8ALzb3 ,  Spn8FLxb1 ,  Spn8FLxb2 ,  Spn8FLxb3 ,  Spn8FLyb1 ,  Spn8FLyb2 ,  Spn8FLyb3 , &
+                                 Spn8FLzb1 ,  Spn8FLzb2 ,  Spn8FLzb3 ,  Spn8MLxb1 ,  Spn8MLxb2 ,  Spn8MLxb3 ,  Spn8MLyb1 , &
+                                 Spn8MLyb2 ,  Spn8MLyb3 ,  Spn8MLzb1 ,  Spn8MLzb2 ,  Spn8MLzb3 ,  Spn8RDxb1 ,  Spn8RDxb2 , &
+                                 Spn8RDxb3 ,  Spn8RDyb1 ,  Spn8RDyb2 ,  Spn8RDyb3 ,  Spn8RDzb1 ,  Spn8RDzb2 ,  Spn8RDzb3 , &
+                                 Spn8TDxb1 ,  Spn8TDxb2 ,  Spn8TDxb3 ,  Spn8TDyb1 ,  Spn8TDyb2 ,  Spn8TDyb3 ,  Spn8TDzb1 , &
+                                 Spn8TDzb2 ,  Spn8TDzb3 , Spn9ALgxb1 , Spn9ALgxb2 , Spn9ALgxb3 , Spn9ALgyb1 , Spn9ALgyb2 , &
+                                Spn9ALgyb3 , Spn9ALgzb1 , Spn9ALgzb2 , Spn9ALgzb3 ,  Spn9ALxb1 ,  Spn9ALxb2 ,  Spn9ALxb3 , &
+                                 Spn9ALyb1 ,  Spn9ALyb2 ,  Spn9ALyb3 ,  Spn9ALzb1 ,  Spn9ALzb2 ,  Spn9ALzb3 ,  Spn9FLxb1 , &
+                                 Spn9FLxb2 ,  Spn9FLxb3 ,  Spn9FLyb1 ,  Spn9FLyb2 ,  Spn9FLyb3 ,  Spn9FLzb1 ,  Spn9FLzb2 , &
+                                 Spn9FLzb3 ,  Spn9MLxb1 ,  Spn9MLxb2 ,  Spn9MLxb3 ,  Spn9MLyb1 ,  Spn9MLyb2 ,  Spn9MLyb3 , &
+                                 Spn9MLzb1 ,  Spn9MLzb2 ,  Spn9MLzb3 ,  Spn9RDxb1 ,  Spn9RDxb2 ,  Spn9RDxb3 ,  Spn9RDyb1 , &
+                                 Spn9RDyb2 ,  Spn9RDyb3 ,  Spn9RDzb1 ,  Spn9RDzb2 ,  Spn9RDzb3 ,  Spn9TDxb1 ,  Spn9TDxb2 , &
+                                 Spn9TDxb3 ,  Spn9TDyb1 ,  Spn9TDyb2 ,  Spn9TDyb3 ,  Spn9TDzb1 ,  Spn9TDzb2 ,  Spn9TDzb3 , &
+                                 TailFurlP ,  TailFurlA ,  TailFurlP ,  TailFurlV ,    TeetAya ,    TeetPya ,    TeetPya , &
+                                   TeetVya ,    TFrlBrM ,  TipClrnc1 ,  TipClrnc2 ,  TipClrnc3 ,  TipALgxb1 ,  TipALgxb2 , &
+                                 TipALgxb3 ,  TipALgyb1 ,  TipALgyb2 ,  TipALgyb3 ,  TipALgzb1 ,  TipALgzb2 ,  TipALgzb3 , &
+                                  TipALxb1 ,   TipALxb2 ,   TipALxb3 ,   TipALyb1 ,   TipALyb2 ,   TipALyb3 ,   TipALzb1 , &
+                                  TipALzb2 ,   TipALzb3 ,  TipClrnc1 ,  TipClrnc2 ,  TipClrnc3 ,    TipDxb1 ,    TipDxb2 , &
+                                   TipDxb3 ,    TipDxc1 ,    TipDxc2 ,    TipDxc3 ,    TipDyb1 ,    TipDyb2 ,    TipDyb3 , &
+                                   TipDyc1 ,    TipDyc2 ,    TipDyc3 ,    TipDzc1 ,    TipDzc2 ,    TipDzc3 ,    TipDzc1 , &
+                                   TipDzc2 ,    TipDzc3 ,   TipRDxb1 ,   TipRDxb2 ,   TipRDxb3 ,   TipRDyb1 ,   TipRDyb2 , &
+                                  TipRDyb3 ,   TipRDzc1 ,   TipRDzc2 ,   TipRDzc3 ,   TipRDzc1 ,   TipRDzc2 ,   TipRDzc3 , &
+                                 YawBrTDzt ,  YawBrTDxt ,  YawBrRDyt ,  YawBrRDxt ,  YawBrTDyt ,  YawBrRDzt , TwHt1ALgxt , &
+                                TwHt1ALgyt , TwHt1ALgzt ,  TwHt1ALxt ,  TwHt1ALyt ,  TwHt1ALzt ,  TwHt1FLxt ,  TwHt1FLyt , &
+                                 TwHt1FLzt ,  TwHt1MLxt ,  TwHt1MLyt ,  TwHt1MLzt ,  TwHt1RDxt ,  TwHt1RDyt ,  TwHt1RDzt , &
+                                 TwHt1RPxi ,  TwHt1RPyi ,  TwHt1RPzi ,  TwHt1TDxt ,  TwHt1TDyt ,  TwHt1TDzt ,  TwHt1TPxi , &
+                                 TwHt1TPyi ,  TwHt1TPzi , TwHt2ALgxt , TwHt2ALgyt , TwHt2ALgzt ,  TwHt2ALxt ,  TwHt2ALyt , &
+                                 TwHt2ALzt ,  TwHt2FLxt ,  TwHt2FLyt ,  TwHt2FLzt ,  TwHt2MLxt ,  TwHt2MLyt ,  TwHt2MLzt , &
+                                 TwHt2RDxt ,  TwHt2RDyt ,  TwHt2RDzt ,  TwHt2RPxi ,  TwHt2RPyi ,  TwHt2RPzi ,  TwHt2TDxt , &
+                                 TwHt2TDyt ,  TwHt2TDzt ,  TwHt2TPxi ,  TwHt2TPyi ,  TwHt2TPzi , TwHt3ALgxt , TwHt3ALgyt , &
+                                TwHt3ALgzt ,  TwHt3ALxt ,  TwHt3ALyt ,  TwHt3ALzt ,  TwHt3FLxt ,  TwHt3FLyt ,  TwHt3FLzt , &
+                                 TwHt3MLxt ,  TwHt3MLyt ,  TwHt3MLzt ,  TwHt3RDxt ,  TwHt3RDyt ,  TwHt3RDzt ,  TwHt3RPxi , &
+                                 TwHt3RPyi ,  TwHt3RPzi ,  TwHt3TDxt ,  TwHt3TDyt ,  TwHt3TDzt ,  TwHt3TPxi ,  TwHt3TPyi , &
+                                 TwHt3TPzi , TwHt4ALgxt , TwHt4ALgyt , TwHt4ALgzt ,  TwHt4ALxt ,  TwHt4ALyt ,  TwHt4ALzt , &
+                                 TwHt4FLxt ,  TwHt4FLyt ,  TwHt4FLzt ,  TwHt4MLxt ,  TwHt4MLyt ,  TwHt4MLzt ,  TwHt4RDxt , &
+                                 TwHt4RDyt ,  TwHt4RDzt ,  TwHt4RPxi ,  TwHt4RPyi ,  TwHt4RPzi ,  TwHt4TDxt ,  TwHt4TDyt , &
+                                 TwHt4TDzt ,  TwHt4TPxi ,  TwHt4TPyi ,  TwHt4TPzi , TwHt5ALgxt , TwHt5ALgyt , TwHt5ALgzt , &
+                                 TwHt5ALxt ,  TwHt5ALyt ,  TwHt5ALzt ,  TwHt5FLxt ,  TwHt5FLyt ,  TwHt5FLzt ,  TwHt5MLxt , &
+                                 TwHt5MLyt ,  TwHt5MLzt ,  TwHt5RDxt ,  TwHt5RDyt ,  TwHt5RDzt ,  TwHt5RPxi ,  TwHt5RPyi , &
+                                 TwHt5RPzi ,  TwHt5TDxt ,  TwHt5TDyt ,  TwHt5TDzt ,  TwHt5TPxi ,  TwHt5TPyi ,  TwHt5TPzi , &
+                                TwHt6ALgxt , TwHt6ALgyt , TwHt6ALgzt ,  TwHt6ALxt ,  TwHt6ALyt ,  TwHt6ALzt ,  TwHt6FLxt , &
+                                 TwHt6FLyt ,  TwHt6FLzt ,  TwHt6MLxt ,  TwHt6MLyt ,  TwHt6MLzt ,  TwHt6RDxt ,  TwHt6RDyt , &
+                                 TwHt6RDzt ,  TwHt6RPxi ,  TwHt6RPyi ,  TwHt6RPzi ,  TwHt6TDxt ,  TwHt6TDyt ,  TwHt6TDzt , &
+                                 TwHt6TPxi ,  TwHt6TPyi ,  TwHt6TPzi , TwHt7ALgxt , TwHt7ALgyt , TwHt7ALgzt ,  TwHt7ALxt , &
+                                 TwHt7ALyt ,  TwHt7ALzt ,  TwHt7FLxt ,  TwHt7FLyt ,  TwHt7FLzt ,  TwHt7MLxt ,  TwHt7MLyt , &
+                                 TwHt7MLzt ,  TwHt7RDxt ,  TwHt7RDyt ,  TwHt7RDzt ,  TwHt7RPxi ,  TwHt7RPyi ,  TwHt7RPzi , &
+                                 TwHt7TDxt ,  TwHt7TDyt ,  TwHt7TDzt ,  TwHt7TPxi ,  TwHt7TPyi ,  TwHt7TPzi , TwHt8ALgxt , &
+                                TwHt8ALgyt , TwHt8ALgzt ,  TwHt8ALxt ,  TwHt8ALyt ,  TwHt8ALzt ,  TwHt8FLxt ,  TwHt8FLyt , &
+                                 TwHt8FLzt ,  TwHt8MLxt ,  TwHt8MLyt ,  TwHt8MLzt ,  TwHt8RDxt ,  TwHt8RDyt ,  TwHt8RDzt , &
+                                 TwHt8RPxi ,  TwHt8RPyi ,  TwHt8RPzi ,  TwHt8TDxt ,  TwHt8TDyt ,  TwHt8TDzt ,  TwHt8TPxi , &
+                                 TwHt8TPyi ,  TwHt8TPzi , TwHt9ALgxt , TwHt9ALgyt , TwHt9ALgzt ,  TwHt9ALxt ,  TwHt9ALyt , &
+                                 TwHt9ALzt ,  TwHt9FLxt ,  TwHt9FLyt ,  TwHt9FLzt ,  TwHt9MLxt ,  TwHt9MLyt ,  TwHt9MLzt , &
+                                 TwHt9RDxt ,  TwHt9RDyt ,  TwHt9RDzt ,  TwHt9RPxi ,  TwHt9RPyi ,  TwHt9RPzi ,  TwHt9TDxt , &
+                                 TwHt9TDyt ,  TwHt9TDzt ,  TwHt9TPxi ,  TwHt9TPyi ,  TwHt9TPzi ,   TwrBsFxt ,   TwrBsFyt , &
+                                  TwrBsFzt ,   TwrBsMxt ,   TwrBsMyt ,   TwrBsMzt ,  TipClrnc1 ,  TipClrnc2 ,  TipClrnc3 , &
+                                 TwrTpTDxi ,  TwrTpTDyi ,  TwrTpTDzi ,   TipRDzc1 ,   TipRDzc2 ,   TipRDzc3 ,     YawAzn , &
+                                    YawAzn ,     YawAzn ,   YawBrFxn ,   YawBrFxp ,   YawBrFyn ,   YawBrFyp ,   YawBrFzn , &
+                                  YawBrFzn ,   YawBrMxn ,   YawBrMxp ,   YawBrMyn ,   YawBrMyp ,   YawBrMzn ,   YawBrMzn , &
+                                 YawBrRAxp ,  YawBrRAyp ,  YawBrRAzp ,  YawBrRDxt ,  YawBrRDyt ,  YawBrRDzt ,  YawBrRVxp , &
+                                 YawBrRVyp ,  YawBrRVzp , YawBrTAgxp , YawBrTAgyp , YawBrTAgzp ,  YawBrTAxp ,  YawBrTAyp , &
+                                 YawBrTAzp ,  TwrTpTDxi ,  YawBrTDxp ,  YawBrTDxt ,  TwrTpTDyi ,  YawBrTDyp ,  YawBrTDyt , &
+                                 TwrTpTDzi ,  YawBrTDzp ,  YawBrTDzt ,  YawBrTVxp ,  YawBrTVyp ,  YawBrTVzp ,  YawFriMfp , &
+                                 YawFriMom ,   YawFriMz ,     YawPzn ,     YawPzn ,     YawPzn ,     YawVzn ,     YawVzn , &
+                                    YawVzn /)
+   CHARACTER(ChanLen), PARAMETER :: ParamUnitsAry(1121) =  (/ character(ChanLen) :: &  ! This lists the units corresponding to the allowed parameters
+                               "(deg)    ","(deg/s^2)","(deg/s^2)","(deg/s^2)","(deg)    ","(deg)    ","(deg)    ", &
+                               "(deg/s)  ","(deg/s)  ","(deg/s)  ","(deg)    ","(deg)    ","(deg)    ","(deg/s^2)", &
+                               "(deg/s^2)","(rpm)    ","(kN-m)   ","(deg/s^2)","(kW)     ","(kN-m)   ","(rpm)    ", &
+                               "(m)      ","(m)      ","(m)      ","(deg/s^2)","(deg/s^2)","(deg/s^2)","(kN)     ", &
+                               "(kN)     ","(kN)     ","(kN)     ","(kN)     ","(kN)     ","(kN-m)   ","(kN-m)   ", &
+                               "(kN-m)   ","(kN-m)   ","(kN-m)   ","(kN-m)   ","(deg)    ","(deg)    ","(deg)    ", &
+                               "(rpm)    ","(rpm)    ","(rpm)    ","(kN)     ","(kN)     ","(kN)     ","(kN)     ", &
+                               "(kN)     ","(kN)     ","(kN-m)   ","(kN-m)   ","(kW)     ","(kN-m)   ","(deg/s^2)", &
+                               "(deg/s^2)","(deg/s^2)","(kN-m)   ","(kN-m)   ","(kN-m)   ","(kN-m)   ","(deg)    ", &
+                               "(deg)    ","(deg)    ","(rpm)    ","(rpm)    ","(rpm)    ","(deg)    ","(deg/s^2)", &
+                               "(deg)    ","(deg/s)  ","(deg/s^2)","(deg/s^2)","(deg/s^2)","(deg/s)  ","(deg/s)  ", &
+                               "(deg/s)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ", &
+                               "(m/s)    ","(m/s)    ","(m/s)    ","(deg/s)  ","(m)      ","(m)      ","(m)      ", &
+                               "(deg)    ","(deg)    ","(deg)    ","(deg)    ","(deg)    ","(deg)    ","(deg)    ", &
+                               "(deg)    ","(deg)    ","(m)      ","(deg)    ","(deg/s^2)","(deg/s^2)","(deg/s^2)", &
+                               "(deg/s^2)","(deg/s^2)","(deg/s^2)","(deg)    ","(deg)    ","(deg)    ","(deg)    ", &
+                               "(deg/s)  ","(deg/s)  ","(deg/s)  ","(deg/s)  ","(deg/s)  ","(deg/s)  ","(m)      ", &
+                               "(m)      ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ", &
+                               "(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m)      ", &
+                               "(m)      ","(m)      ","(m)      ","(m)      ","(m)      ","(m/s)    ","(m/s)    ", &
+                               "(m/s)    ","(m/s)    ","(m/s)    ","(m/s)    ","(deg)    ","(m/s^2)  ","(m/s^2)  ", &
+                               "(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ", &
+                               "(rad/s^2)","(rad/s^2)","(m/s^2)  ","(rad/s^2)","(rad/s^2)","(rad/s^2)","(m/s^2)  ", &
+                               "(m/s^2)  ","(rad/s^2)","(m/s^2)  ","(m/s^2)  ","(rad/s^2)","(m/s^2)  ","(m/s^2)  ", &
+                               "(rad/s^2)","(rad/s^2)","(m/s)    ","(m/s)    ","(m/s)    ","(m/s)    ","(m/s)    ", &
+                               "(m/s)    ","(m/s)    ","(m/s)    ","(m/s)    ","(rad/s)  ","(rad/s)  ","(m/s)    ", &
+                               "(rad/s)  ","(rad/s)  ","(rad/s)  ","(m/s)    ","(m/s)    ","(rad/s)  ","(m/s)    ", &
+                               "(m/s)    ","(rad/s)  ","(m/s)    ","(m/s)    ","(rad/s)  ","(rad/s)  ","(m)      ", &
+                               "(m)      ","(m)      ","(m)      ","(m)      ","(m)      ","(m)      ","(m)      ", &
+                               "(m)      ","(rad)    ","(rad)    ","(m)      ","(rad)    ","(rad)    ","(rad)    ", &
+                               "(m)      ","(m)      ","(rad)    ","(m)      ","(m)      ","(rad)    ","(m)      ", &
+                               "(m)      ","(rad)    ","(rad)    ","(kN-m)   ","(deg)    ","(deg)    ","(deg)    ", &
+                               "(kN)     ","(kN)     ","(kN)     ","(kN)     ","(kN)     ","(kN)     ","(kN)     ", &
+                               "(kN)     ","(kN)     ","(kN)     ","(kN)     ","(kN)     ","(kN)     ","(kN)     ", &
+                               "(kN)     ","(kN)     ","(kN)     ","(kN)     ","(kN-m)   ","(kN-m)   ","(kN-m)   ", &
+                               "(kN-m)   ","(kN-m)   ","(kN-m)   ","(kN-m)   ","(kN-m)   ","(kN-m)   ","(kN-m)   ", &
+                               "(kN-m)   ","(kN-m)   ","(kN-m)   ","(kN-m)   ","(kN-m)   ","(kN-m)   ","(kN-m)   ", &
+                               "(kN-m)   ","(kN-m)   ","(kN-m)   ","(kN-m)   ","(kN-m)   ","(kN-m)   ","(kN-m)   ", &
+                               "(kN-m)   ","(kN-m)   ","(kN-m)   ","(kN-m)   ","(kN-m)   ","(kN-m)   ","(deg/s^2)", &
+                               "(deg)    ","(deg/s^2)","(deg)    ","(deg/s)  ","(kW)     ","(rpm)    ","(deg/s^2)", &
+                               "(deg)    ","(deg/s)  ","(kN)     ","(kN-m)   ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ", &
+                               "(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ", &
+                               "(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ", &
+                               "(m/s^2)  ","(kN)     ","(kN)     ","(kN)     ","(kN)     ","(kN)     ","(kN)     ", &
+                               "(kN)     ","(kN)     ","(kN)     ","(kN-m)   ","(kN-m)   ","(kN-m)   ","(kN-m)   ", &
+                               "(kN-m)   ","(kN-m)   ","(kN-m)   ","(kN-m)   ","(kN-m)   ","(deg)    ","(deg)    ", &
+                               "(deg)    ","(deg)    ","(deg)    ","(deg)    ","(deg)    ","(deg)    ","(deg)    ", &
+                               "(m)      ","(m)      ","(m)      ","(m)      ","(m)      ","(m)      ","(m)      ", &
+                               "(m)      ","(m)      ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ", &
+                               "(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ", &
+                               "(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(kN)     ", &
+                               "(kN)     ","(kN)     ","(kN)     ","(kN)     ","(kN)     ","(kN)     ","(kN)     ", &
+                               "(kN)     ","(kN-m)   ","(kN-m)   ","(kN-m)   ","(kN-m)   ","(kN-m)   ","(kN-m)   ", &
+                               "(kN-m)   ","(kN-m)   ","(kN-m)   ","(deg)    ","(deg)    ","(deg)    ","(deg)    ", &
+                               "(deg)    ","(deg)    ","(deg)    ","(deg)    ","(deg)    ","(m)      ","(m)      ", &
+                               "(m)      ","(m)      ","(m)      ","(m)      ","(m)      ","(m)      ","(m)      ", &
+                               "(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ", &
+                               "(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ", &
+                               "(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(kN)     ","(kN)     ","(kN)     ", &
+                               "(kN)     ","(kN)     ","(kN)     ","(kN)     ","(kN)     ","(kN)     ","(kN-m)   ", &
+                               "(kN-m)   ","(kN-m)   ","(kN-m)   ","(kN-m)   ","(kN-m)   ","(kN-m)   ","(kN-m)   ", &
+                               "(kN-m)   ","(deg)    ","(deg)    ","(deg)    ","(deg)    ","(deg)    ","(deg)    ", &
+                               "(deg)    ","(deg)    ","(deg)    ","(m)      ","(m)      ","(m)      ","(m)      ", &
+                               "(m)      ","(m)      ","(m)      ","(m)      ","(m)      ","(m/s^2)  ","(m/s^2)  ", &
+                               "(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ", &
+                               "(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ", &
+                               "(m/s^2)  ","(m/s^2)  ","(kN)     ","(kN)     ","(kN)     ","(kN)     ","(kN)     ", &
+                               "(kN)     ","(kN)     ","(kN)     ","(kN)     ","(kN-m)   ","(kN-m)   ","(kN-m)   ", &
+                               "(kN-m)   ","(kN-m)   ","(kN-m)   ","(kN-m)   ","(kN-m)   ","(kN-m)   ","(deg)    ", &
+                               "(deg)    ","(deg)    ","(deg)    ","(deg)    ","(deg)    ","(deg)    ","(deg)    ", &
+                               "(deg)    ","(m)      ","(m)      ","(m)      ","(m)      ","(m)      ","(m)      ", &
+                               "(m)      ","(m)      ","(m)      ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ", &
+                               "(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ", &
+                               "(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ", &
+                               "(kN)     ","(kN)     ","(kN)     ","(kN)     ","(kN)     ","(kN)     ","(kN)     ", &
+                               "(kN)     ","(kN)     ","(kN-m)   ","(kN-m)   ","(kN-m)   ","(kN-m)   ","(kN-m)   ", &
+                               "(kN-m)   ","(kN-m)   ","(kN-m)   ","(kN-m)   ","(deg)    ","(deg)    ","(deg)    ", &
+                               "(deg)    ","(deg)    ","(deg)    ","(deg)    ","(deg)    ","(deg)    ","(m)      ", &
+                               "(m)      ","(m)      ","(m)      ","(m)      ","(m)      ","(m)      ","(m)      ", &
+                               "(m)      ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ", &
+                               "(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ", &
+                               "(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(kN)     ","(kN)     ", &
+                               "(kN)     ","(kN)     ","(kN)     ","(kN)     ","(kN)     ","(kN)     ","(kN)     ", &
+                               "(kN-m)   ","(kN-m)   ","(kN-m)   ","(kN-m)   ","(kN-m)   ","(kN-m)   ","(kN-m)   ", &
+                               "(kN-m)   ","(kN-m)   ","(deg)    ","(deg)    ","(deg)    ","(deg)    ","(deg)    ", &
+                               "(deg)    ","(deg)    ","(deg)    ","(deg)    ","(m)      ","(m)      ","(m)      ", &
+                               "(m)      ","(m)      ","(m)      ","(m)      ","(m)      ","(m)      ","(m/s^2)  ", &
+                               "(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ", &
+                               "(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ", &
+                               "(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(kN)     ","(kN)     ","(kN)     ","(kN)     ", &
+                               "(kN)     ","(kN)     ","(kN)     ","(kN)     ","(kN)     ","(kN-m)   ","(kN-m)   ", &
+                               "(kN-m)   ","(kN-m)   ","(kN-m)   ","(kN-m)   ","(kN-m)   ","(kN-m)   ","(kN-m)   ", &
+                               "(deg)    ","(deg)    ","(deg)    ","(deg)    ","(deg)    ","(deg)    ","(deg)    ", &
+                               "(deg)    ","(deg)    ","(m)      ","(m)      ","(m)      ","(m)      ","(m)      ", &
+                               "(m)      ","(m)      ","(m)      ","(m)      ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ", &
+                               "(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ", &
+                               "(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ", &
+                               "(m/s^2)  ","(kN)     ","(kN)     ","(kN)     ","(kN)     ","(kN)     ","(kN)     ", &
+                               "(kN)     ","(kN)     ","(kN)     ","(kN-m)   ","(kN-m)   ","(kN-m)   ","(kN-m)   ", &
+                               "(kN-m)   ","(kN-m)   ","(kN-m)   ","(kN-m)   ","(kN-m)   ","(deg)    ","(deg)    ", &
+                               "(deg)    ","(deg)    ","(deg)    ","(deg)    ","(deg)    ","(deg)    ","(deg)    ", &
+                               "(m)      ","(m)      ","(m)      ","(m)      ","(m)      ","(m)      ","(m)      ", &
+                               "(m)      ","(m)      ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ", &
+                               "(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ", &
+                               "(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(kN)     ", &
+                               "(kN)     ","(kN)     ","(kN)     ","(kN)     ","(kN)     ","(kN)     ","(kN)     ", &
+                               "(kN)     ","(kN-m)   ","(kN-m)   ","(kN-m)   ","(kN-m)   ","(kN-m)   ","(kN-m)   ", &
+                               "(kN-m)   ","(kN-m)   ","(kN-m)   ","(deg)    ","(deg)    ","(deg)    ","(deg)    ", &
+                               "(deg)    ","(deg)    ","(deg)    ","(deg)    ","(deg)    ","(m)      ","(m)      ", &
+                               "(m)      ","(m)      ","(m)      ","(m)      ","(m)      ","(m)      ","(m)      ", &
+                               "(deg)    ","(deg/s^2)","(deg)    ","(deg/s)  ","(deg/s^2)","(deg)    ","(deg)    ", &
+                               "(deg/s)  ","(kN-m)   ","(m)      ","(m)      ","(m)      ","(m/s^2)  ","(m/s^2)  ", &
+                               "(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ", &
+                               "(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ", &
+                               "(m/s^2)  ","(m/s^2)  ","(m)      ","(m)      ","(m)      ","(m)      ","(m)      ", &
+                               "(m)      ","(m)      ","(m)      ","(m)      ","(m)      ","(m)      ","(m)      ", &
+                               "(m)      ","(m)      ","(m)      ","(m)      ","(m)      ","(m)      ","(m)      ", &
+                               "(m)      ","(m)      ","(deg)    ","(deg)    ","(deg)    ","(deg)    ","(deg)    ", &
+                               "(deg)    ","(deg)    ","(deg)    ","(deg)    ","(deg)    ","(deg)    ","(deg)    ", &
+                               "(m)      ","(m)      ","(deg)    ","(deg)    ","(m)      ","(deg)    ","(m/s^2)  ", &
+                               "(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(kN)     ","(kN)     ", &
+                               "(kN)     ","(kN-m)   ","(kN-m)   ","(kN-m)   ","(deg)    ","(deg)    ","(deg)    ", &
+                               "(deg)    ","(deg)    ","(deg)    ","(m)      ","(m)      ","(m)      ","(m)      ", &
+                               "(m)      ","(m)      ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ", &
+                               "(m/s^2)  ","(kN)     ","(kN)     ","(kN)     ","(kN-m)   ","(kN-m)   ","(kN-m)   ", &
+                               "(deg)    ","(deg)    ","(deg)    ","(deg)    ","(deg)    ","(deg)    ","(m)      ", &
+                               "(m)      ","(m)      ","(m)      ","(m)      ","(m)      ","(m/s^2)  ","(m/s^2)  ", &
+                               "(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(kN)     ","(kN)     ","(kN)     ", &
+                               "(kN-m)   ","(kN-m)   ","(kN-m)   ","(deg)    ","(deg)    ","(deg)    ","(deg)    ", &
+                               "(deg)    ","(deg)    ","(m)      ","(m)      ","(m)      ","(m)      ","(m)      ", &
+                               "(m)      ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ", &
+                               "(kN)     ","(kN)     ","(kN)     ","(kN-m)   ","(kN-m)   ","(kN-m)   ","(deg)    ", &
+                               "(deg)    ","(deg)    ","(deg)    ","(deg)    ","(deg)    ","(m)      ","(m)      ", &
+                               "(m)      ","(m)      ","(m)      ","(m)      ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ", &
+                               "(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(kN)     ","(kN)     ","(kN)     ","(kN-m)   ", &
+                               "(kN-m)   ","(kN-m)   ","(deg)    ","(deg)    ","(deg)    ","(deg)    ","(deg)    ", &
+                               "(deg)    ","(m)      ","(m)      ","(m)      ","(m)      ","(m)      ","(m)      ", &
+                               "(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(kN)     ", &
+                               "(kN)     ","(kN)     ","(kN-m)   ","(kN-m)   ","(kN-m)   ","(deg)    ","(deg)    ", &
+                               "(deg)    ","(deg)    ","(deg)    ","(deg)    ","(m)      ","(m)      ","(m)      ", &
+                               "(m)      ","(m)      ","(m)      ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ", &
+                               "(m/s^2)  ","(m/s^2)  ","(kN)     ","(kN)     ","(kN)     ","(kN-m)   ","(kN-m)   ", &
+                               "(kN-m)   ","(deg)    ","(deg)    ","(deg)    ","(deg)    ","(deg)    ","(deg)    ", &
+                               "(m)      ","(m)      ","(m)      ","(m)      ","(m)      ","(m)      ","(m/s^2)  ", &
+                               "(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(kN)     ","(kN)     ", &
+                               "(kN)     ","(kN-m)   ","(kN-m)   ","(kN-m)   ","(deg)    ","(deg)    ","(deg)    ", &
+                               "(deg)    ","(deg)    ","(deg)    ","(m)      ","(m)      ","(m)      ","(m)      ", &
+                               "(m)      ","(m)      ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ", &
+                               "(m/s^2)  ","(kN)     ","(kN)     ","(kN)     ","(kN-m)   ","(kN-m)   ","(kN-m)   ", &
+                               "(deg)    ","(deg)    ","(deg)    ","(deg)    ","(deg)    ","(deg)    ","(m)      ", &
+                               "(m)      ","(m)      ","(m)      ","(m)      ","(m)      ","(kN)     ","(kN)     ", &
+                               "(kN)     ","(kN-m)   ","(kN-m)   ","(kN-m)   ","(m)      ","(m)      ","(m)      ", &
+                               "(m)      ","(m)      ","(m)      ","(deg)    ","(deg)    ","(deg)    ","(deg/s^2)", &
+                               "(deg/s^2)","(deg/s^2)","(kN)     ","(kN)     ","(kN)     ","(kN)     ","(kN)     ", &
+                               "(kN)     ","(kN-m)   ","(kN-m)   ","(kN-m)   ","(kN-m)   ","(kN-m)   ","(kN-m)   ", &
+                               "(deg/s^2)","(deg/s^2)","(deg/s^2)","(deg)    ","(deg)    ","(deg)    ","(deg/s)  ", &
+                               "(deg/s)  ","(deg/s)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ","(m/s^2)  ", &
+                               "(m/s^2)  ","(m)      ","(m)      ","(m)      ","(m)      ","(m)      ","(m)      ", &
+                               "(m)      ","(m)      ","(m)      ","(m/s)    ","(m/s)    ","(m/s)    ","(kN-m)   ", &
+                               "(kN-m)   ","(kN-m)   ","(deg)    ","(deg)    ","(deg)    ","(deg/s)  ","(deg/s)  ", &
+                               "(deg/s)  "/)
 
 
       ! Initialize values
@@ -4348,7 +4354,7 @@ SUBROUTINE SetOutParam(OutList, p, ErrStat, ErrMsg )
 
 
 !   ..... Developer must add checking for invalid inputs here: .....
-if (p%BD4Blades) then
+if (p%BD4Blades .or. p%RigidAero) then
    startIndx = 1
 else
    startIndx = p%NumBl+1
@@ -4366,6 +4372,9 @@ end if
       InvalidOutput(  TipALxb(  I) ) = .TRUE.
       InvalidOutput(  TipALyb(  I) ) = .TRUE.
       InvalidOutput(  TipALzb(  I) ) = .TRUE.
+      InvalidOutput(  TipALgxb(  I) ) = .TRUE.
+      InvalidOutput(  TipALgyb(  I) ) = .TRUE.
+      InvalidOutput(  TipALgzb(  I) ) = .TRUE.
       InvalidOutput(  TipRDxb(  I) ) = .TRUE.
       InvalidOutput(  TipRDyb(  I) ) = .TRUE.
       InvalidOutput(  TipRDzc(  I) ) = .TRUE.
@@ -4389,6 +4398,10 @@ end if
       InvalidOutput(  SpnALxb(:,I) ) = .TRUE.
       InvalidOutput(  SpnALyb(:,I) ) = .TRUE.
       InvalidOutput(  SpnALzb(:,I) ) = .TRUE.
+
+      InvalidOutput(  SpnALgxb(:,I) ) = .TRUE.
+      InvalidOutput(  SpnALgyb(:,I) ) = .TRUE.
+      InvalidOutput(  SpnALgzb(:,I) ) = .TRUE.
 
       InvalidOutput(  SpnTDxb(:,I) ) = .TRUE.
       InvalidOutput(  SpnTDyb(:,I) ) = .TRUE.
@@ -4419,6 +4432,10 @@ end if
          InvalidOutput(  SpnALyb(J,I) ) = .TRUE.
          InvalidOutput(  SpnALzb(J,I) ) = .TRUE.
 
+         InvalidOutput(  SpnALgxb(J,I) ) = .TRUE.
+         InvalidOutput(  SpnALgyb(J,I) ) = .TRUE.
+         InvalidOutput(  SpnALgzb(J,I) ) = .TRUE.
+
          InvalidOutput(  SpnTDxb(J,I) ) = .TRUE.
          InvalidOutput(  SpnTDyb(J,I) ) = .TRUE.
          InvalidOutput(  SpnTDzb(J,I) ) = .TRUE.
@@ -4442,6 +4459,13 @@ end if
 
    END DO !I
 
+   DO J = 1,p%NumBl
+      IF ( .NOT. p%DOF_Flag(DOF_BP(J)) ) THEN
+         InvalidOutput( BldPRate(J) ) = .TRUE.
+         InvalidOutput( BldPAcc (J) ) = .TRUE.
+      END IF
+   END DO
+
    DO J = p%NTwGages+1,9 !Invalid tower gages
 
          ! Motions
@@ -4449,6 +4473,10 @@ end if
       InvalidOutput( TwHtALxt(J) ) = .TRUE.
       InvalidOutput( TwHtALyt(J) ) = .TRUE.
       InvalidOutput( TwHtALzt(J) ) = .TRUE.
+
+      InvalidOutput( TwHtALgxt(J) ) = .TRUE.
+      InvalidOutput( TwHtALgyt(J) ) = .TRUE.
+      InvalidOutput( TwHtALgzt(J) ) = .TRUE.
 
       InvalidOutput( TwHtTDxt(J) ) = .TRUE.
       InvalidOutput( TwHtTDyt(J) ) = .TRUE.
@@ -4478,21 +4506,38 @@ end if
 
    END DO
 
-   IF ( p%NumBl < 3_IntKi ) THEN
-      InvalidOutput(PtchPMzc3) = .TRUE.
 
-      InvalidOutput(   Q_B3E1) = .TRUE.
-      InvalidOutput(   Q_B3F1) = .TRUE.
-      InvalidOutput(   Q_B3F2) = .TRUE.
-
-      InvalidOutput(  QD_B3E1) = .TRUE.
-      InvalidOutput(  QD_B3F1) = .TRUE.
-      InvalidOutput(  QD_B3F2) = .TRUE.
-
-      InvalidOutput( QD2_B3E1) = .TRUE.
-      InvalidOutput( QD2_B3F1) = .TRUE.
-      InvalidOutput( QD2_B3F2) = .TRUE.
-   ELSE IF ( p%NumBl > 2_IntKi ) THEN
+   ! Invalid outputs based on number of blades
+   IF ( p%NumBl < 3 ) THEN
+         InvalidOutput(PtchPMzc3) = .TRUE.
+         InvalidOutput(BldPRate3) = .TRUE.
+         InvalidOutput( BldPAcc3) = .TRUE.
+         InvalidOutput(   Q_B3E1) = .TRUE.
+         InvalidOutput(   Q_B3F1) = .TRUE.
+         InvalidOutput(   Q_B3F2) = .TRUE.
+         InvalidOutput(  QD_B3E1) = .TRUE.
+         InvalidOutput(  QD_B3F1) = .TRUE.
+         InvalidOutput(  QD_B3F2) = .TRUE.
+         InvalidOutput( QD2_B3E1) = .TRUE.
+         InvalidOutput( QD2_B3F1) = .TRUE.
+         InvalidOutput( QD2_B3F2) = .TRUE.      
+   ENDIF
+   IF ( p%NumBl < 2 ) THEN
+         InvalidOutput(PtchPMzc2) = .TRUE.
+         InvalidOutput(BldPRate2) = .TRUE.
+         InvalidOutput( BldPAcc2) = .TRUE.
+         InvalidOutput(   Q_B2E1) = .TRUE.
+         InvalidOutput(   Q_B2F1) = .TRUE.
+         InvalidOutput(   Q_B2F2) = .TRUE.
+         InvalidOutput(  QD_B2E1) = .TRUE.
+         InvalidOutput(  QD_B2F1) = .TRUE.
+         InvalidOutput(  QD_B2F2) = .TRUE.
+         InvalidOutput( QD2_B2E1) = .TRUE.
+         InvalidOutput( QD2_B2F1) = .TRUE.
+         InvalidOutput( QD2_B2F2) = .TRUE.      
+   ENDIF
+   ! 1-bladed or 3-bladed, no teeter
+   IF ( p%NumBl /= 2 ) THEN
       InvalidOutput(  TeetPya) = .TRUE.
       InvalidOutput(  TeetVya) = .TRUE.
       InvalidOutput(  TeetAya) = .TRUE.
@@ -4504,7 +4549,7 @@ end if
    
    InvalidOutput(HSSBrTq) = p%method == Method_RK4
 
-    IF ( p%BD4Blades ) THEN
+    IF ( p%BD4Blades .or. p%RigidAero ) THEN
       InvalidOutput(   Q_B1E1) = .TRUE.
       InvalidOutput(   Q_B1F1) = .TRUE.
       InvalidOutput(   Q_B1F2) = .TRUE.
@@ -4568,67 +4613,38 @@ end if
    DO I = 1,p%NumOuts
 
       p%OutParam(I)%Name  = OutList(I)
-      OutListTmp          = OutList(I)
 
-      ! Reverse the sign (+/-) of the output channel if the user prefixed the
-      !   channel name with a "-", "_", "m", or "M" character indicating "minus".
-
-
-      CheckOutListAgain = .FALSE.
-
-      IF      ( INDEX( "-_", OutListTmp(1:1) ) > 0 ) THEN
-         p%OutParam(I)%SignM = -1                         ! ex, "-TipDxc1" causes the sign of TipDxc1 to be switched.
-         OutListTmp          = OutListTmp(2:)
-      ELSE IF ( INDEX( "mM", OutListTmp(1:1) ) > 0 ) THEN ! We'll assume this is a variable name for now, (if not, we will check later if OutListTmp(2:) is also a variable name)
-         CheckOutListAgain   = .TRUE.
-         p%OutParam(I)%SignM = 1
-      ELSE
-         p%OutParam(I)%SignM = 1
-      END IF
-
-      CALL Conv2UC( OutListTmp )    ! Convert OutListTmp to upper case
-
-
-      Indx = IndexCharAry( OutListTmp(1:OutStrLenM1), ValidParamAry )
-
-
-         ! If it started with an "M" (CheckOutListAgain) we didn't find the value in our list (Indx < 1)
-
-      IF ( CheckOutListAgain .AND. Indx < 1 ) THEN    ! Let's assume that "M" really meant "minus" and then test again
-         p%OutParam(I)%SignM = -1                     ! ex, "MTipDxc1" causes the sign of TipDxc1 to be switched.
-         OutListTmp          = OutListTmp(2:)
-
-         Indx = IndexCharAry( OutListTmp(1:OutStrLenM1), ValidParamAry )
-      END IF
-
+      Indx = FindValidChannelIndx(OutList(I), ValidParamAry, p%OutParam(I)%SignM)
 
       IF ( Indx > 0 ) THEN ! we found the channel name
-         p%OutParam(I)%Indx     = ParamIndxAry(Indx)
          IF ( InvalidOutput( ParamIndxAry(Indx) ) ) THEN  ! but, it isn't valid for these settings
+            p%OutParam(I)%Indx  = 0                 ! pick any valid channel (I just picked "Time=0" here because it's universal)
             p%OutParam(I)%Units = "INVALID"
             p%OutParam(I)%SignM = 0
          ELSE
+            p%OutParam(I)%Indx  = ParamIndxAry(Indx)
             p%OutParam(I)%Units = ParamUnitsAry(Indx) ! it's a valid output
          END IF
       ELSE ! this channel isn't valid
-         p%OutParam(I)%Indx  = Time                 ! pick any valid channel (I just picked "Time" here because it's universal)
+         p%OutParam(I)%Indx  = 0                    ! pick any valid channel (I just picked "Time=0" here because it's universal)
          p%OutParam(I)%Units = "INVALID"
          p%OutParam(I)%SignM = 0                    ! multiply all results by zero
-
+   
          CALL SetErrStat(ErrID_Fatal, TRIM(p%OutParam(I)%Name)//" is not an available output channel.",ErrStat,ErrMsg,RoutineName)
       END IF
-
+   
    END DO
-
+   
    RETURN
 END SUBROUTINE SetOutParam
 !----------------------------------------------------------------------------------------------------------------------------------
 !End of code generated by Matlab script
 !**********************************************************************************************************************************
+
 !> This routine is used to compute rotor (blade and hub) properties:
 !!   KBF(), KBE(), CBF(), CBE(), FreqBF(), FreqBE(), AxRedBld(),
 !!   TwistedSF(), BldMass(), FirstMom(), SecondMom(), BldCG(),
-!!   RotMass, RotIner, Hubg1Iner, Hubg2Iner, rSAerCenn1(), and
+!!   RotMass, RotIner, Hubf1Iner, Hubf2Iner, rSAerCenn1(), and
 !!   rSAerCenn2(), BElmtMass()
 !! tower properties:
 !!   KTFA(), KTSS(), CTFA(), CTSS(), FreqTFA(), FreqTSS(),
@@ -4659,9 +4675,6 @@ SUBROUTINE Coeff(p,InputFileData, ErrStat, ErrMsg)
    REAL(ReKi)                   :: AxRdTFAOld(2,2)                                 ! Previous AxRdTFA (i.e., AxRdTFA from the previous node)
    REAL(ReKi)                   :: AxRdTSS   (2,2)                                 ! Temporary result holding the current addition to the AxRedTSS() array.
    REAL(ReKi)                   :: AxRdTSSOld(2,2)                                 ! Previous AxRdTSS (i.e., AxRdTSS from the previous node)
-   REAL(ReKi)                   :: TmpDist                                         ! Temporary distance used in the calculation of the aero center locations.
-   REAL(ReKi)                   :: TmpDistj1                                       ! Temporary distance used in the calculation of the aero center locations.
-   REAL(ReKi)                   :: TmpDistj2                                       ! Temporary distance used in the calculation of the aero center locations.
    REAL(ReKi)                   :: ElmntStff                                       ! (Temporary) stiffness of an element.
    REAL(ReKi)                   :: ElStffFA                                        ! (Temporary) tower fore-aft stiffness of an element
    REAL(ReKi)                   :: ElStffSS                                        ! (Temporary) tower side-to-side  stiffness of an element
@@ -4689,25 +4702,6 @@ SUBROUTINE Coeff(p,InputFileData, ErrStat, ErrMsg)
 
    ErrStat = ErrID_None
    ErrMsg  = ''
-
-   !...............................................................................................................................
-   ! Calculate the distances from point S on a blade to the aerodynamic center in the j1 and j2 directions:
-   !...............................................................................................................................
-
-   DO K = 1,p%NumBl          ! Loop through the blades
-
-      DO J = 1,p%BldNodes    ! Loop through the blade nodes / elements
-
-         TmpDist           = ( 0.25 - p%PitchAxis(K,J) )*p%Chord(J)   ! Distance along the chordline from point S (25% chord) to the aerodynamic center of the blade element J--positive towards the trailing edge.
-         TmpDistj1         = TmpDist*p%SAeroTwst(J)                   ! Distance along the j1-axis   from point S (25% chord) to the aerodynamic center of the blade element J
-         TmpDistj2         = TmpDist*p%CAeroTwst(J)                   ! Distance along the j2-axis   from point S (25% chord) to the aerodynamic center of the blade element J
-         p%rSAerCenn1(K,J) = TmpDistj1*p%CThetaS(K,J) - TmpDistj2*p%SThetaS(K,J)
-         p%rSAerCenn2(K,J) = TmpDistj1*p%SThetaS(K,J) + TmpDistj2*p%CThetaS(K,J)
-
-      ENDDO ! J - Blade nodes / elements
-
-   ENDDO    ! K - Blades
-
 
    !...............................................................................................................................
    ! Calculate the structure that furls with the rotor inertia term:
@@ -4755,28 +4749,32 @@ SUBROUTINE Coeff(p,InputFileData, ErrStat, ErrMsg)
    END IF
 
       ! Calculate hub inertia about its centerline passing through its c.g..
-      !   This calculation assumes that the hub for a 2-blader is essentially
-      !   a uniform cylinder whose centerline is transverse through the cylinder
-      !   passing through its c.g..  That is, for a 2-blader, Hubg1Iner =
-      !   Hubg2Iner is the inertia of the hub about both the g1- and g2- axes.  For
-      !   3-bladers, Hubg1Iner is simply equal to HubIner and Hubg2Iner is zero.
+      ! For a 2-bladed turbine:
+      !   - Hub interia about the rotor axis: Hubf1Iner is equal to HubIner
+      !   - Hub inertia about the teeter axis: Hubf2Iner is obtained by applying
+      !     parallel-axis theorem to HubIner_Teeter
+      !   Note that f-axes are used and therefore, inertias are not corrected
+      !   for the delta-3 angle
+      ! For a 3-bladed turbine:
+      !   - Hub interia about the rotor axis: Hubf1Iner is equal to HubIner
+      !   - Hub inertia about the teeter axis: Hubf2Iner is zero
       ! Also, Initialize RotMass and RotIner to associated hub properties:
 
    IF ( p%NumBl == 2 )  THEN ! 2-blader
-      p%Hubg1Iner = ( InputFileData%HubIner - p%HubMass*( ( p%UndSling - p%HubCM )**2 ) )/( p%CosDel3**2 )
-      p%Hubg2Iner = p%Hubg1Iner
-      IF ( p%Hubg1Iner < 0.0 ) THEN
+      p%Hubf1Iner = InputFileData%HubIner
+      p%Hubf2Iner = InputFileData%HubIner_Teeter - p%HubMass*( ( p%UndSling - p%HubCM )**2 )
+      IF ( p%Hubf1Iner < 0.0 ) THEN
          ErrStat = ErrID_Fatal
-         ErrMsg = ' HubIner must not be less than HubMass*( UndSling - HubCM )^2 for 2-blader.'
+         ErrMsg = ' HubIner_Teeter must not be less than HubMass*( UndSling - HubCM )^2 for 2-blader.'
          RETURN
       END IF
    ELSE                    ! 3-blader
-      p%Hubg1Iner = InputFileData%HubIner
-      p%Hubg2Iner = 0.0
+      p%Hubf1Iner = InputFileData%HubIner
+      p%Hubf2Iner = 0.0
    ENDIF
 
    p%RotMass   = p%HubMass
-   p%RotIner   = p%Hubg1Iner
+   p%RotIner   = p%Hubf1Iner
 
 
    !...............................................................................................................................
@@ -5111,7 +5109,7 @@ SUBROUTINE Coeff(p,InputFileData, ErrStat, ErrMsg)
 
       ! Calculate the mass of the current element
 
-      p%TElmntMass(J)    = p%MassT(J)*p%DHNodes(J)     ! Mass of tower element J
+      p%TElmntMass(J)    = p%MassT(J)*abs(p%DHNodes(J))     ! Mass of tower element J
 
 
       ! Integrate to find the tower mass which will be output in .fsm
@@ -5185,8 +5183,8 @@ SUBROUTINE Coeff(p,InputFileData, ErrStat, ErrMsg)
       ! Integrate to find the generalized stiffness of the tower (not including gravitational
       !    effects).
 
-      ElStffFA       = p%StiffTFA(J)*p%DHNodes(J)                        ! Fore-aft stiffness of tower element J
-      ElStffSS       = p%StiffTSS(J)*p%DHNodes(J)                        ! Side-to-side stiffness of tower element J
+      ElStffFA       = p%StiffTFA(J)*abs(p%DHNodes(J))                        ! Fore-aft stiffness of tower element J
+      ElStffSS       = p%StiffTSS(J)*abs(p%DHNodes(J))                        ! Side-to-side stiffness of tower element J
 
       DO I = 1,2     ! Loop through all tower DOFs in one direction
          DO L = 1,2  ! Loop through all tower DOFs in one direction
@@ -5200,7 +5198,7 @@ SUBROUTINE Coeff(p,InputFileData, ErrStat, ErrMsg)
       !   Ignore the cross-correlation terms of KTFAGrav (i.e. KTFAGrav(i,j) where i /= j)
       !   and KTSSGrav since these terms will never be used.
 
-      ElmntStff      = -TMssAbvNd(J)*p%DHNodes(J)*p%Gravity              ! Gravitational stiffness of tower element J
+      ElmntStff      = -TMssAbvNd(J)*abs(p%DHNodes(J))*p%Gravity              ! Gravitational stiffness of tower element J
 
       DO I = 1,2     ! Loop through all tower DOFs in one direction
          KTFAGrav(I,I) = KTFAGrav(I,I) + ElmntStff*p%TwrFASF(I,J,1)**2
@@ -5255,10 +5253,18 @@ SUBROUTINE Coeff(p,InputFileData, ErrStat, ErrMsg)
       ! Calculate the tower natural frequencies:
 
    DO I = 1,2     ! Loop through all tower DOFs in one direction
-      p%FreqTFA(I,1) = Inv2Pi*SQRT(   p%KTFA(I,I)                  /( MTFA(I,I) - p%TwrTpMass ) )  ! Natural tower I-fore-aft frequency w/o gravitational destiffening nor tower-top mass effects
-      p%FreqTFA(I,2) = Inv2Pi*SQRT( ( p%KTFA(I,I) + KTFAGrav(I,I) )/  MTFA(I,I)               )  ! Natural tower I-fore-aft frequency w/  gravitational destiffening and tower-top mass effects
-      p%FreqTSS(I,1) = Inv2Pi*SQRT(   p%KTSS(I,I)                  /( MTSS(I,I) - p%TwrTpMass ) )  ! Natural tower I-side-to-side frequency w/o gravitational destiffening nor tower-top mass effects
-      p%FreqTSS(I,2) = Inv2Pi*SQRT( ( p%KTSS(I,I) + KTSSGrav(I,I) )/  MTSS(I,I)               )  ! Natural tower I-side-to-side frequency w/  gravitational destiffening and tower-top mass effects
+      if ( EqualRealNos(( MTFA(I,I) - p%TwrTpMass ), 0.0_ReKi) ) then
+         p%FreqTFA(I,1) = NaN ! Avoid creating a divide by zero signal, but set p%FreqTFA(I,1) = NaN
+      else        
+         p%FreqTFA(I,1) = Inv2Pi*SQRT(   p%KTFA(I,I)/( MTFA(I,I) - p%TwrTpMass ) )  ! Natural tower I-fore-aft frequency w/o gravitational destiffening nor tower-top mass effects
+      end if
+      if ( EqualRealNos(( MTSS(I,I) - p%TwrTpMass ), 0.0_ReKi) ) then
+         p%FreqTSS(I,1) = NaN ! Avoid creating a divide by zero signal, but set p%FreqTFS(I,1) = NaN
+      else
+         p%FreqTSS(I,1) = Inv2Pi*SQRT(   p%KTSS(I,I)/( MTSS(I,I) - p%TwrTpMass ) )  ! Natural tower I-side-to-side frequency w/o gravitational destiffening nor tower-top mass effects
+      end if
+      p%FreqTFA(I,2) = Inv2Pi*SQRT( ( p%KTFA(I,I) + KTFAGrav(I,I) )/MTFA(I,I)               )  ! Natural tower I-fore-aft frequency w/  gravitational destiffening and tower-top mass effects
+      p%FreqTSS(I,2) = Inv2Pi*SQRT( ( p%KTSS(I,I) + KTSSGrav(I,I) )/MTSS(I,I)               )  ! Natural tower I-side-to-side frequency w/  gravitational destiffening and tower-top mass effects
    ENDDO          ! I - All tower DOFs in one direction
 
 
@@ -5309,7 +5315,7 @@ SUBROUTINE Coeff(p,InputFileData, ErrStat, ErrMsg)
 END SUBROUTINE Coeff
 !----------------------------------------------------------------------------------------------------------------------------------
 !> This routine calculates the initial blade deflections.
-!! Base the intial values of the blade DOFs, INITQF1, INITQF2, and
+!! Base the initial values of the blade DOFs, INITQF1, INITQF2, and
 !!   INITQE1, on OoPDefl and IPDefl.
 !! Write messages to the screen if the specified initial tip displacements
 !!  are incompatible with the enabled DOFs.
@@ -5936,6 +5942,21 @@ SUBROUTINE SetEnabledDOFIndexArrays( p )
 
 
    DO K = 1,p%NumBl ! Loop through all blades
+      IF ( p%DOF_Flag(DOF_BP(K  )) )  THEN  ! Blade pitch.
+
+         p%DOFs%NActvDOF = p%DOFs%NActvDOF + 1
+         p%DOFs%NPSBE(K) = p%DOFs%NPSBE(K) + 1
+         p%DOFs%NPSE (K) = p%DOFs%NPSE (K) + 1
+
+         p%DOFs%PS      (  p%DOFs%NActvDOF) = DOF_BP(K  )
+         p%DOFs%PSBE    (K,p%DOFs%NPSBE(K)) = DOF_BP(K  )
+         p%DOFs%PSE     (K,p%DOFs%NPSE (K)) = DOF_BP(K  )
+
+      ENDIF
+   ENDDO          ! K - Blades
+
+
+   DO K = 1,p%NumBl ! Loop through all blades
       IF ( p%DOF_Flag(DOF_BF(K,1)) )  THEN  ! 1st blade flap.
 
          p%DOFs%NActvDOF = p%DOFs%NActvDOF + 1
@@ -6014,7 +6035,7 @@ SUBROUTINE SetCoordSy( t, CoordSys, RtHSdat, BlPitch, p, x, ErrStat, ErrMsg )
       ! Subroutine arguments (passed variables)
 
    REAL(DbKi),                   INTENT(IN)    :: t                             !< Current simulation time, in seconds (used only for SmllRotTrans error messages)
-   REAL(ReKi),                   INTENT(IN)    :: BlPitch (:)                   !< The current blade pitch
+   REAL(ReKi),                   INTENT(IN)    :: BlPitch (:)                   !< The current blade pitch command
    TYPE(ED_CoordSys),            INTENT(INOUT) :: CoordSys                      !< The coordinate systems to be set
    TYPE(ED_RtHndSide),           INTENT(INOUT) :: RtHSdat                       !< data from the RtHndSid module
    TYPE(ED_ParameterType),       INTENT(IN)    :: p                             !< The module's parameters
@@ -6078,14 +6099,28 @@ SUBROUTINE SetCoordSy( t, CoordSys, RtHSdat, BlPitch, p, x, ErrStat, ErrMsg )
 
       ! Tower base / platform coordinate system:
 
-   CALL SmllRotTrans( 'platform displacement (ElastoDyn SetCoordSy)', x%QT(DOF_R), x%QT(DOF_Y), -x%QT(DOF_P), TransMat, TRIM(Num2LStr(t))//' s', ErrStat2, ErrMsg2 )  ! Get the transformation matrix, TransMat, from inertial frame to tower base / platform coordinate systems.
-      CALL CheckError( ErrStat2, ErrMsg2 )
-      IF (ErrStat >= AbortErrLev) RETURN
+   ! CALL SmllRotTrans( 'platform displacement (ElastoDyn SetCoordSy)', x%QT(DOF_R), x%QT(DOF_Y), -x%QT(DOF_P), TransMat, TRIM(Num2LStr(t))//' s', ErrStat2, ErrMsg2 )  ! Get the transformation matrix, TransMat, from inertial frame to tower base / platform coordinate systems.
+   !    CALL CheckError( ErrStat2, ErrMsg2 )
+   !    IF (ErrStat >= AbortErrLev) RETURN
 
-   CoordSys%a1 = TransMat(1,1)*CoordSys%z1 + TransMat(1,2)*CoordSys%z2 + TransMat(1,3)*CoordSys%z3 ! Vector / direction a1 (=  xt from the IEC coord. system).
-   CoordSys%a2 = TransMat(2,1)*CoordSys%z1 + TransMat(2,2)*CoordSys%z2 + TransMat(2,3)*CoordSys%z3 ! Vector / direction a2 (=  zt from the IEC coord. system).
-   CoordSys%a3 = TransMat(3,1)*CoordSys%z1 + TransMat(3,2)*CoordSys%z2 + TransMat(3,3)*CoordSys%z3 ! Vector / direction a3 (= -yt from the IEC coord. system).
+   ! CoordSys%a1 = TransMat(1,1)*CoordSys%z1 + TransMat(1,2)*CoordSys%z2 + TransMat(1,3)*CoordSys%z3 ! Vector / direction a1 (=  xt from the IEC coord. system).
+   ! CoordSys%a2 = TransMat(2,1)*CoordSys%z1 + TransMat(2,2)*CoordSys%z2 + TransMat(2,3)*CoordSys%z3 ! Vector / direction a2 (=  zt from the IEC coord. system).
+   ! CoordSys%a3 = TransMat(3,1)*CoordSys%z1 + TransMat(3,2)*CoordSys%z2 + TransMat(3,3)*CoordSys%z3 ! Vector / direction a3 (= -yt from the IEC coord. system).
 
+      ! Platform orientation after yaw
+   CoordSys%alpha1 =  cos(x%QT(DOF_Y))*CoordSys%z1 - sin(x%QT(DOF_Y))*CoordSys%z3
+   CoordSys%alpha2 =  CoordSys%z2
+   CoordSys%alpha3 =  sin(x%QT(DOF_Y))*CoordSys%z1 + cos(x%QT(DOF_Y))*CoordSys%z3
+
+      ! Platform orientation after pitch
+   CoordSys%beta1  =  cos(x%QT(DOF_P))*CoordSys%alpha1 - sin(x%QT(DOF_P))*CoordSys%alpha2
+   CoordSys%beta2  =  sin(x%QT(DOF_P))*CoordSys%alpha1 + cos(x%QT(DOF_P))*CoordSys%alpha2
+   CoordSys%beta3  =  CoordSys%alpha3
+
+      ! Platform orientation after roll
+   CoordSys%a1     =  CoordSys%beta1 
+   CoordSys%a2     =  cos(x%QT(DOF_R))*CoordSys%beta2 + sin(x%QT(DOF_R))*CoordSys%beta3
+   CoordSys%a3     = -sin(x%QT(DOF_R))*CoordSys%beta2 + cos(x%QT(DOF_R))*CoordSys%beta3
 
    DO J = 1,p%TwrNodes ! Loop through the tower nodes / elements
 
@@ -6095,7 +6130,7 @@ SUBROUTINE SetCoordSy( t, CoordSys, RtHSdat, BlPitch, p, x, ErrStat, ErrMsg )
       ThetaFA = -p%TwrFASF(1,J       ,1)*x%QT(DOF_TFA1) - p%TwrFASF(2,J       ,1)*x%QT(DOF_TFA2)
       ThetaSS =  p%TwrSSSF(1,J       ,1)*x%QT(DOF_TSS1) + p%TwrSSSF(2,J       ,1)*x%QT(DOF_TSS2)
 
-      CALL SmllRotTrans( 'tower deflection (ElastoDyn SetCoordSy)', ThetaSS, 0.0_R8Ki, ThetaFA, TransMat, TRIM(Num2LStr(t))//' s', ErrStat2, ErrMsg2 )   ! Get the transformation matrix, TransMat, from tower-base to tower element-fixed coordinate systems.
+      CALL SmllRotTrans( 'tower deflection (ElastoDyn SetCoordSy)', ThetaSS, 0.0_R8Ki, ThetaFA, TransMat, ErrStat=ErrStat2, ErrMsg=ErrMsg2 )   ! Get the transformation matrix, TransMat, from tower-base to tower element-fixed coordinate systems.
          CALL CheckError( ErrStat2, ErrMsg2 )
          IF (ErrStat >= AbortErrLev) RETURN
 
@@ -6112,7 +6147,7 @@ SUBROUTINE SetCoordSy( t, CoordSys, RtHSdat, BlPitch, p, x, ErrStat, ErrMsg )
    ThetaFA    = -p%TwrFASF(1,p%TTopNode,1)*x%QT(DOF_TFA1) - p%TwrFASF(2,p%TTopNode,1)*x%QT(DOF_TFA2)
    ThetaSS    =  p%TwrSSSF(1,p%TTopNode,1)*x%QT(DOF_TSS1) + p%TwrSSSF(2,p%TTopNode,1)*x%QT(DOF_TSS2)
 
-   CALL SmllRotTrans( 'tower deflection (ElastoDyn SetCoordSy)', ThetaSS, 0.0_R8Ki, ThetaFA, TransMat, TRIM(Num2LStr(t))//' s', ErrStat2, ErrMsg2 )   ! Get the transformation matrix, TransMat, from tower-base to tower-top/base-plate coordinate systems.
+   CALL SmllRotTrans( 'tower deflection (ElastoDyn SetCoordSy)', ThetaSS, 0.0_R8Ki, ThetaFA, TransMat, ErrStat=ErrStat2, ErrMsg=ErrMsg2 )   ! Get the transformation matrix, TransMat, from tower-base to tower-top/base-plate coordinate systems.
       CALL CheckError( ErrStat2, ErrMsg2 )
       IF (ErrStat >= AbortErrLev) RETURN
 
@@ -6218,14 +6253,19 @@ SUBROUTINE SetCoordSy( t, CoordSys, RtHSdat, BlPitch, p, x, ErrStat, ErrMsg )
 
       ! Blade / pitched coordinate system:
 
-      CosPitch = COS( REAL(BlPitch(K),R8Ki) )
-      SinPitch = SIN( REAL(BlPitch(K),R8Ki) )
+      IF ( p%DOF_Flag(DOF_BP(K)) ) THEN
+         CosPitch = COS( x%QT(DOF_BP(K)) )
+         SinPitch = SIN( x%QT(DOF_BP(K)) )
+      ELSE
+         CosPitch = COS( REAL(BlPitch(K),R8Ki) )
+         SinPitch = SIN( REAL(BlPitch(K),R8Ki) )
+      END IF
 
       CoordSys%j1(K,:) = CosPitch*CoordSys%i1(K,:) - SinPitch*CoordSys%i2(K,:)      ! j1(K,:) = vector / direction j1 for blade K (=  xbK from the IEC coord. system).
       CoordSys%j2(K,:) = SinPitch*CoordSys%i1(K,:) + CosPitch*CoordSys%i2(K,:)      ! j2(K,:) = vector / direction j2 for blade K (=  ybK from the IEC coord. system).
       CoordSys%j3(K,:) = CoordSys%i3(K,:)                                           ! j3(K,:) = vector / direction j3 for blade K (=  zbK from the IEC coord. system).
 
-
+!FIXME: don't need 0 and TipNode without AD14
       DO J = 0,p%TipNode ! Loop through the blade nodes / elements
 
 
@@ -6248,7 +6288,7 @@ SUBROUTINE SetCoordSy( t, CoordSys, RtHSdat, BlPitch, p, x, ErrStat, ErrMsg )
          ThetaLxb = p%CThetaS(K,J)*ThetaIP - p%SThetaS(K,J)*ThetaOoP
          ThetaLyb = p%SThetaS(K,J)*ThetaIP + p%CThetaS(K,J)*ThetaOoP
 
-         CALL SmllRotTrans( 'blade deflection (ElastoDyn SetCoordSy)', ThetaLxb, ThetaLyb, 0.0_R8Ki, TransMat, TRIM(Num2LStr(t))//' s', ErrStat2, ErrMsg2 ) ! Get the transformation matrix, TransMat, from blade coordinate system aligned with local structural axes (not element fixed) to blade element-fixed coordinate system aligned with local structural axes.
+         CALL SmllRotTrans( 'blade deflection (ElastoDyn SetCoordSy)', ThetaLxb, ThetaLyb, 0.0_R8Ki, TransMat, ErrStat=ErrStat2, ErrMsg=ErrMsg2 ) ! Get the transformation matrix, TransMat, from blade coordinate system aligned with local structural axes (not element fixed) to blade element-fixed coordinate system aligned with local structural axes.
             CALL CheckError( ErrStat2, ErrMsg2 )
             IF (ErrStat >= AbortErrLev) RETURN
 
@@ -6256,8 +6296,7 @@ SUBROUTINE SetCoordSy( t, CoordSys, RtHSdat, BlPitch, p, x, ErrStat, ErrMsg )
          CoordSys%n2(K,J,:) = TransMat(2,1)*Lj1 + TransMat(2,2)*Lj2 + TransMat(2,3)*Lj3   ! Vector / direction n2 for node J of blade K (= LybK from the IEC coord. system).
          CoordSys%n3(K,J,:) = TransMat(3,1)*Lj1 + TransMat(3,2)*Lj2 + TransMat(3,3)*Lj3   ! Vector / direction n3 for node J of blade K (= LzbK from the IEC coord. system).
 
-      ! skip these next CoordSys variables at the root and the tip; they are required only for AD14:
-         
+
          if (j == 0 .or. j==p%TipNode) cycle  
       
          
@@ -6311,18 +6350,6 @@ SUBROUTINE SetCoordSy( t, CoordSys, RtHSdat, BlPitch, p, x, ErrStat, ErrMsg )
    CoordSys%tfa = p%CTFrlSkew*p%CTFrlTilt*CoordSys%d1 + p%STFrlTilt*CoordSys%d2 - p%STFrlSkew*p%CTFrlTilt*CoordSys%d3
 
 
-      ! Tail fin coordinate system:
-
-   CoordSys%p1 = (                           p%CTFinSkew*p%CTFinTilt             )*CoordSys%tf1 &   ! Vector / direction p1 (= tail fin  x).
-               + (                                       p%STFinTilt             )*CoordSys%tf2 &
-               + (                         - p%STFinSkew*p%CTFinTilt             )*CoordSys%tf3
-   CoordSys%p2 = ( p%STFinSkew*p%STFinBank - p%CTFinSkew*p%STFinTilt*p%CTFinBank )*CoordSys%tf1 &   ! Vector / direction p2 (= tail fin  z).
-               + (                                       p%CTFinTilt*p%CTFinBank )*CoordSys%tf2 &
-               + ( p%CTFinSkew*p%STFinBank + p%STFinSkew*p%STFinTilt*p%CTFinBank )*CoordSys%tf3
-   CoordSys%p3 = ( p%STFinSkew*p%CTFinBank + p%CTFinSkew*p%STFinTilt*p%STFinBank )*CoordSys%tf1 &   ! Vector / direction p3 (= tail fin -y).
-               + (                         -             p%CTFinTilt*p%STFinBank )*CoordSys%tf2 &
-               + ( p%CTFinSkew*p%CTFinBank - p%STFinSkew*p%STFinTilt*p%STFinBank )*CoordSys%tf3
-
    RETURN
 CONTAINS
    !...............................................................................................................................
@@ -6360,82 +6387,52 @@ END SUBROUTINE SetCoordSy
 !----------------------------------------------------------------------------------------------------------------------------------
 !> This routine computes the rotor-furl moment due to rotor-furl deflection and rate.
 SUBROUTINE RFurling( t, p, RFrlDef, RFrlRate, RFrlMom )
-!..................................................................................................................................
-
       ! Passed Variables:
    REAL(DbKi), INTENT(IN)              :: t                                   !< simulation time
    TYPE(ED_ParameterType), INTENT(IN)  :: p                                   !< parameters from the structural dynamics module
-
    REAL(R8Ki), INTENT(IN )             :: RFrlDef                             !< The rotor-furl deflection, x%QT(DOF_RFrl)
    REAL(ReKi), INTENT(OUT)             :: RFrlMom                             !< The total moment supplied by the springs, and dampers
    REAL(R8Ki), INTENT(IN )             :: RFrlRate                            !< The rotor-furl rate, x%QDT(DOF_RFrl)
-
-
       ! Local variables:
    REAL(ReKi)                   :: RFrlDMom                                   ! The moment supplied by the rotor-furl dampers
    REAL(ReKi)                   :: RFrlSMom                                   ! The moment supplied by the rotor-furl springs
-
 
    SELECT CASE ( p%RFrlMod ) ! Which rotor-furl model are we using?
 
       CASE ( 0_IntKi )       ! None!
 
-
          RFrlMom = 0.0
-
 
       CASE ( 1_IntKi )        ! Standard (using inputs from the FAST furling input file).
 
-
          ! Linear spring:
-
          RFrlSMom = -p%RFrlSpr*RFrlDef
 
-
          ! Add spring-stops:
-
          IF ( RFrlDef > p%RFrlUSSP )  THEN       ! Up-stop
             RFrlSMom = RFrlSMom - p%RFrlUSSpr*( RFrlDef - p%RFrlUSSP )
          ELSEIF ( RFrlDef < p%RFrlDSSP )  THEN   ! Down-stop
             RFrlSMom = RFrlSMom - p%RFrlDSSpr*( RFrlDef - p%RFrlDSSP )
          ENDIF
 
-
          ! Linear damper:
-
          RFrlDMom = -p%RFrlDmp*RFrlRate
 
-
-         ! Add coulomb friction:
-
-         IF ( RFrlRate /= 0.0 )  THEN
-            RFrlDMom = RFrlDMom - SIGN( p%RFrlCDmp, real(RFrlRate,ReKi) )
-         ENDIF
-
-
          ! Add damper-stops:
-
          IF ( RFrlDef > p%RFrlUSDP )  THEN       ! Up-stop
             RFrlDMom = RFrlDMom - p%RFrlUSDmp*RFrlRate
          ELSEIF ( RFrlDef < p%RFrlDSDP )  THEN   ! Down-stop
             RFrlDMom = RFrlDMom - p%RFrlDSDmp*RFrlRate
          ENDIF
 
-
          ! Total up all the moments.
-
          RFrlMom = RFrlSMom + RFrlDMom
-
 
       CASE ( 2_IntKi )              ! User-defined rotor-furl spring/damper model.
 
-
          CALL UserRFrl ( RFrlDef, RFrlRate, t, p%RootName, RFrlMom )
 
-
    END   SELECT
-
-   RETURN
 END SUBROUTINE RFurling
 !----------------------------------------------------------------------------------------------------------------------------------
 !> This routine computes the teeter moment due to teeter deflection and rate.
@@ -6535,89 +6532,116 @@ SUBROUTINE Teeter( t, p, TeetDef, TeetRate, TeetMom )
    RETURN
 END SUBROUTINE Teeter
 !----------------------------------------------------------------------------------------------------------------------------------
-!> This routine computes the tail-furl moment due to tail-furl deflection and rate.
-SUBROUTINE TFurling( t, p, TFrlDef, TFrlRate, TFrlMom )
+!> This routine computes the Yaw Friction Torque due to yaw rate and acceleration.
+SUBROUTINE YawFriction( t, p, F, M, Mzz, Omg, OmgDot, YawFriMf )
 !..................................................................................................................................
-
-   IMPLICIT                        NONE
 
       ! Passed Variables:
    REAL(DbKi), INTENT(IN)             :: t                                       !< simulation time
    TYPE(ED_ParameterType), INTENT(IN) :: p                                       !< parameters from the structural dynamics module
+   REAL(ReKi), INTENT(IN )            :: F(3), M(3)                              !< Effective yaw bearing force and moment
+   REAL(R8Ki), INTENT(IN )            :: Mzz                                     !< External yaw bearing torque
+   REAL(R8Ki), INTENT(IN )            :: Omg                                     !< The yaw rate (rotational speed), x%QDT(DOF_Yaw).
+   REAL(R8Ki), INTENT(IN )            :: OmgDot                                  !< The yaw acceleration (derivative of rotational speed), x%QD2T(DOF_Yaw).
+   REAL(ReKi), INTENT(OUT)            :: YawFriMf                                !< The total friction torque (Coulomb + viscous).
 
+      ! Local variables:
+   REAL(ReKi)                         :: temp, Fs, Mb, Mf_vis                    ! temp takes the value of Fz or -1.
+
+   
+   SELECT CASE ( p%YawFrctMod  ) 
+   ! Yaw-friction model {0: none, 1: does not use F and M at yaw bearing, 2: does, 3: user defined model} (switch)
+
+   CASE ( 0_IntKi )              ! None!
+
+      YawFriMf = 0.0_ReKi
+
+   CASE ( 1_IntKi, 2_IntKi )              ! 1 = F and M not used. 2 = F and M used
+
+      temp = -1.0_ReKi  ! In the case of YawFrctMod=1
+      Fs   =  0.0_ReKi
+      Mb   =  0.0_ReKi
+
+      IF  (p%YawFrctMod .EQ. 2) THEN   
+        temp = MIN(0.0_ReKi, F(3))  ! In the case of YawFrctMod=2
+        Fs = SQRT(F(1)**2+F(2)**2)  ! Effective shear force on yaw bearing
+        Mb = SQRT(M(1)**2+M(2)**2)  ! Effective bending moment on yaw bearing
+      ENDIF
+      
+      IF  (EqualRealNos( Omg, 0.0_R8Ki )) THEN
+           IF (EqualRealNos( OmgDot, 0.0_R8Ki )) THEN
+                YawFriMf =  -MIN( real(p%M_CSmax,ReKi) * ABS(temp) + real(p%M_FCSmax,ReKi) * Fs + real(p%M_MCSmax,ReKi) * Mb, ABS(real(Mzz,ReKi)) ) * SIGN(1.0_ReKi, real(Mzz,ReKi))
+           ELSE
+                YawFriMf =  -MIN( real(p%M_CD,   ReKi) * ABS(temp) + real(p%M_FCD,   ReKi) * Fs + real(p%M_MCD,   ReKi) * Mb, ABS(real(Mzz,ReKi)) ) * SIGN(1.0_ReKi, real(Mzz,ReKi))
+           ENDIF    
+      ELSE
+           ! Viscous friction
+           IF ( ABS(Omg) > p%OmgCut ) THEN ! Full quadratic viscous friction
+                Mf_vis = - real(p%sig_v,ReKi) * real(Omg,ReKi) - real(p%sig_v2,ReKi) * real(Omg,ReKi) * ABS(real(Omg,ReKi))
+           ELSE ! Linearized viscous friction
+                Mf_vis = - ( real(p%sig_v,ReKi) + real(p%sig_v2,ReKi) * real(p%OmgCut,ReKi) ) * real(Omg,ReKi)
+           ENDIF
+           YawFriMf = ( real(p%M_CD,ReKi) * temp - real(p%M_FCD,ReKi) * Fs - real(p%M_MCD,ReKi) * Mb ) * sign(1.0_ReKi, real(Omg,ReKi)) &  ! Coulomb friction
+                        + Mf_vis
+      ENDIF
+
+   CASE ( 3_IntKi )              ! User-defined YawFriMf model. >>>> NOT IMPLEMENTED YET
+
+      CALL UserYawFrict ( t, F, M, Mzz, Omg, OmgDot, p%RootName, YawFriMf )
+
+   END SELECT
+
+   RETURN
+END SUBROUTINE YawFriction
+!----------------------------------------------------------------------------------------------------------------------------------
+!> This routine computes the tail-furl moment due to tail-furl deflection and rate.
+SUBROUTINE TFurling( t, p, TFrlDef, TFrlRate, TFrlMom )
+      ! Passed Variables:
+   REAL(DbKi), INTENT(IN)             :: t                                       !< simulation time
+   TYPE(ED_ParameterType), INTENT(IN) :: p                                       !< parameters from the structural dynamics module
    REAL(R8Ki), INTENT(IN )            :: TFrlDef                                 !< The tail-furl deflection, QT(DOF_TFrl).
    REAL(ReKi), INTENT(OUT)            :: TFrlMom                                 !< The total moment supplied by the springs, and dampers.
    REAL(R8Ki), INTENT(IN )            :: TFrlRate                                !< The tail-furl rate, QDT(DOF_TFrl).
-
-
       ! Local variables:
-
    REAL(ReKi)                         :: TFrlDMom                                ! The moment supplied by the tail-furl dampers.
    REAL(ReKi)                         :: TFrlSMom                                ! The moment supplied by the tail-furl springs.
-
-
 
    SELECT CASE ( p%TFrlMod ) ! Which tail-furl model are we using?
 
       CASE ( 0_IntKi )              ! None!
 
-
          TFrlMom = 0.0
-
 
       CASE ( 1_IntKi )              ! Standard (using inputs from the FAST furling input file).
 
-
          ! Linear spring:
-
          TFrlSMom = -p%TFrlSpr*TFrlDef
 
-
          ! Add spring-stops:
-
          IF ( TFrlDef > p%TFrlUSSP )  THEN      ! Up-stop
             TFrlSMom = TFrlSMom - p%TFrlUSSpr*( TFrlDef - p%TFrlUSSP )
          ELSEIF ( TFrlDef < p%TFrlDSSP )  THEN  ! Down-stop
             TFrlSMom = TFrlSMom - p%TFrlDSSpr*( TFrlDef - p%TFrlDSSP )
          ENDIF
 
-
          ! Linear damper:
-
          TFrlDMom = -p%TFrlDmp*TFrlRate
 
-
-         ! Add coulomb friction:
-
-         IF ( .NOT. EqualRealNos( TFrlRate, 0.0_R8Ki) )  THEN
-            TFrlDMom = TFrlDMom - SIGN( p%TFrlCDmp, real(TFrlRate,reKi) )
-         ENDIF
-
-
          ! Add damper-stops:
-
          IF ( TFrlDef > p%TFrlUSDP )  THEN      ! Up-stop
             TFrlDMom = TFrlDMom - p%TFrlUSDmp*TFrlRate
          ELSEIF ( TFrlDef < p%TFrlDSDP )  THEN  ! Down-stop
             TFrlDMom = TFrlDMom - p%TFrlDSDmp*TFrlRate
          ENDIF
 
-
          ! Total up all the moments.
-
          TFrlMom = TFrlSMom + TFrlDMom
-
 
       CASE ( 2 )              ! User-defined tail-furl spring/damper model.
 
-
          CALL UserTFrl ( TFrlDef, TFrlRate, t, p%RootName, TFrlMom )
 
-
    END SELECT
-
-
-   RETURN
 END SUBROUTINE TFurling
 !----------------------------------------------------------------------------------------------------------------------------------
 !> This function calculates the sign (+/-1) of the low-speed shaft torque for
@@ -6664,7 +6688,6 @@ SUBROUTINE CalculatePositions( p, x, CoordSys, RtHSdat )
    TYPE(ED_RtHndSide),           INTENT(INOUT)  :: RtHSdat     !< data from the RtHndSid module (contains positions to be set)
 
       !Local variables
-   REAL(R8Ki)                   :: rK        (3)                                   ! Position vector from inertial frame origin to tail fin center of pressure (point K).
    !REAL(R8Ki)                   :: rQ        (3)                                   ! Position vector from inertial frame origin to apex of rotation (point Q).
 
    INTEGER(IntKi)               :: J                                               ! Counter for elements
@@ -6678,7 +6701,7 @@ SUBROUTINE CalculatePositions( p, x, CoordSys, RtHSdat )
       !   that are not dependent on the distributed tower or blade parameters:
 
    RtHSdat%rZ    = x%QT(DOF_Sg)* CoordSys%z1 + x%QT(DOF_Hv)* CoordSys%z2 - x%QT(DOF_Sw)* CoordSys%z3                          ! Position vector from inertia frame origin to platform reference (point Z).
-   RtHSdat%rZY   = p%rZYzt*  CoordSys%a2 + p%PtfmCMxt*CoordSys%a1 - p%PtfmCMyt*CoordSys%a3                                    ! Position vector from platform reference (point Z) to platform mass center (point Y).      
+   RtHSdat%rZY   = p%rZYxt*CoordSys%a1 - p%rZYyt*CoordSys%a3 + p%rZYzt*CoordSys%a2                                            ! Position vector from platform reference (point Z) to platform mass center (point Y).
    RtHSdat%rZT0  = p%rZT0zt* CoordSys%a2                                                                                      ! Position vector from platform reference (point Z) to tower base (point T(0))
    RtHSdat%rZO   = ( x%QT(DOF_TFA1) + x%QT(DOF_TFA2)                                                        )*CoordSys%a1 &   ! Position vector from platform reference (point Z) to tower-top / base plate (point O).
                     + ( p%RefTwrHt - 0.5*(      p%AxRedTFA(1,1,p%TTopNode)*x%QT(DOF_TFA1)*x%QT(DOF_TFA1) &
@@ -6689,16 +6712,15 @@ SUBROUTINE CalculatePositions( p, x, CoordSys, RtHSdat )
                                           + 2.0*p%AxRedTSS(1,2,p%TTopNode)*x%QT(DOF_TSS1)*x%QT(DOF_TSS2)   ) )*CoordSys%a2 &
                     + ( x%QT(DOF_TSS1) + x%QT(DOF_TSS2)                                                      )*CoordSys%a3
    RtHSdat%rOU   =   p%NacCMxn*CoordSys%d1  +  p%NacCMzn  *CoordSys%d2  -  p%NacCMyn  *CoordSys%d3                            ! Position vector from tower-top / base plate (point O) to nacelle center of mass (point U).
-   RtHSdat%rOV   = p%RFrlPntxn*CoordSys%d1  +  p%RFrlPntzn*CoordSys%d2  -  p%RFrlPntyn*CoordSys%d3                            ! Position vector from tower-top / base plate (point O) to specified point on rotor-furl axis (point V).
+   RtHSdat%rOV   = p%RFrlPnt_n(1)*CoordSys%d1  +  p%RFrlPnt_n(3)*CoordSys%d2  -  p%RFrlPnt_n(2)*CoordSys%d3                            ! Position vector from tower-top / base plate (point O) to specified point on rotor-furl axis (point V).
    RtHSdat%rVIMU =   p%rVIMUxn*CoordSys%rf1 +  p%rVIMUzn  *CoordSys%rf2 -   p%rVIMUyn *CoordSys%rf3                           ! Position vector from specified point on rotor-furl axis (point V) to nacelle IMU (point IMU).
    RtHSdat%rVD   =     p%rVDxn*CoordSys%rf1 +    p%rVDzn  *CoordSys%rf2 -     p%rVDyn *CoordSys%rf3                           ! Position vector from specified point on rotor-furl axis (point V) to center of mass of structure that furls with the rotor (not including rotor) (point D).
    RtHSdat%rVP   =     p%rVPxn*CoordSys%rf1 +    p%rVPzn  *CoordSys%rf2 -     p%rVPyn *CoordSys%rf3 + p%OverHang*CoordSys%c1  ! Position vector from specified point on rotor-furl axis (point V) to teeter pin (point P).
    RtHSdat%rPQ   = -p%UndSling*CoordSys%g1                                                                                    ! Position vector from teeter pin (point P) to apex of rotation (point Q).
    RtHSdat%rQC   =     p%HubCM*CoordSys%g1                                                                                    ! Position vector from apex of rotation (point Q) to hub center of mass (point C).
-   RtHSdat%rOW   = p%TFrlPntxn*CoordSys%d1  + p%TFrlPntzn *CoordSys%d2 -  p%TFrlPntyn*CoordSys%d3                             ! Position vector from tower-top / base plate (point O) to specified point on  tail-furl axis (point W).
+   RtHSdat%rOW   = p%TFrlPnt_n(1)*CoordSys%d1  + p%TFrlPnt_n(3) *CoordSys%d2 -  p%TFrlPnt_n(2)*CoordSys%d3                             ! Position vector from tower-top / base plate (point O) to specified point on  tail-furl axis (point W).
    RtHSdat%rWI   =     p%rWIxn*CoordSys%tf1 +      p%rWIzn*CoordSys%tf2 -     p%rWIyn*CoordSys%tf3                            ! Position vector from specified point on  tail-furl axis (point W) to tail boom center of mass     (point I).
    RtHSdat%rWJ   =     p%rWJxn*CoordSys%tf1 +      p%rWJzn*CoordSys%tf2 -     p%rWJyn*CoordSys%tf3                            ! Position vector from specified point on  tail-furl axis (point W) to tail fin  center of mass     (point J).
-   RtHSdat%rWK   =     p%rWKxn*CoordSys%tf1 +      p%rWKzn*CoordSys%tf2 -     p%rWKyn*CoordSys%tf3                            ! Position vector from specified point on  tail-furl axis (point W) to tail fin  center of pressure (point K).
    RtHSdat%rPC   = RtHSdat%rPQ + RtHSdat%rQC                                                                                  ! Position vector from teeter pin (point P) to hub center of mass (point C).
    RtHSdat%rT0O  = RtHSdat%rZO - RtHSdat%rZT0                                                                                 ! Position vector from the tower base (point T(0)) to tower-top / base plate (point O).
    RtHSdat%rO    = RtHSdat%rZ  + RtHSdat%rZO                                                                                  ! Position vector from inertial frame origin to tower-top / base plate (point O).
@@ -6706,7 +6728,7 @@ SUBROUTINE CalculatePositions( p, x, CoordSys, RtHSdat )
    !RtHSdat%rP    = RtHSdat%rO  + RtHSdat%rOV + RtHSdat%rVP                                                                   ! Position vector from inertial frame origin to teeter pin (point P).
    RtHSdat%rP    = RtHSdat%rV  + RtHSdat%rVP                                                                                  ! Position vector from inertial frame origin to teeter pin (point P).
    RtHSdat%rQ    = RtHSdat%rP  + RtHSdat%rPQ                                                                                  ! Position vector from inertial frame origin to apex of rotation (point Q).
-           rK    = RtHSdat%rO  + RtHSdat%rOW + RtHSdat%rWK                                                                    ! Position vector from inertial frame origin to tail fin center of pressure (point K).
+   RtHSdat%rJ    = RtHSdat%rO  + RtHSdat%rOW + RtHSdat%rWJ                                                                    ! Position vector from inertial frame origin to tail fin center of mass (point J).
 
 
    DO K = 1,p%NumBl ! Loop through all blades
@@ -6798,7 +6820,7 @@ END SUBROUTINE CalculatePositions
 !----------------------------------------------------------------------------------------------------------------------------------
 !> This routine is used to calculate the angular positions, velocities, and partial accelerations stored in other states that are used in
 !! both the CalcOutput and CalcContStateDeriv routines.
-SUBROUTINE CalculateAngularPosVelPAcc( p, x, CoordSys, RtHSdat )
+SUBROUTINE CalculateAngularPosVelPAcc( p, x, CoordSys, RtHSdat, ErrStat, ErrMsg )
 !..................................................................................................................................
 
       ! Passed variables
@@ -6807,13 +6829,25 @@ SUBROUTINE CalculateAngularPosVelPAcc( p, x, CoordSys, RtHSdat )
    TYPE(ED_CoordSys),            INTENT(IN   )  :: CoordSys    !< The coordinate systems that have been set for these states/time
    TYPE(ED_RtHndSide),           INTENT(INOUT)  :: RtHSdat     !< data from the RtHndSid module (contains positions to be set)
 
+   INTEGER(IntKi),               INTENT(OUT)    :: ErrStat                      !< Error status
+   CHARACTER(*),                 INTENT(OUT)    :: ErrMsg                       !< Error message
+
       !Local variables
-   
+
    REAL(ReKi)                   :: AngVelHM  (3)                                   ! Angular velocity of eleMent J of blade K (body M) in the hub (body H).
 !   REAL(ReKi)                   :: AngVelEN  (3)                                   ! Angular velocity of the nacelle (body N) in the inertia frame (body E for earth).
    REAL(ReKi)                   :: AngAccELt (3)                                   ! Portion of the angular acceleration of the low-speed shaft (body L) in the inertia frame (body E for earth) associated with everything but the QD2T()'s.
    INTEGER(IntKi)               :: J                                               ! Counter for elements
    INTEGER(IntKi)               :: K                                               ! Counter for blades
+   REAL(R8Ki)                   :: PtfmOrientation (3,3)                           ! Orientation matrix for the platform (-).
+   REAL(R8Ki)                   :: TransMat (3,3)                                  ! Orientation matrix for the platform (-).
+   REAL(R8Ki)                   :: ThetaFA                                         ! Tower fore-aft tilt deflection angle.
+   REAL(R8Ki)                   :: ThetaSS                                         ! Tower side-to-side tilt deflection angle.
+
+   INTEGER(IntKi)               :: ErrStat2                      ! Temporary error status
+   CHARACTER(ErrMsgLen)         :: ErrMsg2                       ! Temporary error message
+
+   CHARACTER(*), PARAMETER      :: RoutineName = "CalculateAngularPosVelPAcc"
 
    !-------------------------------------------------------------------------------------------------
    ! Angular and partial angular velocities
@@ -6823,15 +6857,19 @@ SUBROUTINE CalculateAngularPosVelPAcc( p, x, CoordSys, RtHSdat )
    ! NOTE: PAngVelEN(I,D,:) = the Dth-derivative of the partial angular velocity of DOF I for body N in body E.
 
    RtHSdat%PAngVelEX(       :,0,:) = 0.0
-   RtHSdat%PAngVelEX(DOF_R   ,0,:) =  CoordSys%z1
-   RtHSdat%PAngVelEX(DOF_P   ,0,:) = -CoordSys%z3
+   ! RtHSdat%PAngVelEX(DOF_R   ,0,:) =  CoordSys%z1
+   ! RtHSdat%PAngVelEX(DOF_P   ,0,:) = -CoordSys%z3
+   ! RtHSdat%PAngVelEX(DOF_Y   ,0,:) =  CoordSys%z2
+   RtHSdat%PAngVelEX(DOF_R   ,0,:) =  CoordSys%beta1
+   RtHSdat%PAngVelEX(DOF_P   ,0,:) = -CoordSys%alpha3
    RtHSdat%PAngVelEX(DOF_Y   ,0,:) =  CoordSys%z2
    RtHSdat%AngVelEX                =                     x%QDT(DOF_R   )*RtHSdat%PAngVelEX(DOF_R   ,0,:) &
                                                        + x%QDT(DOF_P   )*RtHSdat%PAngVelEX(DOF_P   ,0,:) &
                                                        + x%QDT(DOF_Y   )*RtHSdat%PAngVelEX(DOF_Y   ,0,:)
-   RtHSdat%AngPosEX                =                     x%QT (DOF_R   )*RtHSdat%PAngVelEX(DOF_R   ,0,:) &
-                                                       + x%QT (DOF_P   )*RtHSdat%PAngVelEX(DOF_P   ,0,:) &
-                                                       + x%QT (DOF_Y   )*RtHSdat%PAngVelEX(DOF_Y   ,0,:)
+   ! RtHSdat%AngPosEX                =                     x%QT (DOF_R   )*RtHSdat%PAngVelEX(DOF_R   ,0,:) & ! <- LW: Doesn't work for large rotation. Impacts AngPosEF (TwHtRP*i output)
+   !                                                     + x%QT (DOF_P   )*RtHSdat%PAngVelEX(DOF_P   ,0,:) &
+   !                                                     + x%QT (DOF_Y   )*RtHSdat%PAngVelEX(DOF_Y   ,0,:)
+   PtfmOrientation = EulerConstructZYX((/x%QT(DOF_R),x%QT(DOF_P),x%QT(DOF_Y)/))
 
    RtHSdat%PAngVelEB(       :,0,:) =  RtHSdat%PAngVelEX(:,0,:)
    RtHSdat%PAngVelEB(DOF_TFA1,0,:) = -p%TwrFASF(1,p%TTopNode,1)*CoordSys%a3
@@ -6884,7 +6922,10 @@ ENDIF
    !   everything but the QD2T()'s:
 
    RtHSdat%PAngVelEX(       :,1,:) = 0.0
-   RtHSdat%AngAccEXt               = 0.0
+   RtHSdat%PAngVelEX(DOF_R   ,1,:) = CROSS_PRODUCT(   RtHSdat%AngVelEX,                   RtHSdat%PAngVelEX(DOF_R   ,0,:) )
+   RtHSdat%PAngVelEX(DOF_P   ,1,:) = CROSS_PRODUCT(   x%QDT(DOF_Y)*CoordSys%z2,           RtHSdat%PAngVelEX(DOF_P   ,0,:) )
+   RtHSdat%AngAccEXt               =   x%QDT(DOF_R)*RtHSdat%PAngVelEX(DOF_R   ,1,:) &
+                                     + x%QDT(DOF_P)*RtHSdat%PAngVelEX(DOF_P   ,1,:)
 
    RtHSdat%PAngVelEB(       :,1,:) =                  RtHSdat%PAngVelEX(:,1,:)
    RtHSdat%PAngVelEB(DOF_TFA1,1,:) = CROSS_PRODUCT(   RtHSdat%AngVelEX,                   RtHSdat%PAngVelEB(DOF_TFA1,0,:) )
@@ -6935,32 +6976,33 @@ ENDIF
       !   of DOF I for body M of blade K, element J in body E.
 
          RtHSdat%PAngVelEM(K,J,          :,0,:) = RtHSdat%PAngVelEH(:,0,:)
+         RtHSdat%PAngVelEM(K,J,DOF_BP(K  ),0,:) =                         -CoordSys%j3(K,:)
          RtHSdat%PAngVelEM(K,J,DOF_BF(K,1),0,:) = - p%TwistedSF(K,2,1,J,1)*CoordSys%j1(K,:) &
                                                   + p%TwistedSF(K,1,1,J,1)*CoordSys%j2(K,:)
          RtHSdat%PAngVelEM(K,J,DOF_BF(K,2),0,:) = - p%TwistedSF(K,2,2,J,1)*CoordSys%j1(K,:) &
                                                   + p%TwistedSF(K,1,2,J,1)*CoordSys%j2(K,:)
          RtHSdat%PAngVelEM(K,J,DOF_BE(K,1),0,:) = - p%TwistedSF(K,2,3,J,1)*CoordSys%j1(K,:) &
                                                   + p%TwistedSF(K,1,3,J,1)*CoordSys%j2(K,:)
-                                      AngVelHM  =     x%QDT(DOF_BF(K,1))*RtHSdat%PAngVelEM(K,J,DOF_BF(K,1),0,:) &
+                                      AngVelHM  =     x%QDT(DOF_BP(K  ))*RtHSdat%PAngVelEM(K,J,DOF_BP(K  ),0,:) &
+                                                    + x%QDT(DOF_BF(K,1))*RtHSdat%PAngVelEM(K,J,DOF_BF(K,1),0,:) &
                                                     + x%QDT(DOF_BF(K,2))*RtHSdat%PAngVelEM(K,J,DOF_BF(K,2),0,:) &
                                                     + x%QDT(DOF_BE(K,1))*RtHSdat%PAngVelEM(K,J,DOF_BE(K,1),0,:)
           RtHSdat%AngVelEM(:,J,K              ) =  RtHSdat%AngVelEH + AngVelHM
-          RtHSdat%AngPosHM(:,K,J              ) =     x%QT (DOF_BF(K,1))*RtHSdat%PAngVelEM(K,J,DOF_BF(K,1),0,:) &
+          RtHSdat%AngPosHM(:,K,J              ) =     x%QT (DOF_BF(K,1))*RtHSdat%PAngVelEM(K,J,DOF_BF(K,1),0,:) & ! Used for local blade rotational deflection output only; no need to introduce pitch here.
                                                     + x%QT (DOF_BF(K,2))*RtHSdat%PAngVelEM(K,J,DOF_BF(K,2),0,:) &
                                                     + x%QT (DOF_BE(K,1))*RtHSdat%PAngVelEM(K,J,DOF_BE(K,1),0,:)
-
-
+ 
       ! Define the 1st derivatives of the partial angular velocities of the current node (body M(RNodes(J))) in the inertia frame:
 
-   ! NOTE: These are currently unused by the code, therefore, they need not
-   !       be calculated.  Thus, they are currently commented out.  If it
-   !       turns out that they are ever needed (i.e., if inertias of the
-   !       blade elements are ever added, etc...) simply uncomment out these computations:
-   !      RtHSdat%PAngVelEM(K,J,          :,1,:) = RtHSdat%PAngVelEH(:,1,:)
-   !      RtHSdat%PAngVelEM(K,J,DOF_BF(K,1),1,:) = CROSS_PRODUCT(   RtHSdat%AngVelEH, PAngVelEM(K,J,DOF_BF(K,1),0,:) )
-   !      RtHSdat%PAngVelEM(K,J,DOF_BF(K,2),1,:) = CROSS_PRODUCT(   RtHSdat%AngVelEH, PAngVelEM(K,J,DOF_BF(K,2),0,:) )
-   !      RtHSdat%PAngVelEM(K,J,DOF_BE(K,1),1,:) = CROSS_PRODUCT(   RtHSdat%AngVelEH, PAngVelEM(K,J,DOF_BE(K,1),0,:) )
-
+          RtHSdat%PAngVelEM(K,J,          :,1,:) = RtHSdat%PAngVelEH(:,1,:)
+          RtHSdat%PAngVelEM(K,J,DOF_BP(K  ),1,:) = CROSS_PRODUCT( RtHSdat%AngVelEM(:,0,K) , RtHSdat%PAngVelEM(K,J,DOF_BP(K  ),0,:) )
+          RtHSdat%PAngVelEM(K,J,DOF_BF(K,1),1,:) = CROSS_PRODUCT( RtHSdat%AngVelEM(:,0,K) , RtHSdat%PAngVelEM(K,J,DOF_BF(K,1),0,:) )
+          RtHSdat%PAngVelEM(K,J,DOF_BF(K,2),1,:) = CROSS_PRODUCT( RtHSdat%AngVelEM(:,0,K) , RtHSdat%PAngVelEM(K,J,DOF_BF(K,2),0,:) )
+          RtHSdat%PAngVelEM(K,J,DOF_BE(K,1),1,:) = CROSS_PRODUCT( RtHSdat%AngVelEM(:,0,K) , RtHSdat%PAngVelEM(K,J,DOF_BE(K,1),0,:) )
+          RtHSdat%AngAccEKt(:,J              ,K) = RtHSdat%AngAccEHt + x%QDT(DOF_BP(K  ))*RtHSdat%PAngVelEM(K,J,DOF_BP(K  ),1,:) &
+                                                                     + x%QDT(DOF_BF(K,1))*RtHSdat%PAngVelEM(K,J,DOF_BF(K,1),1,:) &
+                                                                     + x%QDT(DOF_BF(K,2))*RtHSdat%PAngVelEM(K,J,DOF_BF(K,2),1,:) &
+                                                                     + x%QDT(DOF_BE(K,1))*RtHSdat%PAngVelEM(K,J,DOF_BE(K,1),1,:)
 
       END DO !J = 1,p%BldNodes ! Loop through the blade nodes / elements
 
@@ -7004,7 +7046,17 @@ ENDIF
                                                              + x%QT (DOF_TSS1)*RtHSdat%PAngVelEF(J,DOF_TSS1,0,:) &
                                                              + x%QT (DOF_TFA2)*RtHSdat%PAngVelEF(J,DOF_TFA2,0,:) &
                                                              + x%QT (DOF_TSS2)*RtHSdat%PAngVelEF(J,DOF_TSS2,0,:)
-      RtHSdat%AngPosEF (:,J)            =  RtHSdat%AngPosEX  + RtHSdat%AngPosXF(:,J)
+
+      !RtHSdat%AngPosEF (:,J)            =  RtHSdat%AngPosEX  + RtHSdat%AngPosXF(:,J) ! LW: This is no longer right with large Ptfm Rotation
+      ThetaSS =  p%TwrSSSF(1,J,1)*x%QT(DOF_TSS1) + p%TwrSSSF(2,J,1)*x%QT(DOF_TSS2)
+      ThetaFA = -p%TwrFASF(1,J,1)*x%QT(DOF_TFA1) - p%TwrFASF(2,J,1)*x%QT(DOF_TFA2)
+      CALL SmllRotTrans('tower element rotation',ThetaSS,-ThetaFA,0.0_R8Ki,TransMat,'',ErrStat2,ErrMsg2)
+      CALL SetErrStat(ErrStat2,ErrMsg2,ErrStat,ErrMsg,RoutineName)
+      if (ErrStat>=AbortErrLev) then
+         return
+      end if
+      RtHSdat%AngPosEF (:,J) = EulerExtractZYX(MatMul(TransMat,PtfmOrientation)) ! Extract tower element yaw, pitch, and roll angles from the combined platform and tower element rotation
+
       RtHSdat%AngAccEFt(:,J)            =  RtHSdat%AngAccEXt + x%QDT(DOF_TFA1)*RtHSdat%PAngVelEF(J,DOF_TFA1,1,:) &
                                                              + x%QDT(DOF_TSS1)*RtHSdat%PAngVelEF(J,DOF_TSS1,1,:) &
                                                              + x%QDT(DOF_TFA2)*RtHSdat%PAngVelEF(J,DOF_TFA2,1,:) &
@@ -7027,22 +7079,19 @@ SUBROUTINE CalculateLinearVelPAcc( p, x, CoordSys, RtHSdat )
    TYPE(ED_RtHndSide),           INTENT(INOUT)  :: RtHSdat     !< data from the RtHndSid module (contains positions to be set)
 
       ! Local variables
-   REAL(ReKi)                   :: LinAccEKt (3)                                   ! "Portion of the linear acceleration of the tail fin  center of pressure (point K) in the inertia frame (body E for earth) associated with everything but the QD2T()'s"
    REAL(ReKi)                   :: LinAccEPt (3)                                   ! "Portion of the linear acceleration of the teeter pin (point P) in the inertia frame (body E for earth) associated with everything but the QD2T()'s"
    REAL(ReKi)                   :: LinAccEQt (3)                                   ! "Portion of the linear acceleration of the apex of rotation (point Q) in the inertia frame (body E for earth) associated with everything but the QD2T()'s"
    REAL(ReKi)                   :: LinAccEVt (3)                                   ! "Portion of the linear acceleration of the selected point on the rotor-furl axis (point V) in the inertia frame (body E for earth) associated with everything but the QD2T()'s"
    REAL(ReKi)                   :: LinAccEWt (3)                                   ! "Portion of the linear acceleration of the selected point on the  tail-furl axis (point W) in the inertia frame (body E for earth) associated with everything but the QD2T()'s"
-   REAL(ReKi)                   :: LinVelEK  (3)                                   ! "Linear velocity of tail fin center-of-pressure (point K) in the inertia frame"
    REAL(ReKi)                   :: LinVelHS  (3)                                   ! "Relative linear velocity of the current point on the current blade (point S) in the hub frame (body H)"
    REAL(ReKi)                   :: LinVelXO  (3)                                   ! "Relative linear velocity of the tower-top / base plate (point O) in the platform (body X)"
    REAL(ReKi)                   :: LinVelXT  (3)                                   ! "Relative linear velocity of the current point on the tower (point T) in the platform (body X)"
 
    REAL(ReKi)                   :: EwAXrWI   (3)                                   ! = AngVelEA X rWI
    REAL(ReKi)                   :: EwAXrWJ   (3)                                   ! = AngVelEA X rWJ
-   REAL(ReKi)                   :: EwAXrWK   (3)                                   ! = AngVelEA X rWK
    REAL(ReKi)                   :: EwHXrPQ   (3)                                   ! = AngVelEH X rPQ
    REAL(ReKi)                   :: EwHXrQC   (3)                                   ! = AngVelEH X rQC
-   REAL(ReKi)                   :: EwHXrQS   (3)                                   ! = AngVelEH X rQS of the current blade point S.
+   REAL(ReKi)                   :: EwM0XrQS  (3)                                   ! = AngVelEM(0) X rQS of the current blade point S.
    REAL(ReKi)                   :: EwNXrOU   (3)                                   ! = AngVelEN X rOU
    REAL(ReKi)                   :: EwNXrOV   (3)                                   ! = AngVelEN X rOV
    REAL(ReKi)                   :: EwNXrOW   (3)                                   ! = AngVelEN X rOW
@@ -7071,7 +7120,6 @@ SUBROUTINE CalculateLinearVelPAcc( p, x, CoordSys, RtHSdat )
    RtHSdat%LinAccEIMUt = 0.0
    RtHSdat%LinAccEIt   = 0.0
    RtHSdat%LinAccEJt   = 0.0
-           LinAccEKt   = 0.0
    RtHSdat%LinAccEOt   = 0.0
            LinAccEPt   = 0.0
            LinAccEQt   = 0.0
@@ -7108,7 +7156,6 @@ SUBROUTINE CalculateLinearVelPAcc( p, x, CoordSys, RtHSdat )
    EwNXrOW   = CROSS_PRODUCT( RtHSdat%AngVelEN, RtHSdat%rOW   ) !
    EwAXrWI   = CROSS_PRODUCT( RtHSdat%AngVelEA, RtHSdat%rWI   ) !
    EwAXrWJ   = CROSS_PRODUCT( RtHSdat%AngVelEA, RtHSdat%rWJ   ) !
-   EwAXrWK   = CROSS_PRODUCT( RtHSdat%AngVelEA, RtHSdat%rWK   ) !
 
 
    RtHSdat%PLinVelEZ(       :,:,:) = 0.0
@@ -7126,9 +7173,10 @@ SUBROUTINE CalculateLinearVelPAcc( p, x, CoordSys, RtHSdat )
 
       TmpVec0 = CROSS_PRODUCT( RtHSdat%PAngVelEX(PX(I)   ,0,:), RtHSdat%rZY  )
       TmpVec1 = CROSS_PRODUCT( RtHSdat%PAngVelEX(PX(I)   ,0,:),     EwXXrZY  )
+      TmpVec2 = CROSS_PRODUCT( RtHSdat%PAngVelEX(PX(I)   ,1,:), RtHSdat%rZY  )
 
       RtHSdat%PLinVelEY(PX(I),0,:) = TmpVec0   +                       RtHSdat%PLinVelEY(PX(I)   ,0,:)
-      RtHSdat%PLinVelEY(PX(I),1,:) = TmpVec1   +                       RtHSdat%PLinVelEY(PX(I)   ,1,:)
+      RtHSdat%PLinVelEY(PX(I),1,:) = TmpVec1   +   TmpVec2   +         RtHSdat%PLinVelEY(PX(I)   ,1,:)
 
        RtHSdat%LinAccEYt           = RtHSdat%LinAccEYt + x%QDT(PX(I) )*RtHSdat%PLinVelEY(PX(I)   ,1,:)
 
@@ -7172,10 +7220,11 @@ SUBROUTINE CalculateLinearVelPAcc( p, x, CoordSys, RtHSdat )
    DO I = 1,NPX   ! Loop through all DOFs associated with the angular motion of the platform (body X)
 
       TmpVec0 = CROSS_PRODUCT( RtHSdat%PAngVelEX(PX(I)   ,0,:), RtHSdat%rZO                 )
-      TmpVec1 = CROSS_PRODUCT( RtHSdat%PAngVelEX(PX(I)   ,0,:),     EwXXrZO + LinVelXO      )
+      TmpVec1 = CROSS_PRODUCT( RtHSdat%PAngVelEX(PX(I)   ,0,:),     EwXXrZO + LinVelXO      ) 
+      TmpVec2 = CROSS_PRODUCT( RtHSdat%PAngVelEX(PX(I)   ,1,:), RtHSdat%rZO                 )
 
       RtHSdat%PLinVelEO(PX(I),0,:) = TmpVec0    +                       RtHSdat%PLinVelEO(PX(I)   ,0,:)
-      RtHSdat%PLinVelEO(PX(I),1,:) = TmpVec1    +                       RtHSdat%PLinVelEO(PX(I)   ,1,:)
+      RtHSdat%PLinVelEO(PX(I),1,:) = TmpVec1    +    TmpVec2    +       RtHSdat%PLinVelEO(PX(I)   ,1,:)
 
       RtHSdat%LinVelEO             =  RtHSdat%LinVelEO  + x%QDT(PX(I) )*RtHSdat%PLinVelEO(PX(I)   ,0,:)
       RtHSdat%LinAccEOt            =  RtHSdat%LinAccEOt + x%QDT(PX(I) )*RtHSdat%PLinVelEO(PX(I)   ,1,:)
@@ -7304,8 +7353,6 @@ SUBROUTINE CalculateLinearVelPAcc( p, x, CoordSys, RtHSdat )
       !   Also, define the portion of the linear acceleration of the current node
       !   in the inertia frame associated with everything but the QD2T()'s:
 
-         EwHXrQS = CROSS_PRODUCT(  RtHSdat%AngVelEH, RtHSdat%rQS(:,K,J) )
-
          RtHSdat%PLinVelES(K,J,          :,:,:) = RtHSdat%PLinVelEQ(:,:,:)
          RtHSdat%PLinVelES(K,J,DOF_BF(K,1),0,:) = p%TwistedSF(K,1,1,J,0)                          *CoordSys%j1(K,:) &  !bjj: this line can be optimized
                                                 + p%TwistedSF(K,2,1,J,0)                          *CoordSys%j2(K,:) &
@@ -7323,9 +7370,9 @@ SUBROUTINE CalculateLinearVelPAcc( p, x, CoordSys, RtHSdat )
                                                     + p%AxRedBld(K,1,2,J)*x%QT ( DOF_BF(K,1) ) &
                                                     + p%AxRedBld(K,2,3,J)*x%QT ( DOF_BE(K,1) )   )*CoordSys%j3(K,:)
 
-         TmpVec1 = CROSS_PRODUCT( RtHSdat%AngVelEH, RtHSdat%PLinVelES(K,J,DOF_BF(K,1),0,:) )
-         TmpVec2 = CROSS_PRODUCT( RtHSdat%AngVelEH, RtHSdat%PLinVelES(K,J,DOF_BE(K,1),0,:) )
-         TmpVec3 = CROSS_PRODUCT( RtHSdat%AngVelEH, RtHSdat%PLinVelES(K,J,DOF_BF(K,2),0,:) )
+         TmpVec1 = CROSS_PRODUCT( RtHSdat%AngVelEM(:,0,K), RtHSdat%PLinVelES(K,J,DOF_BF(K,1),0,:) )
+         TmpVec2 = CROSS_PRODUCT( RtHSdat%AngVelEM(:,0,K), RtHSdat%PLinVelES(K,J,DOF_BE(K,1),0,:) )
+         TmpVec3 = CROSS_PRODUCT( RtHSdat%AngVelEM(:,0,K), RtHSdat%PLinVelES(K,J,DOF_BF(K,2),0,:) )
 
          RtHSdat%PLinVelES(K,J,DOF_BF(K,1),1,:) = TmpVec1 &
                                                 - (   p%AxRedBld(K,1,1,J)*x%QDT( DOF_BF(K,1) ) &
@@ -7348,19 +7395,32 @@ SUBROUTINE CalculateLinearVelPAcc( p, x, CoordSys, RtHSdat )
                                   + x%QDT( DOF_BF(K,2) )*RtHSdat%PLinVelES(K,J,DOF_BF(K,2),1,:)
 
          RtHSdat%LinVelES(:,J,K)  = LinVelHS + RtHSdat%LinVelEZ
+         EwM0XrQS = CROSS_PRODUCT( RtHSdat%AngVelEM(:,0,K) , RtHSdat%rQS(:,K,J) )
+
          DO I = 1,p%NPH   ! Loop through all DOFs associated with the angular motion of the hub (body H)
 
-            TmpVec0 = CROSS_PRODUCT(   RtHSdat%PAngVelEH(p%PH(I),0,:), RtHSdat%rQS(:,K,J)            )  !bjj: this line can be optimized
-            TmpVec1 = CROSS_PRODUCT(   RtHSdat%PAngVelEH(p%PH(I),0,:),     EwHXrQS        + LinVelHS )  !bjj: this line can be optimized
-            TmpVec2 = CROSS_PRODUCT(   RtHSdat%PAngVelEH(p%PH(I),1,:), RtHSdat%rQS(:,K,J)            )  !bjj: this line can be optimized
+            TmpVec0 = CROSS_PRODUCT(   RtHSdat%PAngVelEM(K,0,p%PH(I),0,:), RtHSdat%rQS(:,K,J)  )  !bjj: this line can be optimized
+            TmpVec1 = CROSS_PRODUCT(   RtHSdat%PAngVelEM(K,0,p%PH(I),0,:), LinVelHS + EwM0XrQS )
+            TmpVec2 = CROSS_PRODUCT(   RtHSdat%PAngVelEM(K,0,p%PH(I),1,:), RtHSdat%rQS(:,K,J)  )
 
-            RtHSdat%PLinVelES(K,J,p%PH(I),0,:) = RtHSdat%PLinVelES(K,J,p%PH(I),0,:) + TmpVec0            !bjj: this line can be optimized
-            RtHSdat%PLinVelES(K,J,p%PH(I),1,:) = RtHSdat%PLinVelES(K,J,p%PH(I),1,:) + TmpVec1 + TmpVec2  !bjj: this line can be optimized
+            RtHSdat%PLinVelES(K,J,p%PH(I),0,:) = RtHSdat%PLinVelES(K,J,p%PH(I),0,:) + TmpVec0
+            RtHSdat%PLinVelES(K,J,p%PH(I),1,:) = RtHSdat%PLinVelES(K,J,p%PH(I),1,:) + TmpVec1 + TmpVec2
 
             RtHSdat%LinVelES(:,J,K)          = RtHSdat%LinVelES(:,J,K)   + x%QDT(p%PH(I))*RtHSdat%PLinVelES(K,J,p%PH(I),0,:)  !bjj: this line can be optimized
             RtHSdat%LinAccESt(:,K,J)         = RtHSdat%LinAccESt(:,K,J)  + x%QDT(p%PH(I))*RtHSdat%PLinVelES(K,J,p%PH(I),1,:)  !bjj: this line can be optimized
 
          END DO ! I - all DOFs associated with the angular motion of the hub (body H)
+
+         ! Add contribution from blade pitch DoF
+         TmpVec0 = CROSS_PRODUCT(   RtHSdat%PAngVelEM(K,0,DOF_BP(K),0,:) , RtHSdat%rQS(:,K,J)  )
+         TmpVec1 = CROSS_PRODUCT(   RtHSdat%PAngVelEM(K,0,DOF_BP(K),0,:) , LinVelHS + EwM0XrQS )
+         TmpVec2 = CROSS_PRODUCT(   RtHSdat%PAngVelEM(K,0,DOF_BP(K),1,:) , RtHSdat%rQS(:,K,J)  )
+
+         RtHSdat%PLinVelES(K,J,DOF_BP(K),0,:) = RtHSdat%PLinVelES(K,J,DOF_BP(K),0,:) + TmpVec0
+         RtHSdat%PLinVelES(K,J,DOF_BP(K),1,:) = RtHSdat%PLinVelES(K,J,DOF_BP(K),1,:) + TmpVec1 + TmpVec2
+
+         RtHSdat%LinVelES(:,J,K)  = RtHSdat%LinVelES(:,J,K)   + x%QDT(DOF_BP(K))*RtHSdat%PLinVelES(K,J,DOF_BP(K),0,:)
+         RtHSdat%LinAccESt(:,K,J) = RtHSdat%LinAccESt(:,K,J)  + x%QDT(DOF_BP(K))*RtHSdat%PLinVelES(K,J,DOF_BP(K),1,:)
 
       END DO !J = 0,p%TipNodes ! Loop through the blade nodes / elements
       
@@ -7388,6 +7448,7 @@ SUBROUTINE CalculateLinearVelPAcc( p, x, CoordSys, RtHSdat )
    ENDDO          ! I - all DOFs associated with the angular motion of the nacelle (body N)
 
 
+   ! Velocities of point I (tail boom center of mass)
    RtHSdat%PLinVelEI(       :,:,:) = RtHSdat%PLinVelEW(:,:,:)
    DO I = 1,NPA   ! Loop through all DOFs associated with the angular motion of the tail (body A)
 
@@ -7403,7 +7464,9 @@ SUBROUTINE CalculateLinearVelPAcc( p, x, CoordSys, RtHSdat )
    ENDDO          ! I - all DOFs associated with the angular motion of the tail (body A)
 
 
+   ! Velocities of point J (tail fin center of mass)
    RtHSdat%PLinVelEJ(       :,:,:) = RtHSdat%PLinVelEW(:,:,:)
+   RtHSdat%LinVelEJ                = RtHSdat%LinVelEZ
    DO I = 1,NPA   ! Loop through all DOFs associated with the angular motion of the tail (body A)
 
       TmpVec0 = CROSS_PRODUCT( RtHSdat%PAngVelEA(PA(I)   ,0,:), RtHSdat%rWJ                 )
@@ -7413,26 +7476,10 @@ SUBROUTINE CalculateLinearVelPAcc( p, x, CoordSys, RtHSdat )
       RtHSdat%PLinVelEJ(PA(I),0,:) = TmpVec0    +               RtHSdat%PLinVelEJ(PA(I)   ,0,:)
       RtHSdat%PLinVelEJ(PA(I),1,:) = TmpVec1    + TmpVec2 +     RtHSdat%PLinVelEJ(PA(I)   ,1,:)
 
+       RtHSdat%LinVelEJ            =  RtHSdat%LinVelEJ  + x%QDT(PA(I) )*RtHSdat%PLinVelEJ(PA(I)   ,0,:)
        RtHSdat%LinAccEJt           =  RtHSdat%LinAccEJt + x%QDT(PA(I) )*RtHSdat%PLinVelEJ(PA(I)   ,1,:)
 
    ENDDO          ! I - all DOFs associated with the angular motion of the tail (body A)
-
-   RtHSdat%PLinVelEK(       :,:,:) = RtHSdat%PLinVelEW(:,:,:)
-    LinVelEK               =  RtHSdat%LinVelEZ
-   DO I = 1,NPA   ! Loop through all DOFs associated with the angular motion of the tail (body A)
-
-      TmpVec0  = CROSS_PRODUCT( RtHSdat%PAngVelEA(PA(I)   ,0,:), RtHSdat%rWK                 )
-      TmpVec1  = CROSS_PRODUCT( RtHSdat%PAngVelEA(PA(I)   ,0,:),         EwAXrWK             )
-      TmpVec2  = CROSS_PRODUCT( RtHSdat%PAngVelEA(PA(I)   ,1,:), RtHSdat%rWK                 )
-
-      RtHSdat%PLinVelEK(PA(I),0,:) = TmpVec0    +                RtHSdat%PLinVelEK(PA(I)   ,0,:)
-      RtHSdat%PLinVelEK(PA(I),1,:) = TmpVec1    + TmpVec2 +      RtHSdat%PLinVelEK(PA(I)   ,1,:)
-
-       LinVelEK                    =   LinVelEK  + x%QDT(PA(I) )*RtHSdat%PLinVelEK(PA(I)   ,0,:)
-       LinAccEKt                   =   LinAccEKt + x%QDT(PA(I) )*RtHSdat%PLinVelEK(PA(I)   ,1,:)
-
-   ENDDO          ! I - all DOFs associated with the angular motion of the tail (body A)
-
 
 
    DO J = 0,p%TwrNodes  ! Loop through the tower nodes / elements
@@ -7481,11 +7528,12 @@ SUBROUTINE CalculateLinearVelPAcc( p, x, CoordSys, RtHSdat )
       RtHSdat%LinVelET(:,J)  = LinVelXT + RtHSdat%LinVelEZ
       DO I = 1,NPX   ! Loop through all DOFs associated with the angular motion of the platform (body X)
 
-         TmpVec0   = CROSS_PRODUCT( RtHSdat%PAngVelEX(PX(I),0,:), RtHSdat%rZT(:,J)            )
+         TmpVec0   = CROSS_PRODUCT( RtHSdat%PAngVelEX(PX(I),0,:), RtHSdat%rZT(:,J)        )
          TmpVec1   = CROSS_PRODUCT( RtHSdat%PAngVelEX(PX(I),0,:), EwXXrZT      + LinVelXT )
+         TmpVec2   = CROSS_PRODUCT( RtHSdat%PAngVelEX(PX(I),1,:), RtHSdat%rZT(:,J)        )
 
          RtHSdat%PLinVelET(J,PX(I),0,:) = RtHSdat%PLinVelET(J,PX(I),0,:) + TmpVec0
-         RtHSdat%PLinVelET(J,PX(I),1,:) = RtHSdat%PLinVelET(J,PX(I),1,:) + TmpVec1
+         RtHSdat%PLinVelET(J,PX(I),1,:) = RtHSdat%PLinVelET(J,PX(I),1,:) + TmpVec1 + TmpVec2
 
          RtHSdat%LinVelET( :,        J) = RtHSdat%LinVelET( :,        J) + x%QDT(PX(I))*RtHSdat%PLinVelET(J,PX(I),0,:)
          RtHSdat%LinAccETt(:,        J) = RtHSdat%LinAccETt(:,        J) + x%QDT(PX(I))*RtHSdat%PLinVelET(J,PX(I),1,:)
@@ -7517,12 +7565,8 @@ SUBROUTINE CalculateForcesMoments( p, x, CoordSys, u, RtHSdat )
    REAL(ReKi)                   :: TmpVec3   (3)                                   ! A temporary vector used in various computations.
    REAL(ReKi)                   :: TmpVec4   (3)                                   ! A temporary vector used in various computations.
    REAL(ReKi)                   :: TmpVec5   (3)                                   ! A temporary vector used in various computations.
-      
-!REAL(ReKi)                   :: rSAerCen  (3)                                   ! Position vector from a blade analysis node (point S) on the current blade to the aerodynamic center associated with the element.
-   REAL(ReKi), PARAMETER        :: FKAero   (3) = 0.0                              ! The tail fin aerodynamic force acting at point K, the center-of-pressure of the tail fin. (bjj: should be an input)
-   REAL(ReKi), PARAMETER        :: MAAero   (3) = 0.0                              ! The tail fin aerodynamic moment acting at point K, the center-of-pressure of the tail fin. (bjj: should be an input)   
-   
-   
+   REAL(ReKi)                   :: Force(3)  ! External force  (e.g. from AeroDyn)
+   REAL(ReKi)                   :: Moment(3) ! External moment (e.g. from AeroDyn)
    INTEGER(IntKi)               :: I                                               ! Loops through some or all of the DOFs
    INTEGER(IntKi)               :: J                                               ! Counter for elements
    INTEGER(IntKi)               :: K                                               ! Counter for blades
@@ -7547,36 +7591,18 @@ SUBROUTINE CalculateForcesMoments( p, x, CoordSys, u, RtHSdat )
       
       DO J = 1,p%BldNodes ! Loop through the blade nodes / elements
 
-
-   ! Calculate the aerodynamic pitching moment arm (i.e., the position vector
-   !   from point S on the blade to the aerodynamic center of the element):
-
-         RtHSdat%rSAerCen(:,J,K) = p%rSAerCenn1(K,J)*CoordSys%n1(K,J,:) + p%rSAerCenn2(K,J)*CoordSys%n2(K,J,:)   
-
-!        rPAerCen     = m%RtHS%rPQ + m%RtHS%rQS(:,K,J) + m%RtHS%rSAerCen(:,J,K)     ! Position vector from teeter pin (point P)  to blade analysis node aerodynamic center.
-!        rAerCen      =                       m%RtHS%rS (:,K,J) + m%RtHS%rSAerCen(:,J,K)     ! Position vector from inertial frame origin to blade analysis node aerodynamic center.
-         
-
    ! fill FSAero() and MMAero() with the forces resulting from inputs u%BladeLn2Mesh(K)%Force(1:2,:) and u%BladeLn2Mesh(K)%Moment(3,:):
    ! [except, we're ignoring the additional nodes we added on the mesh end points]
    
          NodeNum = J ! we're ignoring the root and tip
          
-         if (p%UseAD14) then
-            RtHSdat%FSAero(:,K,J) = ( u%BladePtLoads(K)%Force(1,NodeNum) * CoordSys%te1(K,J,:) &
-                                    + u%BladePtLoads(K)%Force(2,NodeNum) * CoordSys%te2(K,J,:) ) / p%DRNodes(J)
+         RtHSdat%FSAero(1,K,J) =  u%BladePtLoads(K)%Force(1,NodeNum) / p%DRNodes(J)
+         RtHSdat%FSAero(2,K,J) =  u%BladePtLoads(K)%Force(3,NodeNum) / p%DRNodes(J) 
+         RtHSdat%FSAero(3,K,J) = -u%BladePtLoads(K)%Force(2,NodeNum) / p%DRNodes(J)
 
-            RtHSdat%MMAero(:,K,J) = CROSS_PRODUCT( RtHSdat%rSAerCen(:,J,K), RtHSdat%FSAero(:,K,J) )&
-                                  + u%BladePtLoads(K)%Moment(3,NodeNum)/p%DRNodes(J) * CoordSys%te3(K,J,:)        
-         else
-            RtHSdat%FSAero(1,K,J) =  u%BladePtLoads(K)%Force(1,NodeNum) / p%DRNodes(J)
-            RtHSdat%FSAero(2,K,J) =  u%BladePtLoads(K)%Force(3,NodeNum) / p%DRNodes(J) 
-            RtHSdat%FSAero(3,K,J) = -u%BladePtLoads(K)%Force(2,NodeNum) / p%DRNodes(J)
-
-            RtHSdat%MMAero(1,K,J) =  u%BladePtLoads(K)%Moment(1,NodeNum) / p%DRNodes(J)
-            RtHSdat%MMAero(2,K,J) =  u%BladePtLoads(K)%Moment(3,NodeNum) / p%DRNodes(J)
-            RtHSdat%MMAero(3,K,J) = -u%BladePtLoads(K)%Moment(2,NodeNum) / p%DRNodes(J)
-         end if
+         RtHSdat%MMAero(1,K,J) =  u%BladePtLoads(K)%Moment(1,NodeNum) / p%DRNodes(J)
+         RtHSdat%MMAero(2,K,J) =  u%BladePtLoads(K)%Moment(3,NodeNum) / p%DRNodes(J)
+         RtHSdat%MMAero(3,K,J) = -u%BladePtLoads(K)%Moment(2,NodeNum) / p%DRNodes(J)
                      
          
       END DO !J
@@ -7586,7 +7612,7 @@ SUBROUTINE CalculateForcesMoments( p, x, CoordSys, u, RtHSdat )
 !.....................................
 ! PFrcS0B and PMomH0B  
 !.....................................
-DO K = 1,p%NumBl ! Loop through all blades
+   DO K = 1,p%NumBl ! Loop through all blades
 
       ! Initialize the partial forces and moments (including those associated
       !   with the QD2T()'s and those that are not) at the blade root (point S(0))
@@ -7596,14 +7622,15 @@ DO K = 1,p%NumBl ! Loop through all blades
       RtHSdat%PMomH0B(:,K,:) = 0.0 ! forces and moments to zero
       DO I = 1,p%DOFs%NPSE(K)  ! Loop through all active (enabled) DOFs that contribute to the QD2T-related linear accelerations of blade K
 
-         TmpVec1 = -p%TipMass(K)*RtHSdat%PLinVelES(K,p%TipNode,p%DOFs%PSE(K,I),0,:)                            ! The portion of PFrcS0B associated with the tip brake
+         TmpVec1 = -p%TipMass(K)*RtHSdat%PLinVelES(K,p%TipNode,p%DOFs%PSE(K,I),0,:)                             ! The portion of PFrcS0B associated with the tip brake
+         TmpVec2 = -p%PitchIner(K) * CoordSys%j3(K,:) * DOT_PRODUCT( CoordSys%j3(K,:), RtHSdat%PAngVelEM(K,0,p%DOFs%PSE(K,I),0,:) )
 
          RtHSdat%PFrcS0B(:,K,p%DOFs%PSE(K,I)) = TmpVec1
-         RtHSdat%PMomH0B(:,K,p%DOFs%PSE(K,I)) = CROSS_PRODUCT( RtHSdat%rS0S(:,K,p%TipNode), TmpVec1 )          ! The portion of PMomH0B associated with the tip brake
+         RtHSdat%PMomH0B(:,K,p%DOFs%PSE(K,I)) = CROSS_PRODUCT( RtHSdat%rS0S(:,K,p%TipNode), TmpVec1 ) + TmpVec2 ! The portion of PMomH0B associated with the tip brake
 
       ENDDO             ! I - All active (enabled) DOFs that contribute to the QD2T-related linear accelerations of blade K  
-   
-   
+
+
       DO J = 1,p%BldNodes ! Loop through the blade nodes / elements
 
       ! Integrate to find the partial forces and moments (including those associated
@@ -7620,7 +7647,6 @@ DO K = 1,p%NumBl ! Loop through all blades
          ENDDO             ! I - All active (enabled) DOFs that contribute to the QD2T-related linear accelerations of blade K
       END DO
       
-      
    END DO     
    
  
@@ -7628,10 +7654,13 @@ DO K = 1,p%NumBl ! Loop through all blades
 ! FrcS0Bt and MomH0Bt
 !.....................................
    DO K = 1,p%NumBl ! Loop through all blades
-   
+
       TmpVec1 = RtHSdat%FSTipDrag(:,K) - p%TipMass(K)*( p%Gravity*CoordSys%z2 + RtHSdat%LinAccESt(:,K,p%TipNode) ) ! The portion of FrcS0Bt associated with the tip brake
+      TmpVec2 = - p%PitchIner(K)*CoordSys%j3(K,:)*DOT_PRODUCT(CoordSys%j3(K,:), RtHSdat%AngAccEKt(:,0,K) )
+      TmpVec3 = - CROSS_PRODUCT( RtHSdat%AngVelEM(:,0,K), p%PitchIner(K)*CoordSys%j3(K,:)*DOT_PRODUCT(CoordSys%j3(K,:), RtHSdat%AngVelEM(:,0,K)) )
+
       RtHSdat%FrcS0Bt(:,K) = TmpVec1
-      RtHSdat%MomH0Bt(:,K) = CROSS_PRODUCT(  RtHSdat%rS0S(:,K,p%TipNode), TmpVec1 )                                 ! The portion of MomH0Bt associated with the tip brake
+      RtHSdat%MomH0Bt(:,K) = CROSS_PRODUCT(  RtHSdat%rS0S(:,K,p%TipNode), TmpVec1 ) + TmpVec2 + TmpVec3            ! The portion of MomH0Bt associated with the tip brake
 
       DO J = 1,p%BldNodes ! Loop through the blade nodes / elements      
       
@@ -7643,7 +7672,14 @@ DO K = 1,p%NumBl ! Loop through all blades
          RtHSdat%MomH0Bt(:,K) = RtHSdat%MomH0Bt(:,K) + TmpVec2 + TmpVec3
       
       END DO !J
-      
+
+      IF (p%BD4Blades) THEN
+
+         RtHSdat%FrcS0Bt(:,K) = RtHSdat%FrcS0Bt(:,K) + (/u%BladeRootLoads(K)%Force (1,1), u%BladeRootLoads(K)%Force (3,1), -u%BladeRootLoads(K)%Force (2,1)/)
+         RtHSdat%MomH0Bt(:,K) = RtHSdat%MomH0Bt(:,K) + (/u%BladeRootLoads(K)%Moment(1,1), u%BladeRootLoads(K)%Moment(3,1), -u%BladeRootLoads(K)%Moment(2,1)/)
+
+      END IF
+
    END DO !K   
          
       
@@ -7662,8 +7698,8 @@ DO K = 1,p%NumBl ! Loop through all blades
       TmpVec2 = CROSS_PRODUCT( RtHSdat%rPC, TmpVec1 )      ! The portion of PMomLPRot associated with the HubMass
 
       RtHSdat%PFrcPRot (:,p%DOFs%PCE(I)) = TmpVec1
-      RtHSdat%PMomLPRot(:,p%DOFs%PCE(I)) = TmpVec2 - p%Hubg1Iner*CoordSys%g1*DOT_PRODUCT( CoordSys%g1, RtHSdat%PAngVelEH(p%DOFs%PCE(I),0,:) ) &
-                                                   - p%Hubg2Iner*CoordSys%g2*DOT_PRODUCT( CoordSys%g2, RtHSdat%PAngVelEH(p%DOFs%PCE(I),0,:) )
+      RtHSdat%PMomLPRot(:,p%DOFs%PCE(I)) = TmpVec2 - p%Hubf1Iner*CoordSys%f1*DOT_PRODUCT( CoordSys%f1, RtHSdat%PAngVelEH(p%DOFs%PCE(I),0,:) ) &
+                                                   - p%Hubf2Iner*CoordSys%f2*DOT_PRODUCT( CoordSys%f2, RtHSdat%PAngVelEH(p%DOFs%PCE(I),0,:) )
 
    ENDDO          ! I - All active (enabled) DOFs that contribute to the QD2T-related linear accelerations of the hub center of mass (point C)
 
@@ -7696,21 +7732,21 @@ DO K = 1,p%NumBl ! Loop through all blades
 
    TmpVec1 = -p%HubMass*( p%Gravity*CoordSys%z2 + RtHSdat%LinAccECt )                     ! The portion of FrcPRott  associated with the HubMass
    TmpVec2 = CROSS_PRODUCT( RtHSdat%rPC, TmpVec1 )                                        ! The portion of MomLPRott associated with the HubMass
-   TmpVec  = p%Hubg1Iner*CoordSys%g1*DOT_PRODUCT( CoordSys%g1, RtHSdat%AngVelEH ) &       ! = ( Hub inertia dyadic ) dot ( angular velocity of hub in the inertia frame )
-           + p%Hubg2Iner*CoordSys%g2*DOT_PRODUCT( CoordSys%g2, RtHSdat%AngVelEH )
+   TmpVec  = p%Hubf1Iner*CoordSys%f1*DOT_PRODUCT( CoordSys%f1, RtHSdat%AngVelEH ) &       ! = ( Hub inertia dyadic ) dot ( angular velocity of hub in the inertia frame )
+           + p%Hubf2Iner*CoordSys%f2*DOT_PRODUCT( CoordSys%f2, RtHSdat%AngVelEH )
    TmpVec3 = CROSS_PRODUCT( -RtHSdat%AngVelEH, TmpVec )                                   ! = ( -angular velocity of hub in the inertia frame ) cross ( TmpVec )
 
    RtHSdat%FrcPRott(1)  = TmpVec1(1) + u%HubPtLoad%Force(1,1)
    RtHSdat%FrcPRott(2)  = TmpVec1(2) + u%HubPtLoad%Force(3,1)
    RtHSdat%FrcPRott(3)  = TmpVec1(3) - u%HubPtLoad%Force(2,1)
    
-   RtHSdat%MomLPRott    = TmpVec2 + TmpVec3 - p%Hubg1Iner*CoordSys%g1*DOT_PRODUCT( CoordSys%g1, RtHSdat%AngAccEHt ) &
-                                            - p%Hubg2Iner*CoordSys%g2*DOT_PRODUCT( CoordSys%g2, RtHSdat%AngAccEHt )                                          
+   RtHSdat%MomLPRott    = TmpVec2 + TmpVec3 - p%Hubf1Iner*CoordSys%f1*DOT_PRODUCT( CoordSys%f1, RtHSdat%AngAccEHt ) &
+                                            - p%Hubf2Iner*CoordSys%f2*DOT_PRODUCT( CoordSys%f2, RtHSdat%AngAccEHt )                                          
       
    RtHSdat%MomLPRott(1) = RtHSdat%MomLPRott(1) + u%HubPtLoad%Moment(1,1)
    RtHSdat%MomLPRott(2) = RtHSdat%MomLPRott(2) + u%HubPtLoad%Moment(3,1)
    RtHSdat%MomLPRott(3) = RtHSdat%MomLPRott(3) - u%HubPtLoad%Moment(2,1)
-   
+
    DO K = 1,p%NumBl ! Loop through all blades
    
          ! Calculate the position vector from the teeter pin to the blade root:
@@ -7802,9 +7838,11 @@ DO K = 1,p%NumBl ! Loop through all blades
    ENDDO          ! I - All active (enabled) DOFs that contribute to the QD2T-related linear accelerations of the tail boom center of mass (point I)
 
 !.....................................
-! FrcWTailt and MomNTailt
-!  (requires FKAero and MAAero)
+! FrcWTailt and MomNTailt - Forces on the tailfin
 !.....................................
+   ! Aerodynamic loads on TailFin CM (point K), with change of coordinate system
+   Force(1:3)  = (/ u%TFinCMLoads%Force (1,1), u%TFinCMLoads%Force (3,1), -u%TFinCMLoads%Force (2,1) /)
+   Moment(1:3) = (/ u%TFinCMLoads%Moment(1,1), u%TFinCMLoads%Moment(3,1), -u%TFinCMLoads%Moment(2,1) /)
 
    TmpVec1 = -p%BoomMass*( p%Gravity*CoordSys%z2 + RtHSdat%LinAccEIt )                 ! The portion of FrcWTailt associated with the BoomMass
    TmpVec2 = -p%TFinMass*( p%Gravity*CoordSys%z2 + RtHSdat%LinAccEJt )                 ! The portion of FrcWTailt associated with the TFinMass
@@ -7813,9 +7851,9 @@ DO K = 1,p%NumBl ! Loop through all blades
    TmpVec  = p%AtfaIner*CoordSys%tfa*DOT_PRODUCT( CoordSys%tfa, RtHSdat%AngVelEA )   ! = ( A inertia dyadic ) dot ( angular velocity of the tail in the inertia frame )
    TmpVec5 = CROSS_PRODUCT( -RtHSdat%AngVelEA, TmpVec  )                           ! = ( -angular velocity of the tail in the inertia frame ) cross ( TmpVec )
 
-   RtHSdat%FrcWTailt = FKAero + TmpVec1 + TmpVec2
-   RtHSdat%MomNTailt = MAAero + TmpVec3 + TmpVec4 + TmpVec5         &
-                     + CROSS_PRODUCT( RtHSdat%rWK      , FKAero  )  &                         ! The portion of MomNTailt associated with FKAero
+   RtHSdat%FrcWTailt = Force + TmpVec1 + TmpVec2
+   RtHSdat%MomNTailt = Moment + TmpVec3 + TmpVec4 + TmpVec5         &
+                     + CROSS_PRODUCT( RtHSdat%rWJ      , Force  )  &                         ! The portion of MomNTailt associated with Force with lever arm WK
                      - p%AtfaIner*CoordSys%tfa*DOT_PRODUCT( CoordSys%tfa, RtHSdat%AngAccEAt )   
    
 !.....................................
@@ -7941,42 +7979,42 @@ DO K = 1,p%NumBl ! Loop through all blades
 !.....................................
    
    DO J=1,p%TwrNodes
-      RtHSdat%FTHydrot(:,J) = CoordSys%z1*( u%TowerPtLoads%Force(DOF_Sg,J)/p%DHNodes(J) &
+      RtHSdat%FTHydrot(:,J) = CoordSys%z1*( u%TowerPtLoads%Force(DOF_Sg,J)/abs(p%DHNodes(J)) &
                                                   - u%TwrAddedMass(DOF_Sg,DOF_Sg,J)*RtHSdat%LinAccETt(1,J) &
                                                   + u%TwrAddedMass(DOF_Sg,DOF_Sw,J)*RtHSdat%LinAccETt(3,J) &
                                                   - u%TwrAddedMass(DOF_Sg,DOF_Hv,J)*RtHSdat%LinAccETt(2,J) &
                                                   - u%TwrAddedMass(DOF_Sg,DOF_R ,J)*RtHSdat%AngAccEFt(1,J) &
                                                   + u%TwrAddedMass(DOF_Sg,DOF_P ,J)*RtHSdat%AngAccEFt(3,J) &
                                                   - u%TwrAddedMass(DOF_Sg,DOF_Y ,J)*RtHSdat%AngAccEFt(2,J)   ) &
-                            - CoordSys%z3*( u%TowerPtLoads%Force(DOF_Sw,J)/p%DHNodes(J) &
+                            - CoordSys%z3*( u%TowerPtLoads%Force(DOF_Sw,J)/abs(p%DHNodes(J)) &
                                                   - u%TwrAddedMass(DOF_Sw,DOF_Sg,J)*RtHSdat%LinAccETt(1,J) &
                                                   + u%TwrAddedMass(DOF_Sw,DOF_Sw,J)*RtHSdat%LinAccETt(3,J) &
                                                   - u%TwrAddedMass(DOF_Sw,DOF_Hv,J)*RtHSdat%LinAccETt(2,J) &
                                                   - u%TwrAddedMass(DOF_Sw,DOF_R ,J)*RtHSdat%AngAccEFt(1,J) &
                                                   + u%TwrAddedMass(DOF_Sw,DOF_P ,J)*RtHSdat%AngAccEFt(3,J) &
                                                   - u%TwrAddedMass(DOF_Sw,DOF_Y ,J)*RtHSdat%AngAccEFt(2,J)   ) &
-                             + CoordSys%z2*( u%TowerPtLoads%Force(DOF_Hv,J)/p%DHNodes(J) &
+                             + CoordSys%z2*( u%TowerPtLoads%Force(DOF_Hv,J)/abs(p%DHNodes(J)) &
                                                   - u%TwrAddedMass(DOF_Hv,DOF_Sg,J)*RtHSdat%LinAccETt(1,J) &
                                                   + u%TwrAddedMass(DOF_Hv,DOF_Sw,J)*RtHSdat%LinAccETt(3,J) &
                                                   - u%TwrAddedMass(DOF_Hv,DOF_Hv,J)*RtHSdat%LinAccETt(2,J) &
                                                   - u%TwrAddedMass(DOF_Hv,DOF_R ,J)*RtHSdat%AngAccEFt(1,J) &
                                                   + u%TwrAddedMass(DOF_Hv,DOF_P ,J)*RtHSdat%AngAccEFt(3,J) &
                                                   - u%TwrAddedMass(DOF_Hv,DOF_Y ,J)*RtHSdat%AngAccEFt(2,J)   )
-      RtHSdat%MFHydrot(:,J) = CoordSys%z1*( u%TowerPtLoads%Moment(DOF_R-3,J)/p%DHNodes(J) &
+      RtHSdat%MFHydrot(:,J) = CoordSys%z1*( u%TowerPtLoads%Moment(DOF_R-3,J)/abs(p%DHNodes(J)) &
                                                   - u%TwrAddedMass(DOF_R ,DOF_Sg,J)*RtHSdat%LinAccETt(1,J) &
                                                   + u%TwrAddedMass(DOF_R ,DOF_Sw,J)*RtHSdat%LinAccETt(3,J) &
                                                   - u%TwrAddedMass(DOF_R ,DOF_Hv,J)*RtHSdat%LinAccETt(2,J) &
                                                   - u%TwrAddedMass(DOF_R ,DOF_R ,J)*RtHSdat%AngAccEFt(1,J) &
                                                   + u%TwrAddedMass(DOF_R ,DOF_P ,J)*RtHSdat%AngAccEFt(3,J) &
                                                   - u%TwrAddedMass(DOF_R ,DOF_Y ,J)*RtHSdat%AngAccEFt(2,J)   ) &
-                            - CoordSys%z3*( u%TowerPtLoads%Moment(DOF_P-3 ,J)/p%DHNodes(J) &
+                            - CoordSys%z3*( u%TowerPtLoads%Moment(DOF_P-3 ,J)/abs(p%DHNodes(J)) &
                                                   - u%TwrAddedMass(DOF_P ,DOF_Sg,J)*RtHSdat%LinAccETt(1,J) &
                                                   + u%TwrAddedMass(DOF_P ,DOF_Sw,J)*RtHSdat%LinAccETt(3,J) &
                                                   - u%TwrAddedMass(DOF_P ,DOF_Hv,J)*RtHSdat%LinAccETt(2,J) &
                                                   - u%TwrAddedMass(DOF_P ,DOF_R ,J)*RtHSdat%AngAccEFt(1,J) &
                                                   + u%TwrAddedMass(DOF_P ,DOF_P ,J)*RtHSdat%AngAccEFt(3,J) &
                                                   - u%TwrAddedMass(DOF_P ,DOF_Y ,J)*RtHSdat%AngAccEFt(2,J)   ) &
-                            + CoordSys%z2*( u%TowerPtLoads%Moment(DOF_Y-3 ,J)/p%DHNodes(J) &
+                            + CoordSys%z2*( u%TowerPtLoads%Moment(DOF_Y-3 ,J)/abs(p%DHNodes(J)) &
                                                   - u%TwrAddedMass(DOF_Y ,DOF_Sg,J)*RtHSdat%LinAccETt(1,J) &
                                                   + u%TwrAddedMass(DOF_Y ,DOF_Sw,J)*RtHSdat%LinAccETt(3,J) &
                                                   - u%TwrAddedMass(DOF_Y ,DOF_Hv,J)*RtHSdat%LinAccETt(2,J) &
@@ -8026,19 +8064,19 @@ DO K = 1,p%NumBl ! Loop through all blades
 
       DO I = 1,p%DOFs%NPTE  ! Loop through all active (enabled) DOFs that contribute to the QD2T-related linear accelerations of the tower
 
-         TmpVec1 = RtHSdat%PFTHydro(:,J,p%DOFs%PTE(I))*p%DHNodes(J) - p%TElmntMass(J)*RtHSdat%PLinVelET(J,p%DOFs%PTE(I),0,:)           ! The portion of PFrcT0Trb associated with tower element J
+         TmpVec1 = RtHSdat%PFTHydro(:,J,p%DOFs%PTE(I))*abs(p%DHNodes(J)) - p%TElmntMass(J)*RtHSdat%PLinVelET(J,p%DOFs%PTE(I),0,:)           ! The portion of PFrcT0Trb associated with tower element J
          TmpVec2 = CROSS_PRODUCT( RtHSdat%rT0T(:,J), TmpVec1 )                 ! The portion of PMomX0Trb associated with tower element J
-         TmpVec3 = RtHSdat%PMFHydro(:,J,p%DOFs%PTE(I))*p%DHNodes(J)             ! The added moment applied at tower element J
+         TmpVec3 = RtHSdat%PMFHydro(:,J,p%DOFs%PTE(I))*abs(p%DHNodes(J))             ! The added moment applied at tower element J
 
          RtHSdat%PFrcT0Trb(:,p%DOFs%PTE(I)) = RtHSdat%PFrcT0Trb(:,p%DOFs%PTE(I)) + TmpVec1
          RtHSdat%PMomX0Trb(:,p%DOFs%PTE(I)) = RtHSdat%PMomX0Trb(:,p%DOFs%PTE(I)) + TmpVec2 + TmpVec3
 
       ENDDO          ! I - All active (enabled) DOFs that contribute to the QD2T-related linear accelerations of the tower
 
-      TmpVec1 = ( RtHSdat%FTHydrot(:,J) )*p%DHNodes(J) &
+      TmpVec1 = ( RtHSdat%FTHydrot(:,J) )*abs(p%DHNodes(J)) &
               - p%TElmntMass(J)*( p%Gravity*CoordSys%z2 + RtHSdat%LinAccETt(:,J) )          ! The portion of FrcT0Trbt associated with tower element J
       TmpVec2 = CROSS_PRODUCT( RtHSdat%rT0T(:,J), TmpVec1 )                                 ! The portion of MomX0Trbt associated with tower element J
-      TmpVec3 = ( RtHSdat%MFHydrot(:,J) )*p%DHNodes(J)                                      ! The external moment applied to tower element J
+      TmpVec3 = ( RtHSdat%MFHydrot(:,J) )*abs(p%DHNodes(J))                                      ! The external moment applied to tower element J
 
       RtHSdat%FrcT0Trbt = RtHSdat%FrcT0Trbt + TmpVec1
 
@@ -8067,22 +8105,36 @@ DO K = 1,p%NumBl ! Loop through all blades
    RtHSdat%PMXHydro = 0.0
    DO I = 1,p%DOFs%NPYE  ! Loop through all active (enabled) DOFs that contribute to the QD2T-related linear accelerations of the platform center of mass (point Y)
 
-      RtHSdat%PFZHydro(p%DOFs%PYE(I),:) = - u%PtfmAddedMass(DOF_Sg,p%DOFs%PYE(I))*RtHSdat%PLinVelEZ(DOF_Sg,0,:) &
-                                          - u%PtfmAddedMass(DOF_Sw,p%DOFs%PYE(I))*RtHSdat%PLinVelEZ(DOF_Sw,0,:) &
-                                          - u%PtfmAddedMass(DOF_Hv,p%DOFs%PYE(I))*RtHSdat%PLinVelEZ(DOF_Hv,0,:)
-      RtHSdat%PMXHydro(p%DOFs%PYE(I),:) = - u%PtfmAddedMass(DOF_R ,p%DOFs%PYE(I))*RtHSdat%PAngVelEX(DOF_R ,0,:) &
-                                          - u%PtfmAddedMass(DOF_P ,p%DOFs%PYE(I))*RtHSdat%PAngVelEX(DOF_P ,0,:) &
-                                          - u%PtfmAddedMass(DOF_Y ,p%DOFs%PYE(I))*RtHSdat%PAngVelEX(DOF_Y ,0,:)
+      ! RtHSdat%PFZHydro(p%DOFs%PYE(I),:) = - u%PtfmAddedMass(DOF_Sg,p%DOFs%PYE(I))*RtHSdat%PLinVelEZ(DOF_Sg,0,:) &
+      !                                     - u%PtfmAddedMass(DOF_Sw,p%DOFs%PYE(I))*RtHSdat%PLinVelEZ(DOF_Sw,0,:) &
+      !                                     - u%PtfmAddedMass(DOF_Hv,p%DOFs%PYE(I))*RtHSdat%PLinVelEZ(DOF_Hv,0,:)
+      ! RtHSdat%PMXHydro(p%DOFs%PYE(I),:) = - u%PtfmAddedMass(DOF_R ,p%DOFs%PYE(I))*RtHSdat%PAngVelEX(DOF_R ,0,:) &
+      !                                     - u%PtfmAddedMass(DOF_P ,p%DOFs%PYE(I))*RtHSdat%PAngVelEX(DOF_P ,0,:) &
+      !                                     - u%PtfmAddedMass(DOF_Y ,p%DOFs%PYE(I))*RtHSdat%PAngVelEX(DOF_Y ,0,:)
+
+      RtHSdat%PFZHydro(p%DOFs%PYE(I),:) = - u%PtfmAddedMass(DOF_Sg,p%DOFs%PYE(I))*CoordSys%z1 &
+                                          + u%PtfmAddedMass(DOF_Sw,p%DOFs%PYE(I))*CoordSys%z3 &
+                                          - u%PtfmAddedMass(DOF_Hv,p%DOFs%PYE(I))*CoordSys%z2
+      RtHSdat%PMXHydro(p%DOFs%PYE(I),:) = - u%PtfmAddedMass(DOF_R ,p%DOFs%PYE(I))*CoordSys%z1 &
+                                          + u%PtfmAddedMass(DOF_P ,p%DOFs%PYE(I))*CoordSys%z3 &
+                                          - u%PtfmAddedMass(DOF_Y ,p%DOFs%PYE(I))*CoordSys%z2
 
    ENDDO          ! I - All active (enabled) DOFs that contribute to the QD2T-related linear accelerations of the platform center of mass (point Y)
 
-   RtHSdat%FZHydrot = u%PlatformPtMesh%Force(DOF_Sg,1)*RtHSdat%PLinVelEZ(DOF_Sg,0,:) &
-                    + u%PlatformPtMesh%Force(DOF_Sw,1)*RtHSdat%PLinVelEZ(DOF_Sw,0,:) &
-                    + u%PlatformPtMesh%Force(DOF_Hv,1)*RtHSdat%PLinVelEZ(DOF_Hv,0,:)
-   RtHSdat%MXHydrot = u%PlatformPtMesh%Moment(DOF_R-3,1)*RtHSdat%PAngVelEX(DOF_R ,0,:) &
-                    + u%PlatformPtMesh%Moment(DOF_P-3,1)*RtHSdat%PAngVelEX(DOF_P ,0,:) &
-                    + u%PlatformPtMesh%Moment(DOF_Y-3,1)*RtHSdat%PAngVelEX(DOF_Y ,0,:)
-   
+   !RtHSdat%FZHydrot = u%PlatformPtMesh%Force(DOF_Sg,1)*RtHSdat%PLinVelEZ(DOF_Sg,0,:) &
+   !                 + u%PlatformPtMesh%Force(DOF_Sw,1)*RtHSdat%PLinVelEZ(DOF_Sw,0,:) &
+   !                 + u%PlatformPtMesh%Force(DOF_Hv,1)*RtHSdat%PLinVelEZ(DOF_Hv,0,:)
+   !RtHSdat%MXHydrot = u%PlatformPtMesh%Moment(DOF_R-3,1)*RtHSdat%PAngVelEX(DOF_R ,0,:) &
+   !                 + u%PlatformPtMesh%Moment(DOF_P-3,1)*RtHSdat%PAngVelEX(DOF_P ,0,:) &
+   !                 + u%PlatformPtMesh%Moment(DOF_Y-3,1)*RtHSdat%PAngVelEX(DOF_Y ,0,:)
+
+   RtHSdat%FZHydrot = u%PlatformPtMesh%Force(DOF_Sg,1)*CoordSys%z1 &
+                    - u%PlatformPtMesh%Force(DOF_Sw,1)*CoordSys%z3 &
+                    + u%PlatformPtMesh%Force(DOF_Hv,1)*CoordSys%z2
+   RtHSdat%MXHydrot = u%PlatformPtMesh%Moment(DOF_R-3,1)*CoordSys%z1 &
+                    - u%PlatformPtMesh%Moment(DOF_P-3,1)*CoordSys%z3 &
+                    + u%PlatformPtMesh%Moment(DOF_Y-3,1)*CoordSys%z2
+
 !.....................................
 ! PFrcZAll and PMomXAll  
 !  (requires PFrcT0Trb, PMomX0Trb, PFZHydro, PMXHydro )
@@ -8109,7 +8161,13 @@ DO K = 1,p%NumBl ! Loop through all blades
       RtHSdat%PMomXAll(:,p%DOFs%PYE(I)) = RtHSdat%PMomXAll(:,p%DOFs%PYE(I)  )        + RtHSdat%PMXHydro(p%DOFs%PYE(I),:) + TmpVec2 &
                                     - p%PtfmRIner*CoordSys%a1*DOT_PRODUCT( CoordSys%a1, RtHSdat%PAngVelEX(p%DOFs%PYE(I),0,:) )   &
                                     - p%PtfmYIner*CoordSys%a2*DOT_PRODUCT( CoordSys%a2, RtHSdat%PAngVelEX(p%DOFs%PYE(I),0,:) )   &
-                                    - p%PtfmPIner*CoordSys%a3*DOT_PRODUCT( CoordSys%a3, RtHSdat%PAngVelEX(p%DOFs%PYE(I),0,:) )
+                                    - p%PtfmPIner*CoordSys%a3*DOT_PRODUCT( CoordSys%a3, RtHSdat%PAngVelEX(p%DOFs%PYE(I),0,:) )   &
+                                    - p%PtfmXZIner*CoordSys%a1*DOT_PRODUCT( CoordSys%a2, RtHSdat%PAngVelEX(p%DOFs%PYE(I),0,:) )   &
+                                    + p%PtfmXYIner*CoordSys%a1*DOT_PRODUCT( CoordSys%a3, RtHSdat%PAngVelEX(p%DOFs%PYE(I),0,:) )   &
+                                    + p%PtfmYZIner*CoordSys%a2*DOT_PRODUCT( CoordSys%a3, RtHSdat%PAngVelEX(p%DOFs%PYE(I),0,:) )   &
+                                    - p%PtfmXZIner*CoordSys%a2*DOT_PRODUCT( CoordSys%a1, RtHSdat%PAngVelEX(p%DOFs%PYE(I),0,:) )   &
+                                    + p%PtfmXYIner*CoordSys%a3*DOT_PRODUCT( CoordSys%a1, RtHSdat%PAngVelEX(p%DOFs%PYE(I),0,:) )   &
+                                    + p%PtfmYZIner*CoordSys%a3*DOT_PRODUCT( CoordSys%a2, RtHSdat%PAngVelEX(p%DOFs%PYE(I),0,:) )
 
    ENDDO          ! I - All active (enabled) DOFs that contribute to the QD2T-related linear accelerations of the platform center of mass (point Y)
 
@@ -8123,12 +8181,27 @@ DO K = 1,p%NumBl ! Loop through all blades
    TmpVec3 = CROSS_PRODUCT( RtHSdat%rZT0     , RtHSdat%FrcT0Trbt )                                                      ! The portion of MomXAllt associated with the FrcT0Trbt
    TmpVec  = p%PtfmRIner*CoordSys%a1*DOT_PRODUCT( CoordSys%a1, RtHSdat%AngVelEX  ) &      ! = ( Platform inertia dyadic ) dot ( angular velocity of platform in the inertia frame )
            + p%PtfmYIner*CoordSys%a2*DOT_PRODUCT( CoordSys%a2, RtHSdat%AngVelEX  ) &
-           + p%PtfmPIner*CoordSys%a3*DOT_PRODUCT( CoordSys%a3, RtHSdat%AngVelEX  )
+           + p%PtfmPIner*CoordSys%a3*DOT_PRODUCT( CoordSys%a3, RtHSdat%AngVelEX  ) &
+           + p%PtfmXZIner*CoordSys%a1*DOT_PRODUCT( CoordSys%a2, RtHSdat%AngVelEX  ) &
+           - p%PtfmXYIner*CoordSys%a1*DOT_PRODUCT( CoordSys%a3, RtHSdat%AngVelEX  ) &
+           - p%PtfmYZIner*CoordSys%a2*DOT_PRODUCT( CoordSys%a3, RtHSdat%AngVelEX  ) &
+           + p%PtfmXZIner*CoordSys%a2*DOT_PRODUCT( CoordSys%a1, RtHSdat%AngVelEX  ) &
+           - p%PtfmXYIner*CoordSys%a3*DOT_PRODUCT( CoordSys%a1, RtHSdat%AngVelEX  ) &
+           - p%PtfmYZIner*CoordSys%a3*DOT_PRODUCT( CoordSys%a2, RtHSdat%AngVelEX  )
+
    TmpVec4 = CROSS_PRODUCT( -RtHSdat%AngVelEX,   TmpVec  )                                                      ! = ( -angular velocity of platform in the inertia frame ) cross ( TmpVec )
 
    RtHSdat%FrcZAllt = RtHSdat%FrcT0Trbt + RtHSdat%FZHydrot + TmpVec1
-   RtHSdat%MomXAllt = RtHSdat%MomX0Trbt + RtHSdat%MXHydrot + TmpVec2 + TmpVec3 + TmpVec4   
-   
+   RtHSdat%MomXAllt = RtHSdat%MomX0Trbt + RtHSdat%MXHydrot + TmpVec2 + TmpVec3 + TmpVec4 &
+                    - p%PtfmRIner*CoordSys%a1*DOT_PRODUCT( CoordSys%a1, RtHSdat%AngAccEXt ) &
+                    - p%PtfmYIner*CoordSys%a2*DOT_PRODUCT( CoordSys%a2, RtHSdat%AngAccEXt ) &
+                    - p%PtfmPIner*CoordSys%a3*DOT_PRODUCT( CoordSys%a3, RtHSdat%AngAccEXt ) &
+                    - p%PtfmXZIner*CoordSys%a1*DOT_PRODUCT( CoordSys%a2, RtHSdat%AngAccEXt ) &
+                    + p%PtfmXYIner*CoordSys%a1*DOT_PRODUCT( CoordSys%a3, RtHSdat%AngAccEXt ) &
+                    + p%PtfmYZIner*CoordSys%a2*DOT_PRODUCT( CoordSys%a3, RtHSdat%AngAccEXt ) &
+                    - p%PtfmXZIner*CoordSys%a2*DOT_PRODUCT( CoordSys%a1, RtHSdat%AngAccEXt ) &
+                    + p%PtfmXYIner*CoordSys%a3*DOT_PRODUCT( CoordSys%a1, RtHSdat%AngAccEXt ) &
+                    + p%PtfmYZIner*CoordSys%a3*DOT_PRODUCT( CoordSys%a2, RtHSdat%AngAccEXt )
    
 END SUBROUTINE CalculateForcesMoments
 !----------------------------------------------------------------------------------------------------------------------------------
@@ -8148,6 +8221,7 @@ SUBROUTINE FillAugMat( p, x, CoordSys, u, HSSBrTrq, RtHSdat, AugMat )
       ! Local variables
    REAL(ReKi)                   :: TmpVec    (3)                                   ! A temporary vector used in various computations.
    REAL(ReKi)                   :: TmpVec1   (3)                                   ! A temporary vector used in various computations.
+   REAL(ReKi)                   :: TmpVec2   (3)                                   ! A temporary vector used in various computations.
    REAL(ReKi)                   :: TmpVec3   (3)                                   ! A temporary vector used in various computations.
    REAL(ReKi)                   :: GBoxTrq                                         ! Gearbox torque on the LSS side in N-m (calculated from inputs and parameters).
    REAL(ReKi)                   :: GBoxEffFac2                                     ! A second gearbox efficiency factor = ( 1 / GBoxEff^SgnPrvLSTQ - 1 )
@@ -8176,19 +8250,34 @@ SUBROUTINE FillAugMat( p, x, CoordSys, u, HSSBrTrq, RtHSdat, AugMat )
    
       DO L = 1,p%DOFs%NPSBE(K)    ! Loop through all active (enabled) blade DOFs that contribute to the QD2T-related linear accelerations of the tip of blade K (point S(p%BldFlexL))
          DO I = L,p%DOFs%NPSBE(K) ! Loop through all active (enabled) blade DOFs greater than or equal to L
-            AugMat(p%DOFs%PSBE(K,I),p%DOFs%PSBE(K,L)) = p%TipMass(K)*&
-                                        DOT_PRODUCT( RtHSdat%PLinVelES(K, p%TipNode, p%DOFs%PSBE(K,I),0,:), &   ! [C(q,t)]B
-                                                     RtHSdat%PLinVelES(K, p%TipNode, p%DOFs%PSBE(K,L),0,:)    )
+            AugMat(p%DOFs%PSBE(K,I),p%DOFs%PSBE(K,L)) = p%TipMass(K) *                                         &
+                                        DOT_PRODUCT( RtHSdat%PLinVelES(K, p%TipNode, p%DOFs%PSBE(K,I),0,:),    &   ! [C(q,t)]B
+                                                     RtHSdat%PLinVelES(K, p%TipNode, p%DOFs%PSBE(K,L),0,:)   ) &
+                                      + DOT_PRODUCT( RtHSdat%PAngVelEM(K,0,p%DOFs%PSBE(K,I),0,:),              &
+                                                     p%PitchIner(K)*CoordSys%j3(K,:)*DOT_PRODUCT(CoordSys%j3(K,:),RtHSdat%PAngVelEM(K,0,p%DOFs%PSBE(K,L),0,:)) )
+
          ENDDO             ! I - All active (enabled) blade DOFs greater than or equal to L
       ENDDO                ! L - All active (enabled) blade DOFs that contribute to the QD2T-related linear accelerations of the tip of blade K (point S(p%BldFlexL))
 
       TmpVec1 = RtHSdat%FSTipDrag(:,K) - p%TipMass(K)*( p%Gravity*CoordSys%z2 + RtHSdat%LinAccESt(:,K,p%TipNode) ) ! The portion of FrcS0Bt associated with the tip brake
+      TmpVec2 = -p%PitchIner(K)*CoordSys%j3(K,:)*DOT_PRODUCT(CoordSys%j3(K,:),RtHSdat%AngAccEKt(:,0,K))
+      TmpVec3 = -CROSS_PRODUCT( RtHSdat%AngVelEM(:,0,K) , p%PitchIner(K)*CoordSys%j3(K,:)*DOT_PRODUCT(CoordSys%j3(K,:),RtHSdat%AngVelEM(:,0,K)) )
       DO I = 1,p%DOFs%NPSBE(K)    ! Loop through all active (enabled) blade DOFs that contribute to the QD2T-related linear accelerations of the tip of blade K (point S(p%BldFlexL))
             AugMat(p%DOFs%PSBE(K,I), p%NAug) = DOT_PRODUCT( RtHSdat%PLinVelES(K,p%TipNode,p%DOFs%PSBE(K,I),0,:), &   ! {-f(qd,q,t)}B + {-f(qd,q,t)}GravB + {-f(qd,q,t)}AeroB
-                                                              TmpVec1                               ) ! NOTE: TmpVec1 is still the portion of FrcS0Bt associated with the tip brake
+                                                              TmpVec1                               )            &   ! NOTE: TmpVec1 is still the portion of FrcS0Bt associated with the tip brake
+                                             + DOT_PRODUCT( RtHSdat%PAngVelEM(K,0,p%DOFs%PSBE(K,I),0,:),         &
+                                                              TmpVec2 + TmpVec3 )
       ENDDO                ! I - All active (enabled) blade DOFs that contribute to the QD2T-related linear accelerations of the tip of blade K (point S(p%BldFlexL))
-   
-      
+
+      ! Apply BeamDyn blade-root loads. Note: When BeamDyn is used, blade bending DoF in ED are disabled, so PSBE should only contain the pitch modes if enabled.
+      IF (p%BD4Blades) THEN
+         TmpVec1 = (/u%BladeRootLoads(K)%Force (1,1), u%BladeRootLoads(K)%Force (3,1), -u%BladeRootLoads(K)%Force (2,1)/)
+         TmpVec2 = (/u%BladeRootLoads(K)%Moment(1,1), u%BladeRootLoads(K)%Moment(3,1), -u%BladeRootLoads(K)%Moment(2,1)/)
+         DO I = 1,p%DOFs%NPSBE(K)
+               AugMat(p%DOFs%PSBE(K,I), p%NAug) = DOT_PRODUCT( RtHSdat%PLinVelES(K,0,p%DOFs%PSBE(K,I),0,:), TmpVec1 ) &
+                                                + DOT_PRODUCT( RtHSdat%PAngVelEM(K,0,p%DOFs%PSBE(K,I),0,:), TmpVec2 )
+         ENDDO
+      END IF
 
       DO J = 1,p%BldNodes ! Loop through the blade nodes / elements
 
@@ -8225,14 +8314,21 @@ SUBROUTINE FillAugMat( p, x, CoordSys, u, HSSBrTrq, RtHSdat, AugMat )
       ! Initialize the portions of the mass matrix below the diagonal associated
       !   with the teeter and pure blade DOFs using the partial loads at the teeter pin; only do this if necessary:
 
-      IF ( ( p%NumBl == 2 ) .AND. ( p%DOF_Flag(DOF_Teet) ) )  THEN
-         DO L = 1,p%DOFs%NPSBE(K) ! Loop through all active (enabled) blade DOFs that contribute to the QD2T-related linear accelerations of the blade
-            AugMat(DOF_Teet,p%DOFs%PSBE(K,L)) = -DOT_PRODUCT( RtHSdat%PAngVelEH(DOF_Teet,0,:), &
-                                                              RtHSdat%PMomLPRot(:,p%DOFs%PSBE(K,L)) )  ! [C(q,t)]B
-         ENDDO             ! L - All active (enabled) blade DOFs that contribute to the QD2T-related linear accelerations of the blade
+      IF ( ( p%NumBl == 2 ) ) THEN
+         IF ( p%DOF_Flag(DOF_Teet) ) THEN ! NOTE: two "ifs" since DOF_Teet might be out of bound
+            DO L = 1,p%DOFs%NPSBE(K) ! Loop through all active (enabled) blade DOFs that contribute to the QD2T-related linear accelerations of the blade
+               AugMat(DOF_Teet,p%DOFs%PSBE(K,L)) = -DOT_PRODUCT( RtHSdat%PAngVelEH(DOF_Teet,0,:), &
+                                                                 RtHSdat%PMomLPRot(:,p%DOFs%PSBE(K,L)) )  ! [C(q,t)]B
+            ENDDO             ! L - All active (enabled) blade DOFs that contribute to the QD2T-related linear accelerations of the blade
+         ENDIF
       ENDIF
 
+      ! If blade pitch DOFs are enabled, add input blade pitch torque
 
+      IF ( p%DOF_Flag(DOF_BP(K  )) )  THEN
+         AugMat(    DOF_BP(K  ),p%NAug) = AugMat(DOF_BP(K  ),p%NAug)      &
+                                        + u%BlPitchMom(K)
+      END IF
 
       ! If the associated DOFs are enabled, add the blade elasticity and damping
       !   forces to the forcing vector (these portions can't be calculated using
@@ -8304,16 +8400,16 @@ SUBROUTINE FillAugMat( p, x, CoordSys, u, HSSBrTrq, RtHSdat, AugMat )
             AugMat(p%DOFs%PTTE(I),p%DOFs%PTTE(L)) = AugMat(p%DOFs%PTTE(I),p%DOFs%PTTE(L))  &
                                                   + p%TElmntMass(J)   *DOT_PRODUCT( RtHSdat%PLinVelET(J,p%DOFs%PTTE(I),0,:),  &
                                                                               RtHSdat%PLinVelET(J,p%DOFs%PTTE(L),0,:) ) &   ! [C(q,t)]T + [C(q,t)]HydroT
-                                                  - p%DHNodes(J)*DOT_PRODUCT( RtHSdat%PLinVelET(J,p%DOFs%PTTE(I),0,:),  &
+                                                  - abs(p%DHNodes(J))*DOT_PRODUCT( RtHSdat%PLinVelET(J,p%DOFs%PTTE(I),0,:),  &
                                                                               RtHSdat%PFTHydro (:,J,p%DOFs%PTTE(L)  ) ) &
-                                                  - p%DHNodes(J)*DOT_PRODUCT( RtHSdat%PAngVelEF(J,p%DOFs%PTTE(I),0,:),  &
+                                                  - abs(p%DHNodes(J))*DOT_PRODUCT( RtHSdat%PAngVelEF(J,p%DOFs%PTTE(I),0,:),  &
                                                                               RtHSdat%PMFHydro (:,J,p%DOFs%PTTE(L)  ) )
          ENDDO                 ! I - All active (enabled) tower DOFs greater than or equal to L
       ENDDO                    ! L - All active (enabled) tower DOFs that contribute to the QD2T-related linear accelerations of the tower
 
-      TmpVec1 = ( RtHSdat%FTHydrot(:,J) )*p%DHNodes(J) &
+      TmpVec1 = ( RtHSdat%FTHydrot(:,J) )*abs(p%DHNodes(J)) &
               - p%TElmntMass(J)*( p%Gravity*CoordSys%z2 + RtHSdat%LinAccETt(:,J) )          ! The portion of FrcT0Trbt associated with tower element J
-      TmpVec3 = ( RtHSdat%MFHydrot(:,J) )*p%DHNodes(J)             ! The external moment applied to tower element J
+      TmpVec3 = ( RtHSdat%MFHydrot(:,J) )*abs(p%DHNodes(J))             ! The external moment applied to tower element J
       DO I = 1,p%DOFs%NPTTE    ! Loop through all active (enabled) tower DOFs that contribute to the QD2T-related linear accelerations of the tower
             AugMat(p%DOFs%PTTE(I),        p%NAug) = AugMat(p%DOFs%PTTE(I),   p%NAug)                         &                 ! {-f(qd,q,t)}T + {-f(qd,q,t)}GravT + {-f(qd,q,t)}AeroT + {-f(qd,q,t)}HydroT
                                                   +  DOT_PRODUCT( RtHSdat%PLinVelET(J,p%DOFs%PTTE(I),0,:), TmpVec1        ) &  ! NOTE: TmpVec1 is still the portion of FrcT0Trbt associated with tower element J
@@ -8460,7 +8556,7 @@ SUBROUTINE FillAugMat( p, x, CoordSys, u, HSSBrTrq, RtHSdat, AugMat )
          AugMat(p%DOFs%SrtPS(I),DOF_Yaw ) = -DOT_PRODUCT( RtHSdat%PAngVelEN(DOF_Yaw ,0,:), RtHSdat%PMomBNcRt(:,p%DOFs%SrtPS(I)) )   ! [C(q,t)]N + [C(q,t)]R + [C(q,t)]G + [C(q,t)]H + [C(q,t)]B + [C(q,t)]A
       ENDDO                            ! I - All active (enabled) DOFs on or below the diagonal
          AugMat(DOF_Yaw ,         p%NAug) =  DOT_PRODUCT( RtHSdat%PAngVelEN(DOF_Yaw ,0,:), RtHSdat%MomBNcRtt             ) &        ! {-f(qd,q,t)}N + {-f(qd,q,t)}GravN + {-f(qd,q,t)}R + {-f(qd,q,t)}GravR + {-f(qd,q,t)}G + {-f(qd,q,t)}H + {-f(qd,q,t)}GravH + {-f(qd,q,t)}B + {-f(qd,q,t)}GravB + {-f(qd,q,t)}AeroB + {-f(qd,q,t)}A + {-f(qd,q,t)}GravA + {-f(qd,q,t)}AeroA
-                                                              + u%YawMom                                                            ! + {-f(qd,q,t)}SpringYaw  + {-f(qd,q,t)}DampYaw; NOTE: The neutral yaw rate, YawRateNeut, defaults to zero.  It is only used for yaw control.
+                                                              + u%YawMom + RtHSdat%YawFriMom                                                            ! + {-f(qd,q,t)}SpringYaw  + {-f(qd,q,t)}DampYaw; NOTE: The neutral yaw rate, YawRateNeut, defaults to zero.  It is only used for yaw control.
    ENDIF
    
    
@@ -8512,11 +8608,13 @@ SUBROUTINE FillAugMat( p, x, CoordSys, u, HSSBrTrq, RtHSdat, AugMat )
                                                               +  RtHSdat%TFrlMom                                                  ! + {-f(qd,q,t)}SpringTF + {-f(qd,q,t)}DampTF
    ENDIF
 
-   IF ( ( p%NumBl == 2 ) .AND. ( p%DOF_Flag(DOF_Teet) ) )  THEN
-      ! The teeter DOF does not affect any DOF index larger than DOF_Teet.  Therefore, there is no need to perform the loop: DO I = Diag(DOF_Teet),NActvDOF
+   IF ( ( p%NumBl == 2 ) ) THEN 
+      IF ( p%DOF_Flag(DOF_Teet) )  THEN  ! NOTE: two "ifs" since DOF_Teet may be out of bound
+         ! The teeter DOF does not affect any DOF index larger than DOF_Teet.  Therefore, there is no need to perform the loop: DO I = Diag(DOF_Teet),NActvDOF
          AugMat(DOF_Teet,       DOF_Teet) = -DOT_PRODUCT( RtHSdat%PAngVelEH(DOF_Teet,0,:), RtHSdat%PMomLPRot(:,DOF_Teet) )        ! [C(q,t)]H + [C(q,t)]B
          AugMat(DOF_Teet,         p%NAug) =  DOT_PRODUCT( RtHSdat%PAngVelEH(DOF_Teet,0,:), RtHSdat%MomLPRott             ) &      ! {-f(qd,q,t)}H + {-f(qd,q,t)}GravH + {-f(qd,q,t)}B + {-f(qd,q,t)}GravB + {-f(qd,q,t)}AeroB
                                                               +  RtHSdat%TeetMom                                                  ! + {-f(qd,q,t)}SpringTeet + {-f(qd,q,t)}DampTeet
+      ENDIF
    ENDIF
    !..................................................................................................................................
    ! So far, we have only filled in the portions of the mass matrix on and below the diagonal.  Because the mass matrix is symmetric
@@ -8592,7 +8690,11 @@ SUBROUTINE ED_AllocOutput( p, m, u, y, ErrStat, ErrMsg )
    CALL AllocAry( y%BlPitch, p%NumBl, 'BlPitch', ErrStat2, ErrMsg2 )
       CALL CheckError( ErrStat2, ErrMsg2 )
       IF (ErrStat >= AbortErrLev) RETURN
-      
+
+   CALL AllocAry( y%BlPRate, p%NumBl, 'BlPRate', ErrStat2, ErrMsg2 )
+      CALL CheckError( ErrStat2, ErrMsg2 )
+      IF (ErrStat >= AbortErrLev) RETURN
+
    !.......................................................
    ! Create Line2 Mesh for motion outputs on blades:
    !.......................................................
@@ -8625,53 +8727,38 @@ SUBROUTINE ED_AllocOutput( p, m, u, y, ErrStat, ErrMsg )
                IF (ErrStat >= AbortErrLev) RETURN
          END DO
             
-            ! now add position/orientation of nodes for AD14 or AD15
-         if (p%UseAD14) then     ! position/orientation of nodes for AeroDyn v14 or v15    
-         
-               ! Use orientation at p%BldNodes for the extra node at the blade tip
-            CALL MeshPositionNode ( y%BladeLn2Mesh(K), p%BldNodes + 1, (/0.0_ReKi, 0.0_ReKi, p%BldFlexL /), ErrStat2, ErrMsg2, Orient=u%BladePtLoads(K)%RefOrientation(:,:,p%BldNodes) )
+            ! now add position/orientation of nodes for AD15
+         ! position the nodes on the blade root and blade tip:
+         DO J = 0,p%TipNode,p%TipNode
+            if (j==0) then ! blade root
+               NodeNum = p%BldNodes + 2
+               y%BladeLn2Mesh(K)%RefNode = NodeNum
+            elseif (j==p%TipNode) then ! blade tip
+               NodeNum = p%BldNodes + 1
+            end if
+        
+            Orientation(1,1) =     m%CoordSys%n1(K,J,1)
+            Orientation(2,1) =     m%CoordSys%n2(K,J,1)
+            Orientation(3,1) =     m%CoordSys%n3(K,J,1)
+            Orientation(1,2) = -1.*m%CoordSys%n1(K,J,3)
+            Orientation(2,2) = -1.*m%CoordSys%n2(K,J,3)
+            Orientation(3,2) = -1.*m%CoordSys%n3(K,J,3)
+            Orientation(1,3) =     m%CoordSys%n1(K,J,2)
+            Orientation(2,3) =     m%CoordSys%n2(K,J,2)
+            Orientation(3,3) =     m%CoordSys%n3(K,J,2) 
+            
+               ! Translational Displacement 
+            position(1) =     m%RtHS%rS (1,K,J)  + p%PtfmRefxt ! = the distance from the undeflected tower centerline to the current blade node in the xi ( z1) direction
+            position(2) = -1.*m%RtHS%rS (3,K,J)  + p%PtfmRefyt ! = the distance from the undeflected tower centerline to the current blade node in the yi (-z3) direction
+            position(3) =     m%RtHS%rS (2,K,J)  + p%PtfmRefzt ! = the distance from the nominal tower base position (i.e., the undeflected position of the tower base) to the current blade node in the zi ( z2) direction
+            
+            
+            CALL MeshPositionNode ( y%BladeLn2Mesh(K), NodeNum, position, ErrStat2, ErrMsg2, Orient=Orientation )
                CALL CheckError( ErrStat2, ErrMsg2 )
                IF (ErrStat >= AbortErrLev) RETURN
+                                 
+         END DO ! nodes 
             
-               ! Use orientation at node 1 for the blade root            
-            CALL MeshPositionNode ( y%BladeLn2Mesh(K), p%BldNodes + 2, (/0.0_ReKi, 0.0_ReKi, 0.0_ReKi /), ErrStat2, ErrMsg2, Orient=u%BladePtLoads(K)%RefOrientation(:,:,1), ref=.true. )
-               CALL CheckError( ErrStat2, ErrMsg2 )
-               IF (ErrStat >= AbortErrLev) RETURN
-               
-         else
-         
-            ! position the nodes on the blade root and blade tip:
-            DO J = 0,p%TipNode,p%TipNode
-               if (j==0) then ! blade root
-                  NodeNum = p%BldNodes + 2
-                  y%BladeLn2Mesh(K)%RefNode = NodeNum
-               elseif (j==p%TipNode) then ! blade tip
-                  NodeNum = p%BldNodes + 1
-               end if
-         
-               Orientation(1,1) =     m%CoordSys%n1(K,J,1)
-               Orientation(2,1) =     m%CoordSys%n2(K,J,1)
-               Orientation(3,1) =     m%CoordSys%n3(K,J,1)
-               Orientation(1,2) = -1.*m%CoordSys%n1(K,J,3)
-               Orientation(2,2) = -1.*m%CoordSys%n2(K,J,3)
-               Orientation(3,2) = -1.*m%CoordSys%n3(K,J,3)
-               Orientation(1,3) =     m%CoordSys%n1(K,J,2)
-               Orientation(2,3) =     m%CoordSys%n2(K,J,2)
-               Orientation(3,3) =     m%CoordSys%n3(K,J,2) 
-               
-                  ! Translational Displacement 
-               position(1) =     m%RtHS%rS (1,K,J)                ! = the distance from the undeflected tower centerline to the current blade node in the xi ( z1) direction
-               position(2) = -1.*m%RtHS%rS (3,K,J)                ! = the distance from the undeflected tower centerline to the current blade node in the yi (-z3) direction
-               position(3) =     m%RtHS%rS (2,K,J)  + p%PtfmRefzt ! = the distance from the nominal tower base position (i.e., the undeflected position of the tower base) to the current blade node in the zi ( z2) direction
-               
-               
-               CALL MeshPositionNode ( y%BladeLn2Mesh(K), NodeNum, position, ErrStat2, ErrMsg2, Orient=Orientation )
-                  CALL CheckError( ErrStat2, ErrMsg2 )
-                  IF (ErrStat >= AbortErrLev) RETURN
-                                    
-            END DO ! nodes 
-            
-         end if ! position/orientation of nodes for AeroDyn v14 or v15
          
          ! create elements:      
          DO J = 2,p%TipNode !p%BldNodes + 1
@@ -8815,27 +8902,6 @@ SUBROUTINE ED_AllocOutput( p, m, u, y, ErrStat, ErrMsg )
       CALL CheckError(ErrStat2,ErrMsg2)
       IF (ErrStat >= AbortErrLev) RETURN
       
-   ! -------------- pseudo-Hub (for AD v14)  -----------------------------------
-   CALL MeshCreate( BlankMesh          = y%HubPtMotion14  &
-                     ,IOS              = COMPONENT_OUTPUT &
-                     ,NNodes           = 1                &
-                     , TranslationDisp = .TRUE.           &
-                     , Orientation     = .TRUE.           &
-                     , RotationVel     = .TRUE.           &
-                     , ErrStat         = ErrStat2         &
-                     , ErrMess         = ErrMsg2          )      
-      CALL CheckError(ErrStat2,ErrMsg2)
-      IF (ErrStat >= AbortErrLev) RETURN
-      
-      ! pseudo-Hub position and orientation (relative here as before, but should not be)
-      
-   CALL MeshPositionNode ( y%HubPtMotion14, 1, (/0.0_ReKi, 0.0_ReKi, p%HubHt /), ErrStat, ErrMsg ) !orientation is identity by default
-      CALL CheckError(ErrStat2,ErrMsg2)
-      IF (ErrStat >= AbortErrLev) RETURN
-            
-   CALL CommitPointMesh( y%HubPtMotion14 )
-      IF (ErrStat >= AbortErrLev) RETURN
- 
       
    ! -------------- Blade Roots -----------------------------------
    ALLOCATE( y%BladeRootMotion(p%NumBl), Stat=ErrStat2 )
@@ -8858,45 +8924,17 @@ SUBROUTINE ED_AllocOutput( p, m, u, y, ErrStat, ErrMsg )
                      ,ErrStat          = ErrStat2               &
                      ,ErrMess          = ErrMsg2                )
          CALL CheckError(ErrStat2,ErrMsg2)
-         IF (ErrStat >= AbortErrLev) RETURN            
+         IF (ErrStat >= AbortErrLev) RETURN
+
    END DO
    
       
-   CALL MeshCreate( BlankMesh          = y%BladeRootMotion14    &
-                     ,IOS              = COMPONENT_OUTPUT       &
-                     ,NNodes           = p%NumBl                &
-                     , Orientation     = .TRUE.                 &
-                     ,ErrStat          = ErrStat2               &
-                     ,ErrMess          = ErrMsg2                )
-      CALL CheckError(ErrStat2,ErrMsg2)
-      IF (ErrStat >= AbortErrLev) RETURN
-
    DO K=1,p%NumBl      
       
-      Orientation(1,1) =               p%CosPreC(K)
-      Orientation(2,1) =  0.0_R8Ki
-      Orientation(3,1) =  1.0_R8Ki *   p%SinPreC(K)
-
-      Orientation(1,2) =  0.0_R8Ki
-      Orientation(2,2) =  1.0_R8Ki
-      Orientation(3,2) =  0.0_R8Ki
-
-      Orientation(1,3) = -1.0_R8Ki *    p%SinPreC(K)
-      Orientation(2,3) =  0.0_R8Ki
-      Orientation(3,3) =                p%CosPreC(K)
-                  
-      Position(1) = p%HubRad*p%SinPreC(K)
-      Position(2) = 0.0_ReKi
-      Position(3) = p%HubRad*p%CosPreC(K)      
-      
-      CALL MeshPositionNode ( y%BladeRootMotion14, K, Position, &
-                            ErrStat, ErrMsg, Orient=Orientation ) 
-         CALL CheckError(ErrStat2,ErrMsg2)
-         IF (ErrStat >= AbortErrLev) RETURN
-                  
+                 
                
-      position(1) =     m%RtHS%rS (1,K,0)                ! = the distance from the undeflected tower centerline to the current blade node in the xi ( z1) direction
-      position(2) = -1.*m%RtHS%rS (3,K,0)                ! = the distance from the undeflected tower centerline to the current blade node in the yi (-z3) direction
+      position(1) =     m%RtHS%rS (1,K,0)  + p%PtfmRefxt ! = the distance from the undeflected tower centerline to the current blade node in the xi ( z1) direction
+      position(2) = -1.*m%RtHS%rS (3,K,0)  + p%PtfmRefyt ! = the distance from the undeflected tower centerline to the current blade node in the yi (-z3) direction
       position(3) =     m%RtHS%rS (2,K,0)  + p%PtfmRefzt ! = the distance from the nominal tower base position (i.e., the undeflected position of the tower base) to the current blade node in the zi ( z2) direction
       
       
@@ -8917,37 +8955,30 @@ SUBROUTINE ED_AllocOutput( p, m, u, y, ErrStat, ErrMsg )
          
    END DO
                      
-   CALL CommitPointMesh( y%BladeRootMotion14 )
-      IF (ErrStat >= AbortErrLev) RETURN
-   
    DO k=1,p%NumBl      
       CALL CommitPointMesh( y%BladeRootMotion(K) )
          IF (ErrStat >= AbortErrLev) RETURN
    END DO
    
-      
-   ! -------------- Rotor Furl -----------------------------------
-   CALL MeshCreate( BlankMesh          = y%RotorFurlMotion14    &
-                     ,IOS              = COMPONENT_OUTPUT       &
-                     ,NNodes           = 1                      &
-                     , TranslationDisp = .TRUE.                 &
-                     , Orientation     = .TRUE.                 &
-                     , RotationVel     = .TRUE.                 &
-                     ,ErrStat          = ErrStat2               &
-                     ,ErrMess          = ErrMsg2                )
-      CALL CheckError(ErrStat2,ErrMsg2)
-      IF (ErrStat >= AbortErrLev) RETURN
+   IF (p%BD4Blades) THEN
+      ALLOCATE( u%BladeRootLoads(p%NumBl), Stat=ErrStat2 )
+      IF ( ErrStat2 /= 0 ) THEN
+         CALL CheckError( ErrID_Fatal, 'ED: Could not allocate space for y%BladeRootLoads{p%NumBl}' )
+         RETURN
+      END IF
 
-!bjj: FIX THIS>>>>     
-!call wrscr(newline//'fix RotorFurlMotion initialization')
-   CALL MeshPositionNode ( y%RotorFurlMotion14, 1, (/0.0_ReKi, 0.0_ReKi, 0.0_ReKi /), ErrStat, ErrMsg ) !orientation is identity by default
-!<<<<<FIX THIS
-      CALL CheckError(ErrStat2,ErrMsg2)
-      IF (ErrStat >= AbortErrLev) RETURN
-      
-   CALL CommitPointMesh( y%RotorFurlMotion14 )
-      IF (ErrStat >= AbortErrLev) RETURN      
-      
+      DO k=1,p%NumBl
+         CALL MeshCopy( SrcMesh  = y%BladeRootMotion(K) &
+                      , DestMesh = u%BladeRootLoads(K)  &
+                      , CtrlCode = MESH_SIBLING         &
+                      , IOS      = COMPONENT_INPUT      &
+                      , Force    = .TRUE.               &
+                      , Moment   = .TRUE.               &
+                      , ErrStat  = ErrStat2             &
+                      , ErrMess  = ErrMsg2              )
+      END DO
+   END IF
+     
    ! -------------- Nacelle -----------------------------------      
    CALL MeshCopy ( SrcMesh  = u%NacelleLoads   &
                  , DestMesh = y%NacelleMotion  &
@@ -8966,28 +8997,24 @@ SUBROUTINE ED_AllocOutput( p, m, u, y, ErrStat, ErrMsg )
       IF (ErrStat >= AbortErrLev) RETURN
       
       
-     
-   ! -------------- Tower Base-----------------------------------
-   CALL MeshCreate( BlankMesh          = y%TowerBaseMotion14    &
-                     ,IOS              = COMPONENT_OUTPUT       &
-                     ,NNodes           = 1                      &
-                     , TranslationDisp = .TRUE.                 &
-                     , RotationVel     = .TRUE.                 &
-                     ,ErrStat          = ErrStat2               &
-                     ,ErrMess          = ErrMsg2                )
-      CALL CheckError(ErrStat2,ErrMsg2)
-      IF (ErrStat >= AbortErrLev) RETURN
+   ! -------------- Tailfin -----------------------------------
+   call MeshCopy ( SrcMesh  = u%TFinCMLoads    &
+                 , DestMesh = y%TFinCMMotion   &
+                 , CtrlCode = MESH_SIBLING     &
+                 , IOS      = COMPONENT_OUTPUT &
+                 , TranslationDisp = .TRUE.    &
+                 , Orientation     = .TRUE.    &
+                 , TranslationVel  = .TRUE.    &
+                 , RotationVel     = .TRUE.    &
+                 , TranslationAcc  = .FALSE.   &
+                 , RotationAcc     = .FALSE.   &   
+                 , ErrStat  = ErrStat2         &
+                 , ErrMess  = ErrMsg2          )
 
-!bjj: FIX THIS>>>>     
-!call wrscr(newline//'fix TowerBaseMotion14 initialization')
-   CALL MeshPositionNode ( y%TowerBaseMotion14, 1, (/0.0_ReKi, 0.0_ReKi, 0.0_ReKi /), ErrStat, ErrMsg ) !orientation is identity by default
-!<<<<<FIX THIS
-      CALL CheckError(ErrStat2,ErrMsg2)
-      IF (ErrStat >= AbortErrLev) RETURN
-      
-   CALL CommitPointMesh( y%TowerBaseMotion14 )
-      IF (ErrStat >= AbortErrLev) RETURN      
-      
+   call CheckError( ErrStat2, ErrMsg2 )
+   if (ErrStat >= AbortErrLev) RETURN         
+     
+     
       
 CONTAINS
    !...............................................................................................................................
@@ -9077,34 +9104,34 @@ SUBROUTINE Init_u( u, p, x, InputFileData, m, ErrStat, ErrMsg )
    ErrMsg  = ""
 
    !.......................................................
-   ! allocate the u%BlPitchCom array    
+   ! allocate the u%BlPitchCom array
    !.......................................................
 
    CALL AllocAry( u%BlPitchCom, p%NumBl, 'BlPitchCom', ErrStat2, ErrMsg2 )
-      CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
-      IF (ErrStat >= AbortErrLev) THEN
-         CALL Cleanup()
-         RETURN
-      END IF
+   if (Failed()) return
    ! will initialize u%BlPitchCom later, after getting undisplaced positions    
-   
+
+   !.......................................................
+   ! allocate the u%BlPitchMom array
+   !.......................................................
+
+   CALL AllocAry( u%BlPitchMom, p%NumBl, 'BlPitchMom', ErrStat2, ErrMsg2 )
+   if (Failed()) return
+
    !.......................................................
    ! we're going to calculate the non-displaced positions of
    ! several variables so we can set up meshes properly later.
    ! want inputs and states initialized to 0 first.
    !.......................................................
    CALL ED_CopyContState( x, x_tmp, MESH_NEWCOPY, ErrStat2, ErrMsg2 )
-      CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
-      IF (ErrStat >= AbortErrLev) THEN
-         CALL Cleanup()
-         RETURN
-      END IF
+   if (Failed()) return
       x_tmp%qt  = 0.0_ReKi
       x_tmp%qdt = 0.0_ReKi
       x_tmp%QT (DOF_GeAz) = - p%AzimB1Up - REAL(Piby2_D, R8Ki)
          CALL Zero2TwoPi( x_tmp%QT (DOF_GeAz) )
 
       u%BlPitchCom = 0.0_ReKi
+      u%BlPitchMom = 0.0_ReKi
       
       ! set the coordinate system variables:
    CALL SetCoordSy( -p%DT, m%CoordSys, m%RtHS, u%BlPitchCom, p, x_tmp, ErrStat2, ErrMsg2 )
@@ -9144,68 +9171,36 @@ SUBROUTINE Init_u( u, p, x, InputFileData, m, ErrStat, ErrMsg )
                            ,Moment          = .TRUE.                 &
                            ,ErrStat         = ErrStat2               &
                            ,ErrMess         = ErrMsg2                )
-            CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
-            IF (ErrStat >= AbortErrLev) THEN
-               CALL Cleanup()
-               RETURN
-            END IF
+         if (Failed()) return
       
-         if (p%UseAD14) then
-            ! position the nodes on the blades:
-            DO J = 1,p%BldNodes
+         ! position the nodes on the blades:
+         DO J = 1,p%BldNodes
+            NodeNum = J
          
-               NodeNum = J
-         
-               Orientation(1,1) =  p%CAeroTwst(J)
-               Orientation(2,1) =  p%SAeroTwst(J)
-               Orientation(3,1) =  0.0_ReKi
-
-               Orientation(1,2) = -p%SAeroTwst(J)
-               Orientation(2,2) =  p%CAeroTwst(J)
-               Orientation(3,2) =  0.0_ReKi
-
-               Orientation(1,3) =  0.0_ReKi
-               Orientation(2,3) =  0.0_ReKi
-               Orientation(3,3) =  1.0_ReKi
-                           
-               CALL MeshPositionNode ( u%BladePtLoads(K), NodeNum, (/0.0_ReKi, 0.0_ReKi, p%RNodes(J) /), ErrStat2, ErrMsg2, Orient=Orientation )
-                  CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
-                  IF (ErrStat >= AbortErrLev) THEN
-                     CALL Cleanup()
-                     RETURN
-                  END IF
-                                                               
-            END DO ! nodes  
-         else
-            ! position the nodes on the blades:
-            DO J = 1,p%BldNodes
-               NodeNum = J
-         
-               Orientation(1,1) =     m%CoordSys%n1(K,J,1)
-               Orientation(2,1) =     m%CoordSys%n2(K,J,1)
-               Orientation(3,1) =     m%CoordSys%n3(K,J,1)
-               Orientation(1,2) = -1.*m%CoordSys%n1(K,J,3)
-               Orientation(2,2) = -1.*m%CoordSys%n2(K,J,3)
-               Orientation(3,2) = -1.*m%CoordSys%n3(K,J,3)
-               Orientation(1,3) =     m%CoordSys%n1(K,J,2)
-               Orientation(2,3) =     m%CoordSys%n2(K,J,2)
-               Orientation(3,3) =     m%CoordSys%n3(K,J,2) 
-               
-                  ! Translational Displacement 
-               position(1) =     m%RtHS%rS (1,K,J)                ! = the distance from the undeflected tower centerline to the current blade node in the xi ( z1) direction
-               position(2) = -1.*m%RtHS%rS (3,K,J)                ! = the distance from the undeflected tower centerline to the current blade node in the yi (-z3) direction
-               position(3) =     m%RtHS%rS (2,K,J)  + p%PtfmRefzt ! = the distance from the nominal tower base position (i.e., the undeflected position of the tower base) to the current blade node in the zi ( z2) direction
-               
-               
-               CALL MeshPositionNode ( u%BladePtLoads(K), NodeNum, position, ErrStat2, ErrMsg2, Orient=Orientation )
-                  CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
-                  IF (ErrStat >= AbortErrLev) THEN
-                     CALL Cleanup()
-                     RETURN
-                  END IF                           
-                                    
-            END DO ! nodes              
-         end if ! position/orientation of nodes for AeroDyn v14 or v15
+            Orientation(1,1) =     m%CoordSys%n1(K,J,1)
+            Orientation(2,1) =     m%CoordSys%n2(K,J,1)
+            Orientation(3,1) =     m%CoordSys%n3(K,J,1)
+            Orientation(1,2) = -1.*m%CoordSys%n1(K,J,3)
+            Orientation(2,2) = -1.*m%CoordSys%n2(K,J,3)
+            Orientation(3,2) = -1.*m%CoordSys%n3(K,J,3)
+            Orientation(1,3) =     m%CoordSys%n1(K,J,2)
+            Orientation(2,3) =     m%CoordSys%n2(K,J,2)
+            Orientation(3,3) =     m%CoordSys%n3(K,J,2) 
+            
+               ! Translational Displacement 
+            position(1) =     m%RtHS%rS (1,K,J)  + p%PtfmRefxt ! = the distance from the undeflected tower centerline to the current blade node in the xi ( z1) direction
+            position(2) = -1.*m%RtHS%rS (3,K,J)  + p%PtfmRefyt ! = the distance from the undeflected tower centerline to the current blade node in the yi (-z3) direction
+            position(3) =     m%RtHS%rS (2,K,J)  + p%PtfmRefzt ! = the distance from the nominal tower base position (i.e., the undeflected position of the tower base) to the current blade node in the zi ( z2) direction
+            
+            
+            CALL MeshPositionNode ( u%BladePtLoads(K), NodeNum, position, ErrStat2, ErrMsg2, Orient=Orientation )
+               CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
+               IF (ErrStat >= AbortErrLev) THEN
+                  CALL Cleanup()
+                  RETURN
+               END IF                           
+                                 
+         END DO ! nodes              
          
          ! create elements:      
          DO J = 1,p%BldNodes !p%BldNodes + 1
@@ -9226,11 +9221,7 @@ SUBROUTINE Init_u( u, p, x, InputFileData, m, ErrStat, ErrMsg )
 
             ! that's our entire mesh:
          CALL MeshCommit ( u%BladePtLoads(K), ErrStat2, ErrMsg2 )   
-            CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
-            IF (ErrStat >= AbortErrLev) THEN
-               CALL Cleanup()
-               RETURN
-            END IF
+         if (Failed()) return
 
    
             ! initialize it
@@ -9242,26 +9233,12 @@ SUBROUTINE Init_u( u, p, x, InputFileData, m, ErrStat, ErrMsg )
    END IF ! p%BD4Blades
    
                      
-      !.......................................................
-      ! Create Point Mesh for loads input at hub point (from BeamDyn):
-      !....................................................... 
-    
-   CALL MeshCreate( BlankMesh      = u%HubPtLoad            &
-                  ,IOS             = COMPONENT_INPUT        &
-                  ,NNodes          = 1                      &
-                  ,Force           = .TRUE.                 &
-                  ,Moment          = .TRUE.                 &
-                  ,ErrStat         = ErrStat2               &
-                  ,ErrMess         = ErrMsg2                )
-      CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
-      IF (ErrStat >= AbortErrLev) THEN
-         CALL Cleanup()
-         RETURN
-      END IF
-
+   !.......................................................
+   ! Create Point Mesh for loads input at hub point (from BeamDyn):
+   !....................................................... 
    ! place single node at hub; position affects mapping/coupling with other modules      
-   Position(1)  =     m%RtHS%rQ(1)
-   Position(2)  = -1.*m%RtHS%rQ(3)
+   Position(1)  =     m%RtHS%rQ(1) + p%PtfmRefxt
+   Position(2)  = -1.*m%RtHS%rQ(3) + p%PtfmRefyt
    Position(3)  =     m%RtHS%rQ(2) + p%PtfmRefzt
    
    Orientation(1,1) =     m%CoordSys%g1(1)
@@ -9273,147 +9250,52 @@ SUBROUTINE Init_u( u, p, x, InputFileData, m, ErrStat, ErrMsg )
    Orientation(1,3) =     m%CoordSys%g1(2)
    Orientation(2,3) =     m%CoordSys%g2(2)
    Orientation(3,3) =     m%CoordSys%g3(2) 
-      
-   CALL MeshPositionNode ( u%HubPtLoad, 1, Position, ErrStat2, ErrMsg2, orient=Orientation )
-      CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
-      IF (ErrStat >= AbortErrLev) THEN
-         CALL Cleanup()
-         RETURN
-      END IF
-      
-      ! create an element from this point      
-      CALL MeshConstructElement ( Mesh = u%HubPtLoad       &
-                           , Xelement = ELEMENT_POINT      &
-                           , P1       = 1                  &   ! node number
-                           , ErrStat  = ErrStat2           &
-                           , ErrMess  = ErrMsg2            )
-         CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
-         IF (ErrStat >= AbortErrLev) THEN
-            CALL Cleanup()
-            RETURN
-         END IF
-
-         ! that's our entire mesh:
-      CALL MeshCommit ( u%HubPtLoad, ErrStat2, ErrMsg2 )   
-         CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
-         IF (ErrStat >= AbortErrLev) THEN
-            CALL Cleanup()
-            RETURN
-         END IF
-
-         ! initailize it
-      u%HubPtLoad%Moment      = 0.0_ReKi
-      u%HubPtLoad%Force       = 0.0_ReKi
+   call CreateInputPointMesh(u%HubPtLoad, Position, Orientation, errStat2, errMsg2, hasMotion=.False., hasLoads=.True.)
+   if (Failed()) return
          
                      
    !.......................................................
    ! Create Point Mesh for loads input at Platform Reference Point:
    !.......................................................
-      
-   CALL MeshCreate( BlankMesh         = u%PlatformPtMesh       &
-                     ,IOS             = COMPONENT_INPUT        &
-                     ,NNodes          = 1                      &
-                     ,Force           = .TRUE.                 &
-                     ,Moment          = .TRUE.                 &
-                     ,ErrStat         = ErrStat2               &
-                     ,ErrMess         = ErrMsg2                )
-      CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
-      IF (ErrStat >= AbortErrLev) THEN
-         CALL Cleanup()
-         RETURN
-      END IF
-
-      ! place single node at platform reference point; position affects mapping/coupling with other modules
-   CALL MeshPositionNode ( u%PlatformPtMesh, 1, (/0.0_ReKi, 0.0_ReKi, p%PtfmRefzt /), ErrStat2, ErrMsg2 )
-      CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
-      IF (ErrStat >= AbortErrLev) THEN
-         CALL Cleanup()
-         RETURN
-      END IF
-      
-      ! create an element from this point      
-   CALL MeshConstructElement ( Mesh = u%PlatformPtMesh        &
-                              , Xelement = ELEMENT_POINT      &
-                              , P1       = 1                  &   ! node number
-                              , ErrStat  = ErrStat2           &
-                              , ErrMess  = ErrMsg2            )
-      CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
-      IF (ErrStat >= AbortErrLev) THEN
-         CALL Cleanup()
-         RETURN
-      END IF
-
-      ! that's our entire mesh:
-   CALL MeshCommit ( u%PlatformPtMesh, ErrStat2, ErrMsg2 )   
-      CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
-      IF (ErrStat >= AbortErrLev) THEN
-         CALL Cleanup()
-         RETURN
-      END IF
-   
-      ! initialize fields
-   u%PlatformPtMesh%Moment = 0.0_ReKi
-   u%PlatformPtMesh%Force  = 0.0_ReKi
+   Position = [p%PtfmRefxt, p%PtfmRefyt, p%PtfmRefzt]
+   call Eye(Orientation, ErrStat2, errMsg2)
+   call CreateInputPointMesh(u%PlatformPtMesh, Position, Orientation, errStat2, errMsg2, hasMotion=.False., hasLoads=.True.)
+   if (Failed()) return
       
    !.......................................................
    ! Create Point Mesh for loads input at nacelle:
    !.......................................................
-         
-   CALL MeshCreate( BlankMesh          = u%NacelleLoads      &
-                     ,IOS              = COMPONENT_OUTPUT    &
-                     ,NNodes           = 1                   &
-                     ,Force            = .TRUE.              &
-                     ,Moment           = .TRUE.              &   
-                     ,ErrStat          = ErrStat2            &
-                     ,ErrMess          = ErrMsg2             )
-      CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
-      IF (ErrStat >= AbortErrLev) THEN
-         CALL Cleanup()
-         RETURN
-      END IF
+   Position = [p%PtfmRefxt, p%PtfmRefyt, p%TowerHt]
+   call Eye(Orientation, ErrStat2, errMsg2)
+   call CreateInputPointMesh(u%NacelleLoads, Position, Orientation, errStat2, errMsg2, hasMotion=.False., hasLoads=.True.)
+   if (Failed()) return
+      
+   !.......................................................
+   ! Create Point Mesh for loads on Rotor tailfin:
+   !.......................................................
+   Position(1) =     m%RtHS%rJ(1) + p%PtfmRefxt ! undeflected position of the tailfin CM in the xi ( z1) direction
+   Position(2) = -1.*m%RtHS%rJ(3) + p%PtfmRefyt ! undeflected position of the tailfin CM in the yi (-z3) direction
+   Position(3) =     m%RtHS%rJ(2) + p%PtfmRefzt ! undeflected position of the tailfin CM in the zi ( z2) direction
+   Orientation(1,1) =     m%CoordSys%tf1(1)
+   Orientation(2,1) =     m%CoordSys%tf2(1)
+   Orientation(3,1) =     m%CoordSys%tf3(1)
+   Orientation(1,2) = -1.*m%CoordSys%tf1(3)
+   Orientation(2,2) = -1.*m%CoordSys%tf2(3)
+   Orientation(3,2) = -1.*m%CoordSys%tf3(3)
+   Orientation(1,3) =     m%CoordSys%tf1(2)
+   Orientation(2,3) =     m%CoordSys%tf2(2)
+   Orientation(3,3) =     m%CoordSys%tf3(2) 
+   call CreateInputPointMesh(u%TFinCMLoads, Position, Orientation, errStat2, errMsg2, hasMotion=.False., hasLoads=.True.)
+   if (Failed()) return
 
-   CALL MeshPositionNode ( u%NacelleLoads,  1, (/0.0_ReKi, 0.0_ReKi, p%TowerHt /), ErrStat2, ErrMsg2 ) ! orientation is identity by default
-      CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
-      IF (ErrStat >= AbortErrLev) THEN
-         CALL Cleanup()
-         RETURN
-      END IF
-      
-      ! create an element from this point      
-   CALL MeshConstructElement ( Mesh = u%NacelleLoads          &
-                              , Xelement = ELEMENT_POINT      &
-                              , P1       = 1                  &   ! node number
-                              , ErrStat  = ErrStat2           &
-                              , ErrMess  = ErrMsg2            )
-      CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
-      IF (ErrStat >= AbortErrLev) THEN
-         CALL Cleanup()
-         RETURN
-      END IF
-      
-      
-   CALL MeshCommit ( u%NacelleLoads, ErrStat2, ErrMsg2 )   
-      CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
-      IF (ErrStat >= AbortErrLev) THEN
-         CALL Cleanup()
-         RETURN
-      END IF
-            
-      ! initialize fields
-   u%NacelleLoads%Force    = 0.0_ReKi
-   u%NacelleLoads%Moment   = 0.0_ReKi
-      
+
    !.......................................................
    ! Create u%TwrAddedMass for loads input on tower:
    ! SHOULD REMOVE EVENTUALLY
    !.......................................................
          
    CALL AllocAry( u%TwrAddedMass,  6_IntKi, 6_IntKi, p%TwrNodes,   'TwrAddedMass',    ErrStat2, ErrMsg2 )
-      CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
-      IF (ErrStat >= AbortErrLev) THEN
-         CALL Cleanup()
-         RETURN
-      END IF
+   if (Failed()) return
       
       ! initialize it
    u%TwrAddedMass          = 0.0_ReKi  
@@ -9430,20 +9312,12 @@ SUBROUTINE Init_u( u, p, x, InputFileData, m, ErrStat, ErrMsg )
                      ,Moment       = .TRUE.                 &
                      ,ErrStat      = ErrStat2               &
                      ,ErrMess      = ErrMsg2                )
-         CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
-         IF (ErrStat >= AbortErrLev) THEN
-            CALL Cleanup()
-            RETURN
-         END IF
+   if (Failed()) return
    
       ! position the nodes on the tower:
    DO J = 1,p%TwrNodes      
       CALL MeshPositionNode ( u%TowerPtLoads, J, (/0.0_ReKi, 0.0_ReKi, p%HNodes(J) + p%TowerBsHt /), ErrStat2, ErrMsg2 )
-         CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
-         IF (ErrStat >= AbortErrLev) THEN
-            CALL Cleanup()
-            RETURN
-         END IF
+      if (Failed()) return
    END DO
    
       ! create elements:      
@@ -9454,21 +9328,13 @@ SUBROUTINE Init_u( u, p, x, InputFileData, m, ErrStat, ErrMsg )
                                  , ErrStat  = ErrStat2           &
                                  , ErrMess  = ErrMsg2            )
          
-         CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
-         IF (ErrStat >= AbortErrLev) THEN
-            CALL Cleanup()
-            RETURN
-         END IF
+      if (Failed()) return
    END DO
       
    
       ! that's our entire mesh:
    CALL MeshCommit ( u%TowerPtLoads, ErrStat2, ErrMsg2 )   
-      CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
-      IF (ErrStat >= AbortErrLev) THEN
-         CALL Cleanup()
-         RETURN
-      END IF
+   if (Failed()) return
       
       ! initialize fields
    u%TowerPtLoads%Moment   = 0.0_ReKi
@@ -9496,6 +9362,11 @@ CONTAINS
          CALL ED_DestroyContState( x_tmp, ErrStat2, ErrMsg2 )
          
    END SUBROUTINE Cleanup   
+   logical function Failed()
+        call SetErrStat(ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName) 
+        Failed =  ErrStat >= AbortErrLev
+        if (Failed) call Cleanup()
+   end function Failed
             
 END SUBROUTINE Init_u
 !----------------------------------------------------------------------------------------------------------------------------------
@@ -9774,6 +9645,8 @@ SUBROUTINE ED_AB4( t, n, u, utimes, p, x, xd, z, OtherState, m, ErrStat, ErrMsg 
       END IF
       OtherState%HSSBrTrq   = OtherState%HSSBrTrqC
       OtherState%SgnPrvLSTQ = OtherState%SgnLSTQ(OtherState%IC(2))
+      OtherState%OmegaTn = x%QDT(DOF_Yaw) !this is equal to x%QDT(DOF_Yaw)
+      OtherState%OmegaDotTn = m%QD2T(DOF_Yaw) !this is equal to m%QD2T(DOF_Yaw) 
       
       CALL ED_CalcContStateDeriv( t, u_interp, p, x, xd, z, OtherState, m, xdot, ErrStat2, ErrMsg2 )
          CALL CheckError(ErrStat2,ErrMsg2)
@@ -9808,6 +9681,11 @@ SUBROUTINE ED_AB4( t, n, u, utimes, p, x, xd, z, OtherState, m, ErrStat, ErrMsg 
          CALL FixHSSBrTq ( 'P', p, x, OtherState, m, ErrStat2, ErrMsg2 )
             CALL CheckError(ErrStat2,ErrMsg2)
             IF ( ErrStat >= AbortErrLev ) RETURN
+
+         CALL FixYawFric ( 'P', p, x, OtherState, m, ErrStat2, ErrMsg2 ) !KBF Make sure YawFric will not reverse nacelle direction x%qdt(dof_yaw) = OtherState%xdot(OtherState%IC(1))%qt(DOF_Yaw )
+            CALL CheckError(ErrStat2,ErrMsg2)
+            IF ( ErrStat >= AbortErrLev ) RETURN
+
             
       endif
             
@@ -9967,6 +9845,11 @@ SUBROUTINE ED_ABM4( t, n, u, utimes, p, x, xd, z, OtherState, m, ErrStat, ErrMsg
          CALL FixHSSBrTq ( 'C', p, x, OtherState, m, ErrStat2, ErrMsg2 )      
             CALL CheckError(ErrStat2,ErrMsg2)
             IF ( ErrStat >= AbortErrLev ) RETURN
+
+         CALL FixYawFric ( 'C', p, x, OtherState, m, ErrStat2, ErrMsg2 )  !KBF Make sure YawFric will not reverse nacelle direction    x%qdt(dof_yaw) = OtherState%xdot(OtherState%IC(1))%qt(DOF_Yaw )
+            CALL CheckError(ErrStat2,ErrMsg2)
+            IF ( ErrStat >= AbortErrLev ) RETURN
+
          OtherState%SgnPrvLSTQ = SignLSSTrq(p, m)
          OtherState%SgnLSTQ(OtherState%IC(1)) = OtherState%SgnPrvLSTQ 
                                                                     
@@ -10032,12 +9915,11 @@ CONTAINS
 END SUBROUTINE ED_ABM4
 !----------------------------------------------------------------------------------------------------------------------------------
 !> This routine generates the summary file, which contains a regurgitation of  the input data and interpolated flexible body data.
-SUBROUTINE ED_PrintSum( p, OtherState, GenerateAdamsModel, ErrStat, ErrMsg )
+SUBROUTINE ED_PrintSum( p, OtherState, ErrStat, ErrMsg )
 
       ! passed variables
    TYPE(ED_ParameterType),    INTENT(IN   )  :: p                       !< Parameters of the structural dynamics module
    TYPE(ED_OtherStateType),   INTENT(IN   )  :: OtherState              !< Other states of the structural dynamics module 
-   LOGICAL,                   INTENT(IN   )  :: GenerateAdamsModel      !< Logical to determine if Adams inputs were read/should be summarized
    INTEGER(IntKi),            INTENT(  OUT)  :: ErrStat                 !< Error status of the operation
    CHARACTER(*),              INTENT(  OUT)  :: ErrMsg                  !< Error message if ErrStat /= ErrID_None
 
@@ -10062,10 +9944,12 @@ SUBROUTINE ED_PrintSum( p, OtherState, GenerateAdamsModel, ErrStat, ErrMsg )
 
    ! Open the summary file and give it a heading.
    
+   !$OMP critical(fileopen_critical)
    CALL GetNewUnit( UnSu, ErrStat, ErrMsg )
-   IF ( ErrStat /= ErrID_None ) RETURN
-
-   CALL OpenFOutFile ( UnSu, TRIM( p%RootName )//'.sum', ErrStat, ErrMsg )
+   if (ErrStat < AbortErrLev) then
+      CALL OpenFOutFile ( UnSu, TRIM( p%RootName )//'.sum', ErrStat, ErrMsg )
+   endif
+   !$OMP end critical(fileopen_critical)
    IF ( ErrStat /= ErrID_None ) RETURN
 
    
@@ -10086,15 +9970,15 @@ SUBROUTINE ED_PrintSum( p, OtherState, GenerateAdamsModel, ErrStat, ErrMsg )
    ELSE
       RotorType = 'Upwind,'
    ENDIF
-   IF ( p%NumBl == 2 )  THEN
-      RotorType = TRIM(RotorType)//' two-bladed rotor'
-      IF ( p%DOF_Flag(DOF_Teet) )  THEN
+   RotorType = TRIM(RotorType)//' '//trim(Num2LStr(p%NumBl))//'-bladed rotor'
+   IF ( p%NumBl==2 )  THEN
+      IF ( p%DOF_Flag(DOF_Teet) ) THEN ! NOTE: two "ifs" required since DOF_Teet might be out of bound
          RotorType = TRIM(RotorType)//' with teetering hub.'
       ELSE
          RotorType = TRIM(RotorType)//' with rigid hub.'
       ENDIF
    ELSE
-      RotorType = TRIM(RotorType)//' three-bladed rotor with rigid hub.'
+      RotorType = TRIM(RotorType)//' with rigid hub.'
    ENDIF
 
    WRITE    (UnSu,'(A)')  '            '//TRIM(RotorType)
@@ -10177,30 +10061,14 @@ END IF
       ! Interpolated tower properties.
 
    WRITE (UnSu,"(//,'Interpolated tower properties:',/)")
-   IF ( GenerateAdamsModel )  THEN  ! An ADAMS model will be created; thus, print out all the cols.
 
-      WRITE (UnSu,'(A)')  'Node  TwFract   HNodes  DHNodes  TMassDen    FAStiff    SSStiff'// &
-                           '    GJStiff    EAStiff    FAIner    SSIner  FAcgOff  SScgOff'
-      WRITE (UnSu,'(A)')  ' (-)      (-)      (m)      (m)    (kg/m)     (Nm^2)     (Nm^2)'// &
-                           '     (Nm^2)        (N)    (kg m)    (kg m)      (m)      (m)'
+   WRITE (UnSu,'(A)')  'Node  TwFract   HNodes  DHNodes  TMassDen    FAStiff    SSStiff'
+   WRITE (UnSu,'(A)')  ' (-)      (-)      (m)      (m)    (kg/m)     (Nm^2)     (Nm^2)'
 
-      DO I=1,p%TwrNodes
-         WRITE(UnSu,'(I4,3F9.3,F10.3,4ES11.3,2F10.3,2F9.3)')  I, p%HNodesNorm(I), p%HNodes(I), p%DHNodes(I), p%MassT(I), &
-                                                                 p%StiffTFA(I), p%StiffTSS(I), p%StiffTGJ(I), p%StiffTEA(I),       &
-                                                                 p%InerTFA(I), p%InerTSS(I), p%cgOffTFA(I), p%cgOffTSS(I)
-      ENDDO ! I
-
-   ELSE                                                     ! Only FAST will be run; thus, only print out the necessary cols.
-
-      WRITE (UnSu,'(A)')  'Node  TwFract   HNodes  DHNodes  TMassDen    FAStiff    SSStiff'
-      WRITE (UnSu,'(A)')  ' (-)      (-)      (m)      (m)    (kg/m)     (Nm^2)     (Nm^2)'
-
-      DO I=1,p%TwrNodes
-         WRITE(UnSu,'(I4,3F9.3,F10.3,2ES11.3)')  I, p%HNodesNorm(I), p%HNodes(I), p%DHNodes(I), p%MassT(I), &
-                                                    p%StiffTFA(I),  p%StiffTSS(I)
-      ENDDO ! I
-
-   ENDIF
+   DO I=1,p%TwrNodes
+      WRITE(UnSu,'(I4,3F9.3,F10.3,2ES11.3)')  I, p%HNodesNorm(I), p%HNodes(I), p%DHNodes(I), p%MassT(I), &
+                                                   p%StiffTFA(I),  p%StiffTSS(I)
+   ENDDO ! I
 
 
       ! Interpolated blade properties.
@@ -10209,39 +10077,15 @@ IF (.NOT. p%BD4Blades) THEN
    DO K=1,p%NumBl
 
       WRITE (UnSu,'(//,A,I1,A,/)')  'Interpolated blade ', K, ' properties:'
-      IF ( GenerateAdamsModel )  THEN  ! An ADAMS model will be created; thus, print out all the cols.
 
-         WRITE (UnSu,'(A)')  'Node  BlFract   RNodes  DRNodes  PitchAxis  StrcTwst  BMassDen    FlpStff    EdgStff'//       &
-                              '     GJStff     EAStff    Alpha   FlpIner   EdgIner PrecrvRef PreswpRef  FlpcgOf  EdgcgOf'// &
-                              '  FlpEAOf  EdgEAOf'
-         WRITE (UnSu,'(A)')  ' (-)      (-)      (m)      (m)     (-)       (deg)    (kg/m)     (Nm^2)     (Nm^2)'//       &
-                              '     (Nm^2)     (Nm^2)      (-)    (kg m)    (kg m)       (m)       (m)      (m)      (m)'// &
-                              '      (m)      (m)'
+      WRITE (UnSu,'(A)')  'Node  BlFract   RNodes  DRNodes  StrcTwst  BMassDen    FlpStff    EdgStff'
+      WRITE (UnSu,'(A)')  ' (-)      (-)      (m)      (m)     (deg)    (kg/m)     (Nm^2)     (Nm^2)'
 
-         DO I=1,p%BldNodes
-
-            WRITE(UnSu,'(I4,3F9.3,3F10.3,4ES11.3,F9.3,4F10.3,4F9.3)')  I, p%RNodesNorm(I),  p%RNodes(I) + p%HubRad, p%DRNodes(I), &
-                                                                          p%PitchAxis(K,I), p%ThetaS(K,I)*R2D,      p%MassB(K,I), &
-                                                                          p%StiffBF(K,I),   p%StiffBE(K,I),                       &
-                                                                          p%StiffBGJ(K,I),  p%StiffBEA(K,I),                      &
-                                                                          p%BAlpha(K,I),    p%InerBFlp(K,I), p%InerBEdg(K,I),     &
-                                                                          p%RefAxisxb(K,I), p%RefAxisyb(K,I),                     &
-                                                                          p%cgOffBFlp(K,I), p%cgOffBEdg(K,I),                     &
-                                                                          p%EAOffBFlp(K,I), p%EAOffBEdg(K,I)
-         ENDDO ! I
-
-      ELSE                                                     ! Only FAST will be run; thus, only print out the necessary cols.
-
-         WRITE (UnSu,'(A)')  'Node  BlFract   RNodes  DRNodes PitchAxis  StrcTwst  BMassDen    FlpStff    EdgStff'
-         WRITE (UnSu,'(A)')  ' (-)      (-)      (m)      (m)       (-)     (deg)    (kg/m)     (Nm^2)     (Nm^2)'
-
-         DO I=1,p%BldNodes
-            WRITE(UnSu,'(I4,3F9.3,3F10.3,2ES11.3)')  I, p%RNodesNorm(I), p%RNodes(I) + p%HubRad, p%DRNodes(I), &
-                                                        p%PitchAxis(K,I),p%ThetaS(K,I)*R2D, p%MassB(K,I), &
-                                                        p%StiffBF(K,I), p%StiffBE(K,I)
-         ENDDO ! I
-
-      ENDIF
+      DO I=1,p%BldNodes
+         WRITE(UnSu,'(I4,3F9.3,2F10.3,2ES11.3)')  I, p%RNodesNorm(I), p%RNodes(I) + p%HubRad, p%DRNodes(I), &
+                                                      p%ThetaS(K,I)*R2D, p%MassB(K,I), &
+                                                      p%StiffBF(K,I), p%StiffBE(K,I)
+      ENDDO ! I
 
    ENDDO ! K
    
@@ -10487,6 +10331,201 @@ SUBROUTINE FixHSSBrTq ( Integrator, p, x, OtherState, m, ErrStat, ErrMsg )
    RETURN
 END SUBROUTINE FixHSSBrTq
 !----------------------------------------------------------------------------------------------------------------------------------
+!> This routine is used to adjust the YawFricMom value for unphysicalities.
+SUBROUTINE FixYawFric ( Integrator, p, x, OtherState, m, ErrStat, ErrMsg )
+
+   ! Passed variables:
+
+   TYPE(ED_ParameterType),      INTENT(IN   )  :: p                       !< Parameters of the structural dynamics module
+   TYPE(ED_OtherStateType),     INTENT(INOUT)  :: OtherState              !< Other states of the structural dynamics module 
+   TYPE(ED_MiscVarType),        INTENT(INOUT)  :: m                       !< misc (optimization) variables
+   TYPE(ED_ContinuousStateType),INTENT(INOUT)  :: x                       !< Continuous states of the structural dynamics module at n+1
+   CHARACTER(1),                INTENT(IN   )  :: Integrator              !< A string holding the current integrator being used.
+   INTEGER(IntKi),              INTENT(  OUT)  :: ErrStat                 !< Error status of the operation
+   CHARACTER(*),                INTENT(  OUT)  :: ErrMsg                  !< Error message if ErrStat /= ErrID_None
+
+
+   ! Local variables:
+
+   REAL(ReKi)                             :: RqdFrcYaw                           ! The force term required to produce RqdQD2Yaw.
+   REAL(ReKi)                             :: RqdQD2Yaw                           ! The required QD2T(DOF_Yaw) to cause the yaw bearing to stop rotating.
+
+   INTEGER                                :: I                                    ! Loops through all DOFs.
+   INTEGER(IntKi)                         :: ErrStat2
+   CHARACTER(ErrMsgLen)                   :: ErrMsg2
+   CHARACTER(*), PARAMETER                :: RoutineName = 'FixYawFric'
+
+   
+
+   ErrStat = ErrID_None
+   ErrMsg  = ""
+
+   IF ( .NOT. p%DOF_Flag(DOF_Yaw) .OR. EqualRealNos(m%RtHS%YawFriMom, 0.0_ReKi ) )  RETURN
+
+
+      ! The absolute magnitude of the yaw friction must have been too great
+      !   that the yaw speed sign was reversed.  What should have happened
+      !   is that the yaw system should have stopped rotating.  In other words,
+      !   QD(DOF_Yaw,IC(NMX)) should equal zero!  Determining what
+      !   QD2T(DOF_Yaw) will make QD(DOF_Yaw,IC(NMX)) = 0, depends on
+      !   which integrator we are using.
+
+   
+   SELECT CASE (Integrator)
+
+   CASE ('C')   ! Corrector
+
+      ! Find the required QD2T(DOF_Yaw) to cause the yaw system to stop rotating (RqdQD2Yaw).
+      ! This is found by solving the corrector formula for QD2(DOF_Yaw,IC(NMX))
+      !   when QD(DOF_Yaw,IC(NMX)) equals zero.
+      
+      RqdQD2Yaw = ( -      OtherState%xdot(OtherState%IC(1))%qt(DOF_Yaw)/ p%DT24 &
+                     - 19.0*OtherState%xdot(OtherState%IC(1))%qdt(DOF_Yaw)         &
+                     +  5.0*OtherState%xdot(OtherState%IC(2))%qdt(DOF_Yaw)         &
+                     -      OtherState%xdot(OtherState%IC(3))%qdt(DOF_Yaw)         ) / 9.0
+       
+   CASE ('P')   ! Predictor
+
+      ! Find the required QD2T(DOF_Yaw) to cause the yaw system to stop rotating (RqdQD2Yaw).
+      ! This is found by solving the predictor formula for QD2(DOF_Yaw,IC(1))
+      !   when QD(DOF_Yaw,IC(NMX)) equals zero.
+      
+      RqdQD2Yaw = ( -      OtherState%xdot(OtherState%IC(1))%qt( DOF_Yaw)  / p%DT24 &
+                     + 59.0*OtherState%xdot(OtherState%IC(2))%qdt(DOF_Yaw) &
+                     - 37.0*OtherState%xdot(OtherState%IC(3))%qdt(DOF_Yaw) &
+                     +  9.0*OtherState%xdot(OtherState%IC(4))%qdt(DOF_Yaw)   )/55.0
+          
+   END SELECT
+
+
+   ! Rearrange the augmented matrix of equations of motion to account
+   !   for the known acceleration of the yaw DOF.  To
+   !   do this, make the known inertia like an applied force to the
+   !   system.  Then set force QD2T(DOF_Yaw) to equal the known
+   !   acceleration in the augmented matrix of equations of motion:
+   ! Here is how the new equations are derived.  First partition the
+   !   augmented matrix as follows, where Qa are the unknown
+   !   accelerations, Qb are the known accelerations, Fa are the
+   !   known forces, and Fb are the unknown forces:
+   !      [Caa Cab]{Qa}={Fa}
+   !      [Cba Cbb]{Qb}={Fb}
+   !   By rearranging, the equations for the unknown and known
+   !   accelerations are as follows:
+   !      [Caa]{Qa}={Fa}-[Cab]{Qb} and [I]{Qb}={Qb}
+   !   Combining these two sets of equations into one set yields:
+   !      [Caa 0]{Qa}={{Fa}-[Cab]{Qb}}
+   !      [  0 I]{Qb}={          {Qb}}
+   !   Once this equation is solved, the unknown force can be found from:
+   !      {Fb}=[Cba]{Qa}+[Cbb]{Qb}
+
+   m%OgnlYawRow    = m%AugMat(DOF_Yaw,:)  ! copy this row before modifying the old matrix
+   
+  
+   DO I = 1,p%DOFs%NActvDOF ! Loop through all active (enabled) DOFs
+
+      m%AugMat(p%DOFs%SrtPS(I),    p%NAUG) = m%AugMat(p%DOFs%SrtPS(I),p%NAUG) &
+                                                    - m%AugMat(p%DOFs%SrtPS(I),DOF_Yaw)*RqdQD2Yaw  ! {{Fa}-[Cab]{Qb}}
+      m%AugMat(p%DOFs%SrtPS(I),DOF_Yaw)   = 0.0                                                     ! [0]
+      m%AugMat(DOF_Yaw, p%DOFs%SrtPS(I))  = 0.0                                                     ! [0]
+
+   ENDDO             ! I - All active (enabled) DOFs
+
+   m%AugMat(DOF_Yaw,DOF_Yaw) = 1.0                                                           ! [I]{Qb}={Qb}
+   m%AugMat(DOF_Yaw,  p%NAUG) = RqdQD2Yaw                                                    !
+
+
+   ! Invert the matrix to solve for the new (updated) accelerations.  Like in
+   !   CalcContStateDeriv(), the accelerations are returned by Gauss() in the first NActvDOF
+   !   elements of the solution vector, SolnVec().  These are transfered to the
+   !   proper index locations of the acceleration vector QD2T() using the
+   !   vector subscript array SrtPS(), after Gauss() has been called:
+
+   ! Invert the matrix to solve for the accelerations. The accelerations are returned by Gauss() in the first NActvDOF elements
+   !   of the solution vector, SolnVec(). These are transfered to the proper index locations of the acceleration vector QD2T() 
+   !   using the vector subscript array SrtPS(), after Gauss() has been called:
+
+      m%AugMat_factor = m%AugMat( p%DOFs%SrtPS( 1:p%DOFs%NActvDOF ), p%DOFs%SrtPSNAUG(1:p%DOFs%NActvDOF) )
+      m%SolnVec       = m%AugMat( p%DOFs%SrtPS( 1:p%DOFs%NActvDOF ), p%DOFs%SrtPSNAUG(1+p%DOFs%NActvDOF) )
+   
+      CALL LAPACK_getrf( M=p%DOFs%NActvDOF, N=p%DOFs%NActvDOF, A=m%AugMat_factor, IPIV=m%AugMat_pivot, ErrStat=ErrStat2, ErrMsg=ErrMsg2 )
+         CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName)   
+         IF ( ErrStat >= AbortErrLev ) RETURN
+      
+      CALL LAPACK_getrs( TRANS='N',N=p%DOFs%NActvDOF, A=m%AugMat_factor,IPIV=m%AugMat_pivot, B=m%SolnVec, ErrStat=ErrStat2, ErrMsg=ErrMsg2)
+   
+         CALL SetErrStat( ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName )
+         IF ( ErrStat >= AbortErrLev ) RETURN
+   
+         
+      ! Find the force required to produce RqdQD2Yaw from the equations of
+      !   motion using the new accelerations:
+
+   RqdFrcYaw = 0.0
+   DO I = 1,p%DOFs%NActvDOF ! Loop through all active (enabled) DOFs
+      ! bjj: use m%SolnVec(I) instead of m%QD2T(p%DOFs%SrtPS(I)) here; then update m%QD2T(p%DOFs%SrtPS(I))
+      !      later if necessary
+      RqdFrcYaw = RqdFrcYaw + m%OgnlYawRow(p%DOFs%SrtPS(I))*m%SolnVec(I)  ! {Fb}=[Cba]{Qa}+[Cbb]{Qb}  (note that [Cba , Cbb] is the old row, and [Qa;Qb] is a single vector SolVec; %Note this is supposedly= YawFriMz+YawFriMf+DeltaM
+   ENDDO             ! I - All active (enabled) DOFs
+
+      ! Find the YawFriMfp necessary to bring about this force, i.e. to stop the yaw:
+
+   OtherState%YawFriMfp = m%RtHs%YawFriMom   -  ( m%OgnlYawRow(p%NAUG) - RqdFrcYaw )  !This should return YawFriMf - (YawFriMz + YawFriMf - (YawFriMz + YawFriMf + deltaM)) = YawFriMf+DeltaM =YawFriMfp 
+   
+   OtherState%Mfhat = ABS(OtherState%YawFriMfp) * SIGN(1.0_ReKi, real(m%RtHs%YawFriMom,ReKi))  !Mfhat should have same sign as YawFriMom (YawFriMf)
+   
+!Now check if YawFriMfp is unphysical (i.e., it turned out aligned with omega), and then pick the minimum between YawFriMf and YawFriMfp
+  
+   IF ( ABS( OtherState%YawFriMfp ) > ABS( m%RtHs%YawFriMom  )) THEN  
+
+      OtherState%Mfhat = m%RtHs%YawFriMom !OtherState%HSSBrTrqC = SIGN( u%HSSBrTrqC, x%QDT(DOF_GeAz) ) KBF CHECK THIS, does YawFriMfp need to be OtherState?
+   
+   ELSE
+
+      ! overwrite QD2T with the new values
+      m%QD2T = 0.0
+      DO I = 1,p%DOFs%NActvDOF ! Loop through all active (enabled) DOFs
+         m%QD2T(p%DOFs%SrtPS(I)) = m%SolnVec(I)
+      ENDDO             ! I - All active (enabled) DOFs
+      
+            
+      ! Use the new accelerations to update the DOF values.  Again, this
+      !   depends on the integrator type:
+
+      SELECT CASE (Integrator)
+
+      CASE ('C')  ! Corrector
+
+      ! Update QD and QD2 with the new accelerations using the corrector.
+      ! This will make QD(DOF_Yaw,IC(NMX)) equal to zero and adjust all
+      !    of the other QDs as necessary.
+      ! The Q's are unnaffected by this change.     
+      
+         x%qdt =                   OtherState%xdot(OtherState%IC(1))%qt &  ! qd at n
+                 + p%DT24 * ( 9. * m%QD2T &                                ! the value we just changed
+                           + 19. * OtherState%xdot(OtherState%IC(1))%qdt &
+                           -  5. * OtherState%xdot(OtherState%IC(2))%qdt &
+                           +  1. * OtherState%xdot(OtherState%IC(3))%qdt )
+      
+      CASE ('P')  ! Predictor
+
+      ! Update QD and QD2 with the new accelerations using predictor.  
+         
+         x%qdt =                OtherState%xdot(OtherState%IC(1))%qt + &  ! qd at n
+                 p%DT24 * ( 55.*m%QD2T &                                  ! the value we just changed
+                          - 59.*OtherState%xdot(OtherState%IC(2))%qdt  &
+                          + 37.*OtherState%xdot(OtherState%IC(3))%qdt  &
+                           - 9.*OtherState%xdot(OtherState%IC(4))%qdt )
+         
+         OtherState%xdot ( OtherState%IC(1) )%qdt = m%QD2T        ! fix the history
+      
+      END SELECT
+      
+   ENDIF
+
+   RETURN
+END SUBROUTINE FixYawFric
+
+!----------------------------------------------------------------------------------------------------------------------------------
 
 !++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 ! ###### The following four routines are Jacobian routines for linearization capabilities #######
@@ -10494,9 +10533,10 @@ END SUBROUTINE FixHSSBrTq
 !----------------------------------------------------------------------------------------------------------------------------------
 !> Routine to compute the Jacobians of the output (Y), continuous- (X), discrete- (Xd), and constraint-state (Z) functions
 !! with respect to the inputs (u). The partial derivatives dY/du, dX/du, dXd/du, and dZ/du are returned.
-SUBROUTINE ED_JacobianPInput( t, u, p, x, xd, z, OtherState, y, m, ErrStat, ErrMsg, dYdu, dXdu, dXddu, dZdu )
+SUBROUTINE ED_JacobianPInput(Vars, t, u, p, x, xd, z, OtherState, y, m, ErrStat, ErrMsg, dYdu, dXdu, dXddu, dZdu)
 !..................................................................................................................................
 
+   type(ModVarsType),                    INTENT(IN   )           :: Vars       !< Module variables
    REAL(DbKi),                           INTENT(IN   )           :: t          !< Time in seconds at operating point
    TYPE(ED_InputType),                   INTENT(INOUT)           :: u          !< Inputs at operating point (may change to inout if a mesh copy is required)
    TYPE(ED_ParameterType),               INTENT(IN   )           :: p          !< Parameters
@@ -10511,215 +10551,164 @@ SUBROUTINE ED_JacobianPInput( t, u, p, x, xd, z, OtherState, y, m, ErrStat, ErrM
    TYPE(ED_MiscVarType),                 INTENT(INOUT)           :: m          !< Misc/optimization variables
    INTEGER(IntKi),                       INTENT(  OUT)           :: ErrStat    !< Error status of the operation
    CHARACTER(*),                         INTENT(  OUT)           :: ErrMsg     !< Error message if ErrStat /= ErrID_None
-   REAL(R8Ki), ALLOCATABLE, OPTIONAL,    INTENT(INOUT)           :: dYdu(:,:)  !< Partial derivatives of output functions (Y) with respect 
-                                                                               !!   to the inputs (u) [intent in to avoid deallocation]
-   REAL(R8Ki), ALLOCATABLE, OPTIONAL,    INTENT(INOUT)           :: dXdu(:,:)  !< Partial derivatives of continuous state functions (X) with 
-                                                                               !!   respect to the inputs (u) [intent in to avoid deallocation]
-   REAL(R8Ki), ALLOCATABLE, OPTIONAL,    INTENT(INOUT)           :: dXddu(:,:) !< Partial derivatives of discrete state functions (Xd) with 
-                                                                               !!   respect to the inputs (u) [intent in to avoid deallocation]
-   REAL(R8Ki), ALLOCATABLE, OPTIONAL,    INTENT(INOUT)           :: dZdu(:,:)  !< Partial derivatives of constraint state functions (Z) with 
-                                                                               !!   respect to the inputs (u) [intent in to avoid deallocation]
-
+   REAL(R8Ki), ALLOCATABLE, OPTIONAL,    INTENT(INOUT)           :: dYdu(:,:)  !< Partial derivatives of output functions (Y) with respect to the inputs (u) [intent in to avoid deallocation]
+   REAL(R8Ki), ALLOCATABLE, OPTIONAL,    INTENT(INOUT)           :: dXdu(:,:)  !< Partial derivatives of continuous state functions (X) with respect to the inputs (u) [intent in to avoid deallocation]
+   REAL(R8Ki), ALLOCATABLE, OPTIONAL,    INTENT(INOUT)           :: dXddu(:,:) !< Partial derivatives of discrete state functions (Xd) with respect to the inputs (u) [intent in to avoid deallocation]
+   REAL(R8Ki), ALLOCATABLE, OPTIONAL,    INTENT(INOUT)           :: dZdu(:,:)  !< Partial derivatives of constraint state functions (Z) with respect to the inputs (u) [intent in to avoid deallocation]
    
-      ! local variables
-   TYPE(ED_OutputType)                               :: y_p
-   TYPE(ED_OutputType)                               :: y_m
-   TYPE(ED_ContinuousStateType)                      :: x_p
-   TYPE(ED_ContinuousStateType)                      :: x_m
-   TYPE(ED_InputType)                                :: u_perturb
-   REAL(R8Ki)                                        :: delta        ! delta change in input or state
-   INTEGER(IntKi)                                    :: i, j   
+   CHARACTER(*), PARAMETER       :: RoutineName = 'ED_JacobianPInput'
+   INTEGER(IntKi)                :: ErrStat2
+   CHARACTER(ErrMsgLen)          :: ErrMsg2
+   integer(IntKi)                :: i, j, iCol
+   integer(IntKi)                :: iVarBlPitchCom, iVarBlPitchComC
    
-   INTEGER(IntKi)                                    :: ErrStat2
-   CHARACTER(ErrMsgLen)                              :: ErrMsg2
-   CHARACTER(*), PARAMETER                           :: RoutineName = 'ED_JacobianPInput'
-   
-   
-      ! Initialize ErrStat
-
    ErrStat = ErrID_None
    ErrMsg  = ''
-   m%IgnoreMod = .true. ! to compute perturbations, we need to ignore the modulo function
-   
-      ! make a copy of the inputs to perturb
-   call ED_CopyInput( u, u_perturb, MESH_NEWCOPY, ErrStat2, ErrMsg2)
-      call SetErrStat(ErrStat2,ErrMsg2,ErrStat,ErrMsg,RoutineName)
-      if (ErrStat>=AbortErrLev) then
-         call cleanup()
-         return
-      end if
-      
-   
 
-   IF ( PRESENT( dYdu ) ) THEN
+   ! To compute perturbations, we need to ignore the modulo function
+   m%IgnoreMod = .true. 
 
-      ! Calculate the partial derivative of the output functions (Y) with respect to the inputs (u) here:
+   ! Initialize pitch command variable indices
+   iVarBlPitchCom = 0
+   iVarBlPitchComC = 0
+   do i = 1, size(Vars%u)
+      select case (Vars%u(i)%DL%Num)
+      case (ED_u_BlPitchCom)
+         iVarBlPitchCom = i
+      case (ED_u_BlPitchComC)
+         iVarBlPitchComC = i
+      end select
+   end do
 
-      ! allocate dYdu if necessary
+   ! Update copy of the inputs to perturb
+   call ED_CopyInput(u, m%u_perturb, MESH_UPDATECOPY, ErrStat2, ErrMsg2); if (Failed()) return
+   call ED_VarsPackInput(Vars, u, m%Jac%u)
+
+   ! Calculate the partial derivative of the output functions (Y) with respect to the inputs (u) here:
+   if (present(dYdu)) then
+
+      ! Allocate dYdu if not allocated
       if (.not. allocated(dYdu)) then
-         call AllocAry(dYdu, p%Jac_ny, size(p%Jac_u_indx,1)+1, 'dYdu', ErrStat2, ErrMsg2)
-         call SetErrStat(ErrStat2,ErrMsg2,ErrStat,ErrMsg,RoutineName)
-         if (ErrStat>=AbortErrLev) then
-            call cleanup()
-            return
-         end if
+         call AllocAry(dYdu, m%Jac%Ny, m%Jac%Nu, 'dYdu', ErrStat2, ErrMsg2); if (Failed()) return
       end if
-      
-         ! make a copy of outputs because we will need two for the central difference computations (with orientations)
-      call ED_CopyOutput( y, y_p, MESH_NEWCOPY, ErrStat2, ErrMsg2)
-         call SetErrStat(ErrStat2,ErrMsg2,ErrStat,ErrMsg,RoutineName)
-      call ED_CopyOutput( y, y_m, MESH_NEWCOPY, ErrStat2, ErrMsg2)
-         call SetErrStat(ErrStat2,ErrMsg2,ErrStat,ErrMsg,RoutineName)
-         if (ErrStat>=AbortErrLev) then
-            call cleanup()
-            return
-         end if
-         
-      do i=1,size(p%Jac_u_indx,1)
-         
-            ! get u_op + delta u
-         call ED_CopyInput( u, u_perturb, MESH_UPDATECOPY, ErrStat2, ErrMsg2 )
-            call SetErrStat(ErrStat2,ErrMsg2,ErrStat,ErrMsg,RoutineName) ! we shouldn't have any errors about allocating memory here so I'm not going to return-on-error until later            
-         call ED_Perturb_u( p, i, 1, u_perturb, delta )
 
-            ! compute y at u_op + delta u
-         call ED_CalcOutput( t, u_perturb, p, x, xd, z, OtherState, y_p, m, ErrStat2, ErrMsg2 ) 
-            call SetErrStat(ErrStat2,ErrMsg2,ErrStat,ErrMsg,RoutineName) ! we shouldn't have any errors about allocating memory here so I'm not going to return-on-error until later            
-         
-            
-            ! get u_op - delta u
-         call ED_CopyInput( u, u_perturb, MESH_UPDATECOPY, ErrStat2, ErrMsg2 )
-            call SetErrStat(ErrStat2,ErrMsg2,ErrStat,ErrMsg,RoutineName) ! we shouldn't have any errors about allocating memory here so I'm not going to return-on-error until later
-         call ED_Perturb_u( p, i, -1, u_perturb, delta )
-         
-            ! compute y at u_op - delta u
-         call ED_CalcOutput( t, u_perturb, p, x, xd, z, OtherState, y_m, m, ErrStat2, ErrMsg2 ) 
-            call SetErrStat(ErrStat2,ErrMsg2,ErrStat,ErrMsg,RoutineName) ! we shouldn't have any errors about allocating memory here so I'm not going to return-on-error until later            
-         
-            
-            ! get central difference:            
-         call Compute_dY( p, y_p, y_m, delta, dYdu(:,i) )
-         
-      end do
-      
-      ! now do the extended input: sum the p%NumBl blade pitch columns
-      dYdu(:,size(p%Jac_u_indx,1)+1) = dYdu(:,size(p%Jac_u_indx,1)-p%NumBl-1) ! last NumBl+2 columns are: GenTrq, YawMom, and BlPitchCom   
-      do i=2,p%NumBl
-         dYdu(:,size(p%Jac_u_indx,1)+1) = dYdu(:,size(p%Jac_u_indx,1)+1) + dYdu(:,size(p%Jac_u_indx,1)-p%NumBl-2+i) 
-      end do
-      
-      
-      if (ErrStat>=AbortErrLev) then
-         call cleanup()
-         return
-      end if
-      call ED_DestroyOutput( y_p, ErrStat2, ErrMsg2 ) ! we don't need this any more
-      call ED_DestroyOutput( y_m, ErrStat2, ErrMsg2 ) ! we don't need this any more
-      
+      ! Loop through input variables
+      do i = 1, size(Vars%u)
 
-   END IF
-   
+         ! Skip extended variable
+         if (i == iVarBlPitchComC) cycle
 
-   IF ( PRESENT( dXdu ) ) THEN
+         ! Loop through number of linearization perturbations in variable
+         do j = 1, Vars%u(i)%Num
 
-      ! Calculate the partial derivative of the continuous state functions (X) with respect to the inputs (u) here:
+            ! Calculate column index
+            iCol = Vars%u(i)%iLoc(1) + j - 1
 
-      ! allocate dXdu if necessary
-      if (.not. allocated(dXdu)) then
-         call AllocAry(dXdu, p%DOFs%NActvDOF * 2, size(p%Jac_u_indx,1)+1, 'dXdu', ErrStat2, ErrMsg2)
-         call SetErrStat(ErrStat2,ErrMsg2,ErrStat,ErrMsg,RoutineName)
-         if (ErrStat>=AbortErrLev) then
-            call cleanup()
-            return
-         end if
-      end if
-      
-         
-      do i=1,size(p%Jac_u_indx,1)
-         
-            ! get u_op + delta u
-         call ED_CopyInput( u, u_perturb, MESH_UPDATECOPY, ErrStat2, ErrMsg2 )
-            call SetErrStat(ErrStat2,ErrMsg2,ErrStat,ErrMsg,RoutineName) ! we shouldn't have any errors about allocating memory here so I'm not going to return-on-error until later            
-         call ED_Perturb_u( p, i, 1, u_perturb, delta )
+            ! Calculate positive perturbation
+            call MV_Perturb(Vars%u(i), j, 1, m%Jac%u, m%Jac%u_perturb)
+            call ED_VarsUnpackInput(Vars, m%Jac%u_perturb, m%u_perturb)
+            call ED_CalcOutput(t, m%u_perturb, p, x, xd, z, OtherState, m%y_lin, m, ErrStat2, ErrMsg2); if (Failed()) return
+            call ED_VarsPackOutput(Vars, m%y_lin, m%Jac%y_pos)
 
-            ! compute x at u_op + delta u
-         call ED_CalcContStateDeriv( t, u_perturb, p, x, xd, z, OtherState, m, x_p, ErrStat2, ErrMsg2 ) 
-            call SetErrStat(ErrStat2,ErrMsg2,ErrStat,ErrMsg,RoutineName)
-            
-                                         
-            ! get u_op - delta u
-         call ED_CopyInput( u, u_perturb, MESH_UPDATECOPY, ErrStat2, ErrMsg2 )
-            call SetErrStat(ErrStat2,ErrMsg2,ErrStat,ErrMsg,RoutineName) 
-            
-         call ED_Perturb_u( p, i, -1, u_perturb, delta )
-         
-            ! compute x at u_op - delta u
-         call ED_CalcContStateDeriv( t, u_perturb, p, x, xd, z, OtherState, m, x_m, ErrStat2, ErrMsg2 ) 
-            call SetErrStat(ErrStat2,ErrMsg2,ErrStat,ErrMsg,RoutineName) 
-            
-            
-            ! get central difference:            
-            
-            ! we may have had an error allocating memory, so we'll check
-         if (ErrStat>=AbortErrLev) then 
-            call cleanup()
-            return
-         end if         
-         
-         do j=1,p%DOFs%NActvDOF ! Loop through all active (enabled) DOFs
-            dXdu(j, i) = x_p%QT( p%DOFs%PS(j) ) - x_m%QT( p%DOFs%PS(j) )
+            ! Calculate negative perturbation
+            call MV_Perturb(Vars%u(i), j, -1, m%Jac%u, m%Jac%u_perturb)
+            call ED_VarsUnpackInput(Vars, m%Jac%u_perturb, m%u_perturb)
+            call ED_CalcOutput(t, m%u_perturb, p, x, xd, z, OtherState, m%y_lin, m, ErrStat2, ErrMsg2); if (Failed()) return
+            call ED_VarsPackOutput(Vars, m%y_lin, m%Jac%y_neg)
+
+            ! Get partial derivative via central difference and store in full linearization array
+            call MV_ComputeCentralDiff(Vars%y, Vars%u(i)%Perturb, m%Jac%y_pos, m%Jac%y_neg, dYdu(:,iCol))
          end do
-         do j=1,p%DOFs%NActvDOF ! Loop through all active (enabled) DOFs
-            dXdu(j+p%DOFs%NActvDOF, i) = x_p%QDT( p%DOFs%PS(j) ) - x_m%QDT( p%DOFs%PS(j) )
-         end do              
-         dXdu(:,i) = dXdu(:,i) / (2*delta) 
-         
       end do
-      
-      
-      ! now do the extended input: sum the p%NumBl blade pitch columns
-      dXdu(:,size(p%Jac_u_indx,1)+1) = dXdu(:,size(p%Jac_u_indx,1)-p%NumBl-1) ! last NumBl+2 columns are: GenTrq, YawMom, and BlPitchCom   
-      do i=2,p%NumBl
-         dXdu(:,size(p%Jac_u_indx,1)+1) = dXdu(:,size(p%Jac_u_indx,1)+1) + dXdu(:,size(p%Jac_u_indx,1)-p%NumBl-2+i) 
-      end do
-      
-      
-      call ED_DestroyContState( x_p, ErrStat2, ErrMsg2 ) ! we don't need this any more
-      call ED_DestroyContState( x_m, ErrStat2, ErrMsg2 ) ! we don't need this any more
-      
-      
-      
-   END IF
 
+      ! Extended: BlPitchComC is the sum of BlPitchCom across all blades
+      if (iVarBlPitchComC > 0) then
+         if (iVarBlPitchCom > 0) then
+            associate (Var => Vars%u(iVarBlPitchCom))
+               dYdu(:,Vars%u(iVarBlPitchComC)%iLoc(1)) = sum(dYdu(:,Var%iLoc(1):Var%iLoc(2)), dim=2)
+            end associate
+         else
+            dYdu(:,Vars%u(iVarBlPitchComC)%iLoc(1)) = 0.0_R8Ki
+         end if
+      end if
+   end if
    
+   ! Calculate the partial derivative of the continuous state functions (X) with respect to the inputs (u) here:
+   if (present(dXdu) .and. (m%Jac%Nx > 0)) then
+
+      ! Allocate dXdu if not allocated
+      if (.not. allocated(dXdu)) then
+         call AllocAry(dXdu, m%Jac%Nx, m%Jac%Nu, 'dXdu', ErrStat2, ErrMsg2); if (Failed()) return
+      end if
    
-   IF ( PRESENT( dXddu ) ) THEN
+      ! Loop through input variables
+      do i = 1, size(Vars%u)
+
+         ! Skip extended variable
+         if (i == iVarBlPitchComC) cycle
+
+         ! Loop through number of linearization perturbations in variable
+         do j = 1, Vars%u(i)%Num
+
+            ! Calculate column index
+            iCol = Vars%u(i)%iLoc(1) + j - 1
+
+            ! Calculate positive perturbation
+            call MV_Perturb(Vars%u(i), j, 1, m%Jac%u, m%Jac%u_perturb)
+            call ED_VarsUnpackInput(Vars, m%Jac%u_perturb, m%u_perturb)
+            call ED_CalcContStateDeriv(t, m%u_perturb, p, x, xd, z, OtherState, m, m%dxdt_lin, ErrStat2, ErrMsg2); if (Failed()) return
+            call ED_VarsPackContState(Vars, m%dxdt_lin, m%Jac%x_pos)
+
+            ! Calculate negative perturbation
+            call MV_Perturb(Vars%u(i), j, -1, m%Jac%u, m%Jac%u_perturb)
+            call ED_VarsUnpackInput(Vars, m%Jac%u_perturb, m%u_perturb)
+            call ED_CalcContStateDeriv(t, m%u_perturb, p, x, xd, z, OtherState, m, m%dxdt_lin, ErrStat2, ErrMsg2); if (Failed()) return
+            call ED_VarsPackContState(Vars, m%dxdt_lin, m%Jac%x_neg)
+
+            ! Get partial derivative via central difference and store in full linearization array
+            dXdu(:,iCol) = (m%Jac%x_pos - m%Jac%x_neg) / (2.0_R8Ki * Vars%u(i)%Perturb)
+         end do
+      end do
+            
+      ! Extended: BlPitchComC is the sum of BlPitchCom across all blades
+      if (iVarBlPitchComC > 0) then
+         if (iVarBlPitchCom > 0) then
+            associate (Var => Vars%u(iVarBlPitchCom))
+               dXdu(:,Vars%u(iVarBlPitchComC)%iLoc(1)) = sum(dXdu(:,Var%iLoc(1):Var%iLoc(2)), dim=2)
+            end associate
+         else
+            dXdu(:,Vars%u(iVarBlPitchComC)%iLoc(1)) = 0.0_R8Ki
+         end if
+      end if
+
+   end if
+   
+   if (present(dXddu)) then
       if (allocated(dXddu)) deallocate(dXddu)
-   END IF
+   end if
 
-   IF ( PRESENT( dZdu ) ) THEN
+   if (present(dZdu)) then
       if (allocated(dZdu)) deallocate(dZdu)
-   END IF
+   end if
    
    call cleanup()
    
 contains
+   logical function Failed()
+      call SetErrStat(ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName)
+      Failed = ErrStat >= AbortErrLev
+      if (Failed) call cleanup()
+   end function
    subroutine cleanup()
-      call ED_DestroyOutput(       y_p, ErrStat2, ErrMsg2 )
-      call ED_DestroyOutput(       y_m, ErrStat2, ErrMsg2 )
-      call ED_DestroyContState(    x_p, ErrStat2, ErrMsg2 )
-      call ED_DestroyContState(    x_m, ErrStat2, ErrMsg2 )
-      call ED_DestroyInput(  u_perturb, ErrStat2, ErrMsg2 )
       m%IgnoreMod = .false.
    end subroutine cleanup
-   
 END SUBROUTINE ED_JacobianPInput
 !----------------------------------------------------------------------------------------------------------------------------------
 !> Routine to compute the Jacobians of the output (Y), continuous- (X), discrete- (Xd), and constraint-state (Z) functions
 !! with respect to the continuous states (x). The partial derivatives dY/dx, dX/dx, dXd/dx, and dZ/dx are returned.
-SUBROUTINE ED_JacobianPContState( t, u, p, x, xd, z, OtherState, y, m, ErrStat, ErrMsg, dYdx, dXdx, dXddx, dZdx )
-!..................................................................................................................................
+SUBROUTINE ED_JacobianPContState(Vars, t, u, p, x, xd, z, OtherState, y, m, ErrStat, ErrMsg, dYdx, dXdx, dXddx, dZdx )
 
+   type(ModVarsType),                    INTENT(IN   )           :: Vars       !< Module variables
    REAL(DbKi),                           INTENT(IN   )           :: t          !< Time in seconds at operating point
    TYPE(ED_InputType),                   INTENT(IN   )           :: u          !< Inputs at operating point (may change to inout if a mesh copy is required)
    TYPE(ED_ParameterType),               INTENT(IN   )           :: p          !< Parameters
@@ -10734,182 +10723,115 @@ SUBROUTINE ED_JacobianPContState( t, u, p, x, xd, z, OtherState, y, m, ErrStat, 
    TYPE(ED_MiscVarType),                 INTENT(INOUT)           :: m          !< Misc/optimization variables
    INTEGER(IntKi),                       INTENT(  OUT)           :: ErrStat    !< Error status of the operation
    CHARACTER(*),                         INTENT(  OUT)           :: ErrMsg     !< Error message if ErrStat /= ErrID_None
-   REAL(R8Ki), ALLOCATABLE, OPTIONAL,    INTENT(INOUT)           :: dYdx(:,:)  !< Partial derivatives of output functions (Y) with respect 
-                                                                               !!   to the continuous states (x) [intent in to avoid deallocation]
-   REAL(R8Ki), ALLOCATABLE, OPTIONAL,    INTENT(INOUT)           :: dXdx(:,:)  !< Partial derivatives of continuous state functions (X) with respect 
-                                                                               !!   to the continuous states (x) [intent in to avoid deallocation]
-   REAL(R8Ki), ALLOCATABLE, OPTIONAL,    INTENT(INOUT)           :: dXddx(:,:) !< Partial derivatives of discrete state functions (Xd) with respect 
-                                                                               !!   to the continuous states (x) [intent in to avoid deallocation]
-   REAL(R8Ki), ALLOCATABLE, OPTIONAL,    INTENT(INOUT)           :: dZdx(:,:)  !< Partial derivatives of constraint state functions (Z) with respect 
-                                                                               !!   to the continuous states (x) [intent in to avoid deallocation]
-   
-      ! local variables
-   TYPE(ED_OutputType)                               :: y_p
-   TYPE(ED_OutputType)                               :: y_m
-   TYPE(ED_ContinuousStateType)                      :: x_p
-   TYPE(ED_ContinuousStateType)                      :: x_m
-   TYPE(ED_ContinuousStateType)                      :: x_perturb
-   REAL(R8Ki)                                        :: delta        ! delta change in input or state
-   INTEGER(IntKi)                                    :: i, j   
-   
+   REAL(R8Ki), ALLOCATABLE, OPTIONAL,    INTENT(INOUT)           :: dYdx(:,:)  !< Partial derivatives of output functions (Y) with respect to the continuous states (x) [intent in to avoid deallocation]
+   REAL(R8Ki), ALLOCATABLE, OPTIONAL,    INTENT(INOUT)           :: dXdx(:,:)  !< Partial derivatives of continuous state functions (X) with respect to the continuous states (x) [intent in to avoid deallocation]
+   REAL(R8Ki), ALLOCATABLE, OPTIONAL,    INTENT(INOUT)           :: dXddx(:,:) !< Partial derivatives of discrete state functions (Xd) with respect to the continuous states (x) [intent in to avoid deallocation]
+   REAL(R8Ki), ALLOCATABLE, OPTIONAL,    INTENT(INOUT)           :: dZdx(:,:)  !< Partial derivatives of constraint state functions (Z) with respect to the continuous states (x) [intent in to avoid deallocation]
+
+   CHARACTER(*), PARAMETER                           :: RoutineName = 'ED_JacobianPContState'
    INTEGER(IntKi)                                    :: ErrStat2
    CHARACTER(ErrMsgLen)                              :: ErrMsg2
-   CHARACTER(*), PARAMETER                           :: RoutineName = 'ED_JacobianPContState'
+   INTEGER(IntKi)                                    :: i, j, iCol
    
-   
-      ! Initialize ErrStat
-
    ErrStat = ErrID_None
    ErrMsg  = ''
+   
    m%IgnoreMod = .true. ! to get true perturbations, we can't use the modulo function
 
-      ! make a copy of the continuous states to perturb
-   call ED_CopyContState( x, x_perturb, MESH_NEWCOPY, ErrStat2, ErrMsg2)
-      call SetErrStat(ErrStat2,ErrMsg2,ErrStat,ErrMsg,RoutineName)
-      if (ErrStat>=AbortErrLev) then
-         call cleanup()
-         return
-      end if
+   ! Copy state values
+   call ED_CopyContState(x, m%x_perturb, MESH_UPDATECOPY, ErrStat2, ErrMsg2); if (Failed()) return
+   call ED_VarsPackContState(Vars, x, m%Jac%x)
 
-   IF ( PRESENT( dYdx ) ) THEN
+   ! Calculate the partial derivative of the output functions (Y) with respect to the continuous states (x) here:
+   if (present(dYdx)) then
 
-      ! Calculate the partial derivative of the output functions (Y) with respect to the continuous states (x) here:
-
-      ! allocate dYdx if necessary
+      ! Allocate dYdx if not allocated
       if (.not. allocated(dYdx)) then
-         call AllocAry(dYdx, p%Jac_ny, p%DOFs%NActvDOF*2, 'dYdx', ErrStat2, ErrMsg2)
-         call SetErrStat(ErrStat2,ErrMsg2,ErrStat,ErrMsg,RoutineName)
-         if (ErrStat>=AbortErrLev) then
-            call cleanup()
-            return
-         end if
+         call AllocAry(dYdx, m%Jac%Ny, m%Jac%Nx, 'dYdx', ErrStat2, ErrMsg2); if (Failed()) return
       end if
-      
-         ! make a copy of outputs because we will need two for the central difference computations (with orientations)
-      call ED_CopyOutput( y, y_p, MESH_NEWCOPY, ErrStat2, ErrMsg2)
-         call SetErrStat(ErrStat2,ErrMsg2,ErrStat,ErrMsg,RoutineName)
-      call ED_CopyOutput( y, y_m, MESH_NEWCOPY, ErrStat2, ErrMsg2)
-         call SetErrStat(ErrStat2,ErrMsg2,ErrStat,ErrMsg,RoutineName)
-         if (ErrStat>=AbortErrLev) then
-            call cleanup()
-            return
-         end if
-         
-         
-      do i=1,p%DOFs%NActvDOF*2
-         
-            ! get x_op + delta x
-         call ED_CopyContState( x, x_perturb, MESH_UPDATECOPY, ErrStat2, ErrMsg2 )
-            call SetErrStat(ErrStat2,ErrMsg2,ErrStat,ErrMsg,RoutineName) ! we shouldn't have any errors about allocating memory here so I'm not going to return-on-error until later            
-         call ED_Perturb_x( p, i, 1, x_perturb, delta )
 
-            ! compute y at x_op + delta x
-         call ED_CalcOutput( t, u, p, x_perturb, xd, z, OtherState, y_p, m, ErrStat2, ErrMsg2 ) 
-            call SetErrStat(ErrStat2,ErrMsg2,ErrStat,ErrMsg,RoutineName) ! we shouldn't have any errors about allocating memory here so I'm not going to return-on-error until later            
-         
-            
-            ! get x_op - delta x
-         call ED_CopyContState( x, x_perturb, MESH_UPDATECOPY, ErrStat2, ErrMsg2 )
-            call SetErrStat(ErrStat2,ErrMsg2,ErrStat,ErrMsg,RoutineName) ! we shouldn't have any errors about allocating memory here so I'm not going to return-on-error until later
-         call ED_Perturb_x( p, i, -1, x_perturb, delta )
-         
-            ! compute y at x_op - delta x
-         call ED_CalcOutput( t, u, p, x_perturb, xd, z, OtherState, y_m, m, ErrStat2, ErrMsg2 ) 
-            call SetErrStat(ErrStat2,ErrMsg2,ErrStat,ErrMsg,RoutineName) ! we shouldn't have any errors about allocating memory here so I'm not going to return-on-error until later            
-         
-            
-            ! get central difference:            
-         call Compute_dY( p, y_p, y_m, delta, dYdx(:,i) )
-         
-      end do
-      
-      if (ErrStat>=AbortErrLev) then
-         call cleanup()
-         return
-      end if
-      call ED_DestroyOutput( y_p, ErrStat2, ErrMsg2 ) ! we don't need this any more
-      call ED_DestroyOutput( y_m, ErrStat2, ErrMsg2 ) ! we don't need this any more
-      
-   END IF
+      ! Loop through state variables
+      do i = 1, size(Vars%x)
 
-   IF ( PRESENT( dXdx ) ) THEN
+         ! Loop through number of linearization perturbations in variable
+         do j = 1, Vars%x(i)%Num
 
-      ! Calculate the partial derivative of the continuous state functions (X) with respect to the continuous states (x) here:
+            ! Calculate column index
+            iCol = Vars%x(i)%iLoc(1) + j - 1
 
-      ! allocate dXdx if necessary
-      if (.not. allocated(dXdx)) then
-         call AllocAry(dXdx, p%DOFs%NActvDOF * 2, p%DOFs%NActvDOF * 2, 'dXdx', ErrStat2, ErrMsg2)
-         call SetErrStat(ErrStat2,ErrMsg2,ErrStat,ErrMsg,RoutineName)
-         if (ErrStat>=AbortErrLev) then
-            call cleanup()
-            return
-         end if
-      end if
-      
-      do i=1,p%DOFs%NActvDOF * 2
-         
-            ! get x_op + delta x
-         call ED_CopyContState( x, x_perturb, MESH_UPDATECOPY, ErrStat2, ErrMsg2 )
-            call SetErrStat(ErrStat2,ErrMsg2,ErrStat,ErrMsg,RoutineName) 
-         call ED_Perturb_x( p, i, 1, x_perturb, delta )
+            ! Calculate positive perturbation
+            call MV_Perturb(Vars%x(i), j, 1, m%Jac%x, m%Jac%x_perturb)
+            call ED_VarsUnpackContState(Vars, m%Jac%x_perturb, m%x_perturb)
+            call ED_CalcOutput(t, u, p, m%x_perturb, xd, z, OtherState, m%y_lin, m, ErrStat2, ErrMsg2); if (Failed()) return
+            call ED_VarsPackOutput(Vars, m%y_lin, m%Jac%y_pos)
 
-            ! compute x at x_op + delta x
-         call ED_CalcContStateDeriv( t, u, p, x_perturb, xd, z, OtherState, m, x_p, ErrStat2, ErrMsg2 ) 
-            call SetErrStat(ErrStat2,ErrMsg2,ErrStat,ErrMsg,RoutineName)
-            
-                                         
-            ! get x_op - delta x
-         call ED_CopyContState( x, x_perturb, MESH_UPDATECOPY, ErrStat2, ErrMsg2 )
-            call SetErrStat(ErrStat2,ErrMsg2,ErrStat,ErrMsg,RoutineName) 
-         call ED_Perturb_x( p, i, -1, x_perturb, delta )
-         
-            ! compute x at x_op - delta x
-         call ED_CalcContStateDeriv( t, u, p, x_perturb, xd, z, OtherState, m, x_m, ErrStat2, ErrMsg2 ) 
-            call SetErrStat(ErrStat2,ErrMsg2,ErrStat,ErrMsg,RoutineName) 
-                                         
-            
-            ! get central difference:            
-            
-            ! we may have had an error allocating memory, so we'll check
-         if (ErrStat>=AbortErrLev) then 
-            call cleanup()
-            return
-         end if         
-         
-         do j=1,p%DOFs%NActvDOF ! Loop through all active (enabled) DOFs
-            dXdx(j, i) = x_p%QT( p%DOFs%PS(j) ) - x_m%QT( p%DOFs%PS(j) )
+            ! Calculate negative perturbation
+            call MV_Perturb(Vars%x(i), j, -1, m%Jac%x, m%Jac%x_perturb)
+            call ED_VarsUnpackContState(Vars, m%Jac%x_perturb, m%x_perturb)
+            call ED_CalcOutput(t, u, p, m%x_perturb, xd, z, OtherState, m%y_lin, m, ErrStat2, ErrMsg2); if (Failed()) return
+            call ED_VarsPackOutput(Vars, m%y_lin, m%Jac%y_neg)
+
+            ! Get partial derivative via central difference and store in full linearization array
+            call MV_ComputeCentralDiff(Vars%y, Vars%x(i)%Perturb, m%Jac%y_pos, m%Jac%y_neg, dYdx(:,iCol))
          end do
-         do j=1,p%DOFs%NActvDOF ! Loop through all active (enabled) DOFs
-            dXdx(j+p%DOFs%NActvDOF, i) = x_p%QDT( p%DOFs%PS(j) ) - x_m%QDT( p%DOFs%PS(j) )
-         end do              
-         dXdx(:,i) = dXdx(:,i) / (2*delta) 
-         
       end do
-      
-      call ED_DestroyContState( x_p, ErrStat2, ErrMsg2 ) ! we don't need this any more
-      call ED_DestroyContState( x_m, ErrStat2, ErrMsg2 ) ! we don't need this any more
-   END IF
+            
+   end if
 
-   IF ( PRESENT( dXddx ) ) THEN
+   ! Calculate the partial derivative of the continuous state functions (X) with respect to the continuous states (x) here:
+   if (present(dXdx) .and. (m%Jac%Nx > 0)) then
+
+      ! Allocate dXdx if not allocated
+      if (.not. allocated(dXdx)) then
+         call AllocAry(dXdx, m%Jac%Nx, m%Jac%Nx, 'dXdx', ErrStat2, ErrMsg2); if (Failed()) return
+      end if
+
+      ! Loop through state variables
+      do i = 1, size(Vars%x)
+
+         ! Loop through number of linearization perturbations in variable
+         do j = 1, Vars%x(i)%Num
+
+            ! Calculate column index
+            iCol = Vars%x(i)%iLoc(1) + j - 1
+
+            ! Calculate positive perturbation
+            call MV_Perturb(Vars%x(i), j, 1, m%Jac%x, m%Jac%x_perturb)
+            call ED_VarsUnpackContState(Vars, m%Jac%x_perturb, m%x_perturb)
+            call ED_CalcContStateDeriv(t, u, p, m%x_perturb, xd, z, OtherState, m, m%dxdt_lin, ErrStat2, ErrMsg2); if (Failed()) return
+            call ED_VarsPackContState(Vars, m%dxdt_lin, m%Jac%x_pos)
+
+            ! Calculate negative perturbation
+            call MV_Perturb(Vars%x(i), j, -1, m%Jac%x, m%Jac%x_perturb)
+            call ED_VarsUnpackContState(Vars, m%Jac%x_perturb, m%x_perturb)
+            call ED_CalcContStateDeriv(t, u, p, m%x_perturb, xd, z, OtherState, m, m%dxdt_lin, ErrStat2, ErrMsg2); if (Failed()) return
+            call ED_VarsPackContState(Vars, m%dxdt_lin, m%Jac%x_neg)
+
+            ! Get partial derivative via central difference and store in full linearization array
+            dXdx(:,iCol) = (m%Jac%x_pos - m%Jac%x_neg) / (2.0_R8Ki * Vars%x(i)%Perturb)
+         end do
+      end do
+   end if
+
+   if (present(dXddx)) then
       if (allocated(dXddx)) deallocate(dXddx)
-   END IF
+   end if
 
-   IF ( PRESENT( dZdx ) ) THEN
+   if (present(dZdx)) then
       if (allocated(dZdx)) deallocate(dZdx)
-   END IF
+   end if
 
    call cleanup()
    
 contains
+   logical function Failed()
+      call SetErrStat(ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName)
+      Failed = ErrStat >= AbortErrLev
+      if (Failed) call cleanup()
+   end function
    subroutine cleanup()
-      call ED_DestroyOutput(         y_p, ErrStat2, ErrMsg2 )
-      call ED_DestroyOutput(         y_m, ErrStat2, ErrMsg2 )
-      call ED_DestroyContState(      x_p, ErrStat2, ErrMsg2 )
-      call ED_DestroyContState(      x_m, ErrStat2, ErrMsg2 )
-      call ED_DestroyContState(x_perturb, ErrStat2, ErrMsg2 )
       m%IgnoreMod = .false.
    end subroutine cleanup
-
 END SUBROUTINE ED_JacobianPContState
 !----------------------------------------------------------------------------------------------------------------------------------
 !> Routine to compute the Jacobians of the output (Y), continuous- (X), discrete- (Xd), and constraint-state (Z) functions
@@ -10944,45 +10866,25 @@ SUBROUTINE ED_JacobianPDiscState( t, u, p, x, xd, z, OtherState, y, m, ErrStat, 
                                                                                !!   functions (Z) with respect to the
                                                                                !!   discrete states (xd) [intent in to avoid deallocation]
 
-
-      ! Initialize ErrStat
-
+   ! Initialize ErrStat
    ErrStat = ErrID_None
    ErrMsg  = ''
 
+   ! Calculate the partial derivative of the output functions (Y) with respect to the discrete states (xd) here:
+   if (present(dYdxd)) then
+   end if
 
-   IF ( PRESENT( dYdxd ) ) THEN
+   ! Calculate the partial derivative of the continuous state functions (X) with respect to the discrete states (xd) here:
+   if (present(dXdxd)) then
+   end if
 
-      ! Calculate the partial derivative of the output functions (Y) with respect to the discrete states (xd) here:
-
-      ! allocate and set dYdxd
-
-   END IF
-
-   IF ( PRESENT( dXdxd ) ) THEN
-
-      ! Calculate the partial derivative of the continuous state functions (X) with respect to the discrete states (xd) here:
-
-      ! allocate and set dXdxd
-
-   END IF
-
-   IF ( PRESENT( dXddxd ) ) THEN
-
-      ! Calculate the partial derivative of the discrete state functions (Xd) with respect to the discrete states (xd) here:
-
-      ! allocate and set dXddxd
-
-   END IF
-
-   IF ( PRESENT( dZdxd ) ) THEN
-
-      ! Calculate the partial derivative of the constraint state functions (Z) with respect to the discrete states (xd) here:
-
-      ! allocate and set dZdxd
-
-   END IF
-
+   ! Calculate the partial derivative of the discrete state functions (Xd) with respect to the discrete states (xd) here:
+   if (present(dXddxd)) then
+   end if
+   
+   ! Calculate the partial derivative of the constraint state functions (Z) with respect to the discrete states (xd) here:
+   if (present(dZdxd)) then
+   end if
 
 END SUBROUTINE ED_JacobianPDiscState
 !----------------------------------------------------------------------------------------------------------------------------------
@@ -11014,845 +10916,516 @@ SUBROUTINE ED_JacobianPConstrState( t, u, p, x, xd, z, OtherState, y, m, ErrStat
    REAL(ReKi), ALLOCATABLE, OPTIONAL,    INTENT(INOUT)           :: dZdz(:,:)  !< Partial derivatives of constraint state functions (Z) with respect 
                                                                                !! to the constraint states (z) [intent in to avoid deallocation]
 
-
-      ! Initialize ErrStat
-
+   ! Initialize ErrStat
    ErrStat = ErrID_None
    ErrMsg  = ''
 
-   IF ( PRESENT( dYdz ) ) THEN
+   ! Calculate the partial derivative of the output functions (Y) with respect to the constraint states (z) here:
+   if (present(dYdz)) then
+   end if
 
-         ! Calculate the partial derivative of the output functions (Y) with respect to the constraint states (z) here:
+   ! Calculate the partial derivative of the continuous state functions (X) with respect to the constraint states (z) here:
+   if (present(dXdz)) then
+   end if
 
-      ! allocate and set dYdz
+   ! Calculate the partial derivative of the discrete state functions (Xd) with respect to the constraint states (z) here:
+   if (present(dXddz)) then
+   end if
 
-   END IF
-
-   IF ( PRESENT( dXdz ) ) THEN
-
-         ! Calculate the partial derivative of the continuous state functions (X) with respect to the constraint states (z) here:
-
-      ! allocate and set dXdz
-
-   END IF
-
-   IF ( PRESENT( dXddz ) ) THEN
-
-         ! Calculate the partial derivative of the discrete state functions (Xd) with respect to the constraint states (z) here:
-
-      ! allocate and set dXddz
-
-   END IF
-
-   IF ( PRESENT( dZdz ) ) THEN
-
-         ! Calculate the partial derivative of the constraint state functions (Z) with respect to the constraint states (z) here:
-
-      ! allocate and set dZdz
-
-   END IF
-
+   ! Calculate the partial derivative of the constraint state functions (Z) with respect to the constraint states (z) here:
+   if (present(dZdz)) then
+   end if
 
 END SUBROUTINE ED_JacobianPConstrState
 !++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
-!----------------------------------------------------------------------------------------------------------------------------------
-!> This routine initializes the Jacobian parameters and initialization outputs for the linearized outputs.
-SUBROUTINE ED_Init_Jacobian_y( p, y, InitOut, ErrStat, ErrMsg)
+subroutine ED_PackExtInputAry(Vars, u, ValAry, ErrStat, ErrMsg)
+   type(ModVarsType), intent(in)    :: Vars
+   type(ED_InputType), intent(in)   :: u        !< Inputs
+   real(R8Ki), intent(inout)        :: ValAry(:)
+   integer(IntKi),intent(out)       :: ErrStat  !< Error status of the operation
+   character(*),intent(out)         :: ErrMsg   !< Error message if ErrStat /= ErrID_None
 
-   TYPE(ED_ParameterType)            , INTENT(INOUT) :: p                     !< parameters
-   TYPE(ED_OutputType)               , INTENT(IN   ) :: y                     !< outputs
-   TYPE(ED_InitOutputType)           , INTENT(INOUT) :: InitOut               !< Output for initialization routine   
-   
-   INTEGER(IntKi)                    , INTENT(  OUT) :: ErrStat               !< Error status of the operation
-   CHARACTER(*)                      , INTENT(  OUT) :: ErrMsg                !< Error message if ErrStat /= ErrID_None
-   
-      ! local variables:
-   INTEGER(IntKi)                :: i,j,k, index_last, index_next
-   INTEGER(IntKi)                                    :: ErrStat2
-   CHARACTER(ErrMsgLen)                              :: ErrMsg2
-   CHARACTER(*), PARAMETER                           :: RoutineName = 'ED_Init_Jacobian_y'
-   LOGICAL                                           :: Mask(FIELDMASK_SIZE)   ! flags to determine if this field is part of the packing
-   logical, allocatable                              :: AllOut(:)
-   
-   
-   
+   character(*), parameter          :: RoutineName = 'ED_PackExtInputAry'
+   integer(IntKi)                   :: i
+
    ErrStat = ErrID_None
-   ErrMsg  = ""
-   
-   
-      ! determine how many outputs there are in the Jacobians      
-   p%Jac_ny = 0         
-   if (allocated(y%BladeLn2Mesh)) then
-      do i=1,p%NumBl
-         p%Jac_ny = p%Jac_ny + y%BladeLn2Mesh(i)%NNodes * 18  ! 3 TranslationDisp, Orientation, TranslationVel, RotationVel, TranslationAcc, and RotationAcc at each node on each blade
-      end do      
-   end if
-   
-   p%Jac_ny = p%Jac_ny &
-      + y%PlatformPtMesh%NNodes  * 18           & ! 3 TranslationDisp, Orientation, TranslationVel, RotationVel, TranslationAcc, and RotationAcc at each node
-      + y%TowerLn2Mesh%NNodes    * 18           & ! 3 TranslationDisp, Orientation, TranslationVel, RotationVel, TranslationAcc, and RotationAcc at each node
-      + y%HubPtMotion%NNodes     * 9            & ! 3 TranslationDisp, Orientation, and RotationVel at each node
-      + y%NacelleMotion%NNodes   * 18           & ! 3 TranslationDisp, Orientation, TranslationVel, RotationVel, TranslationAcc, and RotationAcc at each node
-      + 3                                       & ! Yaw, YawRate, and HSS_Spd
-      + p%NumOuts  + p%BldNd_TotNumOuts           ! WriteOutput values 
-      
-   do i=1,p%NumBl
-      p%Jac_ny = p%Jac_ny + y%BladeRootMotion(i)%NNodes * 18  ! 3 TranslationDisp, Orientation, TranslationVel, RotationVel, TranslationAcc, and RotationAcc at each (1) node on each blade
-   end do
+   ErrMsg = ""
 
+   ! Find variable index corresponding to blade pitch command collective
+   i = MV_FindVarDatLoc(Vars%u, DatLoc(ED_u_BlPitchComC))
    
-      !.................   
-      ! set linearization output names:
-      !.................   
-   CALL AllocAry(InitOut%LinNames_y, p%Jac_ny, 'LinNames_y', ErrStat2, ErrMsg2); CALL SetErrStat(ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName)
-   CALL AllocAry(InitOut%RotFrame_y, p%Jac_ny, 'RotFrame_y', ErrStat2, ErrMsg2); CALL SetErrStat(ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName)
-   if (ErrStat >= AbortErrLev) return
-   
-   InitOut%RotFrame_y = .false. ! note that meshes are in the global, not rotating frame
-   
-   ! note that this Mask is for the y%HubPtMotion mesh ONLY. The others pack *all* of the motion fields
-   Mask  = .false.
-   Mask(MASKID_TRANSLATIONDISP) = .true.
-   Mask(MASKID_ORIENTATION) = .true.
-   Mask(MASKID_ROTATIONVEL) = .true.
-   
-   index_next = 1
-   if (allocated(y%BladeLn2Mesh)) then
-      index_last = index_next
-      do i=1,p%NumBl
-         call PackMotionMesh_Names(y%BladeLn2Mesh(i), 'Blade '//trim(num2lstr(i)), InitOut%LinNames_y, index_next)
-      end do      
-      !InitOut%RotFrame_y(index_last:index_next-1) = .true. ! values on the mesh are in global, not rotating frame
-   end if
-   call PackMotionMesh_Names(y%PlatformPtMesh, 'Platform', InitOut%LinNames_y, index_next)
-   call PackMotionMesh_Names(y%TowerLn2Mesh, 'Tower', InitOut%LinNames_y, index_next)
-   call PackMotionMesh_Names(y%HubPtMotion, 'Hub', InitOut%LinNames_y, index_next, FieldMask=Mask)
-   index_last = index_next
-   do i=1,p%NumBl
-      call PackMotionMesh_Names(y%BladeRootMotion(i), 'Blade root '//trim(num2lstr(i)), InitOut%LinNames_y, index_next)
-   end do   
-   !InitOut%RotFrame_y(index_last:index_next-1) = .true. ! values on the mesh are in global, not rotating frame
-
-   call PackMotionMesh_Names(y%NacelleMotion, 'Nacelle', InitOut%LinNames_y, index_next)
-   InitOut%LinNames_y(index_next) = 'Yaw, rad'; index_next = index_next+1
-   InitOut%LinNames_y(index_next) = 'YawRate, rad/s'; index_next = index_next+1
-   InitOut%LinNames_y(index_next) = 'HSS_Spd, rad/s'
-         
-   do i=1,p%NumOuts + p%BldNd_TotNumOuts
-      InitOut%LinNames_y(i+index_next) = trim(InitOut%WriteOutputHdr(i))//', '//trim(InitOut%WriteOutputUnt(i)) !trim(p%OutParam(i)%Name)//', '//p%OutParam(i)%Units
-   end do   
-   
-   
-   !! check for AllOuts in rotating frame
-   allocate( AllOut(0:MaxOutPts), STAT=ErrStat2 ) ! allocate starting at zero to account for invalid output channels
-   if (ErrStat2 /=0 ) then
-      call SetErrStat(ErrID_Info, 'error allocating temporary space for AllOut',ErrStat,ErrMsg,RoutineName)
-      return;
-   end if
-   
-   AllOut = .false.
-   do k=1,3
-      AllOut(TipDxc(  k)) = .true.
-      AllOut(TipDyc(  k)) = .true.
-      AllOut(TipDzc(  k)) = .true.
-      AllOut(TipDxb(  k)) = .true.
-      AllOut(TipDyb(  k)) = .true.
-      AllOut(TipALxb( k)) = .true.
-      AllOut(TipALyb( k)) = .true.
-      AllOut(TipALzb( k)) = .true.
-      AllOut(TipRDxb( k)) = .true.
-      AllOut(TipRDyb( k)) = .true.
-      AllOut(TipRDzc( k)) = .true.
-      AllOut(TipClrnc(k)) = .true.
-      AllOut(PtchPMzc(k)) = .true.
-      AllOut(RootFxc( k)) = .true.
-      AllOut(RootFyc( k)) = .true.
-      AllOut(RootFzc( k)) = .true.
-      AllOut(RootFxb( k)) = .true.
-      AllOut(RootFyb( k)) = .true.
-      AllOut(RootMxc( k)) = .true.
-      AllOut(RootMyc( k)) = .true.
-      AllOut(RootMzc( k)) = .true.
-      AllOut(RootMxb( k)) = .true.
-      AllOut(RootMyb( k)) = .true.
+   ! If variable found
+   if (i > 0) then
       
-      do j=1,9            
-         AllOut(SpnALxb( j,k)) = .true.         
-         AllOut(SpnALyb( j,k)) = .true.
-         AllOut(SpnALzb( j,k)) = .true.
-         AllOut(SpnFLxb( j,k)) = .true.
-         AllOut(SpnFLyb( j,k)) = .true.
-         AllOut(SpnFLzb( j,k)) = .true.
-         AllOut(SpnMLxb( j,k)) = .true.
-         AllOut(SpnMLyb( j,k)) = .true.
-         AllOut(SpnMLzb( j,k)) = .true.
-         AllOut(SpnTDxb( j,k)) = .true.
-         AllOut(SpnTDyb( j,k)) = .true.
-         AllOut(SpnTDzb( j,k)) = .true.
-         AllOut(SpnRDxb( j,k)) = .true.
-         AllOut(SpnRDyb( j,k)) = .true.
-         AllOut(SpnRDzb( j,k)) = .true.
+      ! Copy to value array
+      ValAry(Vars%u(i)%iLoc(1):Vars%u(i)%iLoc(2)) = u%BlPitchCom(1)
+
+      ! Check that all blades have the same pitch command
+      do i = 2, size(u%BlPitchCom)
+         if (.not. EqualRealNos(u%BlPitchCom(1), u%BlPitchCom(i))) then
+            call SetErrStat(ErrID_Info,"Operating point of collective pitch extended input is invalid because "// &
+                            "the commanded blade pitch angles are not the same for each blade.", &
+                            ErrStat, ErrMsg, RoutineName)
+            exit
+         end if  
       end do
-   end do
-   
-   do i=1,p%NumOuts
-      InitOut%RotFrame_y(i+index_next) = AllOut( p%OutParam(i)%Indx )      
-   end do    
-   
-   do i=1, p%BldNd_TotNumOuts
-      InitOut%RotFrame_y(i+p%NumOuts+index_next) = .true.     
-   end do
-   
-   deallocate(AllOut)         
-   
-   
-END SUBROUTINE ED_Init_Jacobian_y
-!----------------------------------------------------------------------------------------------------------------------------------
-!> This routine initializes the Jacobian parameters and initialization outputs for the linearized continuous states.
-SUBROUTINE ED_Init_Jacobian_x( p, InitOut, ErrStat, ErrMsg)
+   end if
+end subroutine
 
-   TYPE(ED_ParameterType)            , INTENT(INOUT) :: p                     !< parameters
-   TYPE(ED_InitOutputType)           , INTENT(INOUT) :: InitOut               !< Output for initialization routine   
-   
-   INTEGER(IntKi)                    , INTENT(  OUT) :: ErrStat               !< Error status of the operation
-   CHARACTER(*)                      , INTENT(  OUT) :: ErrMsg                !< Error message if ErrStat /= ErrID_None
-   
-   INTEGER(IntKi)                                    :: ErrStat2
-   CHARACTER(ErrMsgLen)                              :: ErrMsg2
-   CHARACTER(*), PARAMETER                           :: RoutineName = 'ED_Init_Jacobian_x'
-   
-      ! local variables:
-   INTEGER(IntKi)                :: i
-   
+subroutine ED_InitVars(u, p, x, y, m, Vars, InputFileData, Linearize, ErrStat, ErrMsg)
+   type(ED_InputType),           intent(inout)  :: u              !< An initial guess for the input; input mesh must be defined
+   type(ED_ParameterType),       intent(inout)  :: p              !< Parameters
+   type(ED_ContinuousStateType), intent(inout)  :: x              !< Continuous state
+   type(ED_OutputType),          intent(inout)  :: y              !< Initial system outputs (outputs are not calculated;
+   type(ED_MiscVarType),         intent(inout)  :: m              !< Misc variables for optimization (not copied in glue code)
+   type(ModVarsType),            intent(inout)  :: Vars           !< Module variables
+   type(ED_InputFile),           intent(in)     :: InputFileData  !< Input file data
+   logical,                      intent(in)     :: Linearize      !< Flag to initialize linearization variables
+   integer(IntKi),               intent(out)    :: ErrStat        !< Error status of the operation
+   character(*),                 intent(out)    :: ErrMsg         !< Error message if ErrStat /= ErrID_None
+
+   character(*), parameter       :: RoutineName = 'ED_InitVars'
+   integer(IntKi)                :: ErrStat2
+   character(ErrMsgLen)          :: ErrMsg2
+
+   integer(IntKi)                :: i, j, k
+   integer(IntKi), allocatable   :: BladeMeshFields(:)
+   real(R8Ki)                    :: MaxThrust, MaxTorque, ScaleLength
+   integer(IntKi)                :: Flags, Field
+
    ErrStat = ErrID_None
-   ErrMsg  = ""
-   
-   
-      ! allocate space for the row/column names and for perturbation sizes
-   call allocAry(p%dx,               p%NDof,            'p%dx',       ErrStat2, ErrMsg2); call SetErrStat(ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName)
-   CALL AllocAry(InitOut%LinNames_x, p%DOFs%NActvDOF*2, 'LinNames_x', ErrStat2, ErrMsg2); CALL SetErrStat(ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName)
-   CALL AllocAry(InitOut%RotFrame_x, p%DOFs%NActvDOF*2, 'RotFrame_x', ErrStat2, ErrMsg2); CALL SetErrStat(ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName)
-   CALL AllocAry(InitOut%DerivOrder_x, p%DOFs%NActvDOF*2, 'DerivOrder_x', ErrStat2, ErrMsg2); CALL SetErrStat(ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName)
-   if (ErrStat >= AbortErrLev) return
-   
-      ! All Elastodyn continuous states are max order = 2
-   if ( allocated(InitOut%DerivOrder_x) ) InitOut%DerivOrder_x = 2
-   
-   p%dx = 0.0_R8Ki ! initialize in case we have only 1 blade
-   
-   ! set perturbation sizes: p%dx
-   p%dx(DOF_Sg  :DOF_Hv)   = 0.2_R8Ki * D2R_D * max(p%TowerHt, 1.0_ReKi)     ! platform translational displacement states
-   p%dx(DOF_R   :DOF_Y )   = 2.0_R8Ki * D2R_D                                ! platform rotational states
-   p%dx(DOF_TFA1:DOF_TSS1) = 0.020_R8Ki * D2R_D * p%TwrFlexL                 ! tower deflection states: 1st tower
-   p%dx(DOF_TFA2:DOF_TSS2) = 0.002_R8Ki * D2R_D * p%TwrFlexL                 ! tower deflection states: 2nd tower
-   p%dx(DOF_Yaw :DOF_TFrl) = 2.0_R8Ki * D2R_D                                ! nacelle-yaw, rotor-furl, generator azimuth, drivetrain, and tail-furl rotational states
+   ErrMsg = ""
 
-   do i=1,p%NumBl
-      p%dx(DOF_BF(i,1))= 0.20_R8Ki * D2R_D * p%BldFlexL ! blade-deflection states: 1st blade flap mode 
-      p%dx(DOF_BF(i,2))= 0.02_R8Ki * D2R_D * p%BldFlexL ! blade-deflection states: 2nd blade flap mode for blades (1/10 of the other perturbations)
-      p%dx(DOF_BE(i,1))= 0.20_R8Ki * D2R_D * p%BldFlexL ! blade-deflection states: 1st blade edge mode
-   end do
-         
-   if ( p%NumBl == 2 ) then
-      p%dx(DOF_Teet)       = 2.0_R8Ki * D2R_D              ! rotor-teeter rotational state
-   end if
-   
-   !Set some limits in case perturbation is very small
-   do i=1,p%NDof
-      p%dx(i) = max(p%dx(i), MinPerturb)
-   end do
-      
-   InitOut%RotFrame_x   = .false.
-   do i=1,p%DOFs%NActvDOF
-      if (  p%DOFs%PS(i) >=  DOF_BF(1,1) ) then
-         if ( p%NumBl == 2 ) then
-            InitOut%RotFrame_x(i) = p%DOFs%PS(i) < DOF_Teet
-         else
-            InitOut%RotFrame_x(i) = .true. ! = p%DOFs%PS(i) <= DOF_BF (MaxBl,NumBF)
-         end if
-      end if      
-   end do
-   
-      ! set linearization output names:
-   do i=1,p%DOFs%NActvDOF
-      InitOut%LinNames_x(i) = p%DOF_Desc( p%DOFs%PS(i) )
-   end do
-   
-   do i=1,p%DOFs%NActvDOF
-      InitOut%LinNames_x(i+p%DOFs%NActvDOF) = 'First time derivative of '//trim(InitOut%LinNames_x(i))//'/s'
-      InitOut%RotFrame_x(i+p%DOFs%NActvDOF) = InitOut%RotFrame_x(i)
-   end do      
-   
-END SUBROUTINE ED_Init_Jacobian_x
-!----------------------------------------------------------------------------------------------------------------------------------
-!> This routine initializes the array that maps rows/columns of the Jacobian to specific mesh fields.
-!! Do not change the order of this packing without changing corresponding linearization routines !
-SUBROUTINE ED_Init_Jacobian( p, u, y, InitOut, ErrStat, ErrMsg)
+   ! Clear module variables type
+   call  NWTC_Library_DestroyModVarsType(Vars, ErrStat2, ErrMsg2); if (Failed()) return
 
-   TYPE(ED_ParameterType)            , INTENT(INOUT) :: p                     !< parameters
-   TYPE(ED_InputType)                , INTENT(IN   ) :: u                     !< inputs
-   TYPE(ED_OutputType)               , INTENT(IN   ) :: y                     !< outputs
-   TYPE(ED_InitOutputType)           , INTENT(INOUT) :: InitOut               !< Output for initialization routine   
-   INTEGER(IntKi)                    , INTENT(  OUT) :: ErrStat               !< Error status of the operation
-   CHARACTER(*)                      , INTENT(  OUT) :: ErrMsg                !< Error message if ErrStat /= ErrID_None
-   
-   INTEGER(IntKi)                                    :: ErrStat2
-   CHARACTER(ErrMsgLen)                              :: ErrMsg2
-   CHARACTER(*), PARAMETER                           :: RoutineName = 'ED_Init_Jacobian'
-   
-      ! local variables:
-   INTEGER(IntKi)                :: i, j, k, index, index_last, nu, i_meshField, m
-   REAL(R8Ki)                    :: MaxThrust, MaxTorque
-   REAL(R8Ki)                    :: ScaleLength
-   
-   
-   
-   ErrStat = ErrID_None
-   ErrMsg  = ""
+   !----------------------------------------------------------------------------
+   ! Continuous State Variables
+   !----------------------------------------------------------------------------
+
+   ! Add continuous state variables (translation and rotation)
+   call MV_AddVar(Vars%x, 'PlatformSurge', FieldTransDisp, &
+                  DL=DatLoc(ED_x_QT), iAry=DOF_Sg, &
+                  Flags=VF_DerivOrder2, &
+                  Perturb=0.2_R8Ki * D2R_D * max(p%TowerHt, 1.0_ReKi), &
+                  LinNames=['Platform horizontal surge translation DOF (internal DOF index = DOF_Sg), m'], &
+                  Active=InputFileData%PtfmSgDOF)
+
+   call MV_AddVar(Vars%x, 'PlatformSway', FieldTransDisp, &
+                  DL=DatLoc(ED_x_QT), iAry=DOF_Sw, &
+                  Flags=VF_DerivOrder2, &
+                  Perturb=0.2_R8Ki * D2R_D * max(p%TowerHt, 1.0_ReKi), &
+                  LinNames=['Platform horizontal sway translation DOF (internal DOF index = DOF_Sw), m'], &
+                  Active=InputFileData%PtfmSwDOF)
+
+   call MV_AddVar(Vars%x, 'PlatformHeave', FieldTransDisp, &
+                  DL=DatLoc(ED_x_QT), iAry=DOF_Hv, &
+                  Flags=VF_DerivOrder2, &
+                  Perturb=0.2_R8Ki * D2R_D * max(p%TowerHt, 1.0_ReKi), &
+                  LinNames=['Platform vertical heave translation DOF (internal DOF index = DOF_Hv), m'], &
+                  Active=InputFileData%PtfmHvDOF)
+
+   call MV_AddVar(Vars%x, 'PlatformRoll', FieldAngularDisp, &
+                  DL=DatLoc(ED_x_QT), iAry=DOF_R, &
+                  Flags=VF_DerivOrder2, &
+                  Perturb=2.0_R8Ki * D2R_D, &
+                  LinNames=['Platform roll tilt rotation DOF (internal DOF index = DOF_R), rad'], &
+                  Active=InputFileData%PtfmRDOF)
+
+   call MV_AddVar(Vars%x, 'PlatformPitch', FieldAngularDisp, &
+                  DL=DatLoc(ED_x_QT), iAry=DOF_P, &
+                  Flags=VF_DerivOrder2, &
+                  Perturb=2.0_R8Ki * D2R_D, &
+                  LinNames=['Platform pitch tilt rotation DOF (internal DOF index = DOF_P), rad'], &
+                  Active=InputFileData%PtfmPDOF)
+
+   call MV_AddVar(Vars%x, 'PlatformYaw', FieldAngularDisp, &
+                  DL=DatLoc(ED_x_QT), iAry=DOF_Y, &
+                  Flags=VF_DerivOrder2, &
+                  Perturb=2.0_R8Ki * D2R_D, &
+                  LinNames=['Platform yaw rotation DOF (internal DOF index = DOF_Y), rad'], &
+                  Active=InputFileData%PtfmYDOF)
+
+   call MV_AddVar(Vars%x, 'TowerFA1', FieldTransDisp, &
+                  DL=DatLoc(ED_x_QT), iAry=DOF_TFA1, &
+                  Flags=VF_DerivOrder2, &
+                  Perturb=0.020_R8Ki * D2R_D * p%TwrFlexL, &
+                  LinNames=['1st tower fore-aft bending mode DOF (internal DOF index = DOF_TFA1), m'], &
+                  Active=InputFileData%TwFADOF1)
+
+   call MV_AddVar(Vars%x, 'TowerSS1', FieldTransDisp, &
+                  DL=DatLoc(ED_x_QT), iAry=DOF_TSS1, &
+                  Flags=VF_DerivOrder2, &
+                  Perturb=0.020_R8Ki * D2R_D * p%TwrFlexL, &
+                  LinNames=['1st tower side-to-side bending mode DOF (internal DOF index = DOF_TSS1), m'], &
+                  Active=InputFileData%TwSSDOF1)
+
+   call MV_AddVar(Vars%x, 'TowerFA2', FieldTransDisp, &
+                  DL=DatLoc(ED_x_QT), iAry=DOF_TFA2, &
+                  Flags=VF_DerivOrder2, &
+                  Perturb=0.002_R8Ki * D2R_D * p%TwrFlexL, &
+                  LinNames=['2nd tower fore-aft bending mode DOF (internal DOF index = DOF_TFA2), m'], &
+                  Active=InputFileData%TwFADOF2)
+
+   call MV_AddVar(Vars%x, 'TowerSS2', FieldTransDisp, &
+                  DL=DatLoc(ED_x_QT), iAry=DOF_TSS2, &
+                  Flags=VF_DerivOrder2, &
+                  Perturb=0.002_R8Ki * D2R_D * p%TwrFlexL, &
+                  LinNames=['2nd tower side-to-side bending mode DOF (internal DOF index = DOF_TSS2), m'], &
+                  Active=InputFileData%TwSSDOF2)
+
+   call MV_AddVar(Vars%x, 'NacelleYaw', FieldAngularDisp, &
+                  DL=DatLoc(ED_x_QT), iAry=DOF_Yaw, &
+                  Flags=VF_DerivOrder2, &
+                  Perturb=2.0_R8Ki * D2R_D, &
+                  LinNames=['Nacelle yaw DOF (internal DOF index = DOF_Yaw), rad'], &
+                  Active=InputFileData%YawDOF)
+
+   call MV_AddVar(Vars%x, 'RotorFurl', FieldAngularDisp, &
+                  DL=DatLoc(ED_x_QT), iAry=DOF_RFrl, &
+                  Flags=VF_DerivOrder2 + VF_AeroMap, &
+                  Perturb=2.0_R8Ki * D2R_D, &
+                  LinNames=['Rotor-furl DOF (internal DOF index = DOF_RFrl), rad'], &
+                  Active=InputFileData%RFrlDOF)
+
+   call MV_AddVar(Vars%x, 'GeneratorAzimuth', FieldAngularDisp, &
+                  DL=DatLoc(ED_x_QT), iAry=DOF_GeAz, &
+                  Flags=VF_DerivOrder2, &
+                  Perturb=2.0_R8Ki * D2R_D, &
+                  LinNames=['Variable speed generator DOF (internal DOF index = DOF_GeAz), rad'], &
+                  Active=InputFileData%GenDOF)
+
+   call MV_AddVar(Vars%x, 'DrivetrainFlexibility', FieldAngularDisp, &
+                  DL=DatLoc(ED_x_QT), iAry=DOF_DrTr, &
+                  Flags=VF_DerivOrder2, &
+                  Perturb=2.0_R8Ki * D2R_D, &
+                  LinNames=['Drivetrain rotational-flexibility DOF (internal DOF index = DOF_DrTr), rad'], &
+                  Active=InputFileData%DrTrDOF)
+
+   call MV_AddVar(Vars%x, 'TailFurl', FieldAngularDisp, &
+                  DL=DatLoc(ED_x_QT), iAry=DOF_TFrl, &
+                  Flags=VF_DerivOrder2 + VF_AeroMap, &
+                  Perturb=2.0_R8Ki * D2R_D, &
+                  LinNames=['Tail-furl DOF (internal DOF index = DOF_TFrl), rad'], &
+                  Active=InputFileData%TFrlDOF)
+
+   call MV_AddVar(Vars%x, 'RotorTeeter', FieldAngularDisp, &
+                  DL=DatLoc(ED_x_QT), iAry=DOF_Teet, &
+                  Flags=VF_DerivOrder2, &
+                  Perturb=2.0_R8Ki * D2R_D, &
+                  LinNames=['Hub teetering DOF (internal DOF index = DOF_Teet), rad'], &
+                  Active=InputFileData%TeetDOF)
+
+   do i = 1, p%NumBl
+      call MV_AddVar(Vars%x, 'Blade'//trim(Num2LStr(i))//'Pitch', FieldAngularDisp, &
+                  DL=DatLoc(ED_x_QT), iAry=DOF_BP(i), &
+                  Flags=ior(VF_RotFrame, VF_DerivOrder2), &
+                  Perturb=2.0_R8Ki * D2R_D, &
+                  LinNames=['Blade pitch DOF (internal DOF index = DOF_BP('//trim(Num2LStr(i))//')), rad'], &
+                  Active=InputFileData%PitchDOF)
+   end do
+
+   do i = 1, p%NumBl
+      Flags = ior(VF_RotFrame, VF_DerivOrder2)
+      if (i == 1) Flags = ior(Flags, VF_AeroMap)
+      call MV_AddVar(Vars%x, 'Blade'//trim(Num2LStr(i))//'Flap1', FieldTransDisp, &
+                     DL=DatLoc(ED_x_QT), iAry=DOF_BF(i,1), &
+                     Flags=Flags, &
+                     Perturb=0.20_R8Ki * D2R_D * p%BldFlexL, &
+                     LinNames=['1st flapwise bending-mode DOF of blade '//trim(Num2LStr(i))//&
+                              ' (internal DOF index = DOF_BF('//trim(Num2LStr(i))//',1)), m'], &
+                     Active=InputFileData%FlapDOF1)
+   end do
+
+   do i = 1, p%NumBl
+      Flags = ior(VF_RotFrame, VF_DerivOrder2)
+      if (i == 1) Flags = ior(Flags, VF_AeroMap)
+      call MV_AddVar(Vars%x, 'Blade'//trim(Num2LStr(i))//'Edge1', FieldTransDisp, &
+                     DL=DatLoc(ED_x_QT), iAry=DOF_BE(i,1), &
+                     Flags=Flags, &
+                     Perturb=0.20_R8Ki * D2R_D * p%BldFlexL, &
+                     LinNames=['1st edgewise bending-mode DOF of blade '//trim(Num2LStr(i))//&
+                              ' (internal DOF index = DOF_BE('//trim(Num2LStr(i))//',1)), m'], &
+                     Active=InputFileData%EdgeDOF)
+   end do
+
+   do i = 1, p%NumBl
+      Flags = ior(VF_RotFrame, VF_DerivOrder2)
+      if (i == 1) Flags = ior(Flags, VF_AeroMap)
+      call MV_AddVar(Vars%x, 'Blade'//trim(Num2LStr(i))//'Flap2', FieldTransDisp, &
+                     DL=DatLoc(ED_x_QT), iAry=DOF_BF(i,2), &
+                     Flags=Flags, &
+                     Perturb=0.02_R8Ki * D2R_D * p%BldFlexL, &
+                     LinNames=['2nd flapwise bending-mode DOF of blade '//trim(Num2LStr(i))//&
+                              ' (internal DOF index = DOF_BF('//trim(Num2LStr(i))//',2)), m'], &
+                     Active=InputFileData%FlapDOF2)
+   end do
+
+   ! Derivatives of continuous state variables
+   if (allocated(Vars%x)) then
+      do i = 1, size(Vars%x)
+
+         ! Increase variable perturbation if below minimum
+         Vars%x(i)%Perturb = max(Vars%x(i)%Perturb, MinPerturb)
+
+         ! Update from position to velocity
+         select case (Vars%x(i)%Field)
+         case (FieldTransDisp)
+            Field = FieldTransVel
+         case (FieldAngularDisp)
+            Field = FieldAngularVel
+         end select
          
-   
-   call ED_Init_Jacobian_y( p, y, InitOut, ErrStat2, ErrMsg2)
-      call SetErrStat(ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName)
-         
-   call ED_Init_Jacobian_x( p, InitOut, ErrStat2, ErrMsg2)      
-      call SetErrStat(ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName)
-   
-      
-      
-      ! determine how many inputs there are in the Jacobians
-   nu = 0;
-   if (allocated(u%BladePtLoads)) then
-      do i=1,p%NumBl
-         nu = nu + u%BladePtLoads(i)%NNodes * 6  ! 3 forces + 3 moments at each node on each blade
-      end do      
+         ! Add variable (only active variables are in x)
+         call MV_AddVar(Vars%x, Vars%x(i)%Name, Field, &
+                        DatLoc(ED_x_QDT), iAry=Vars%x(i)%iLB, &
+                        Flags=Vars%x(i)%Flags, &
+                        Perturb=Vars%x(i)%Perturb, &
+                        LinNames=['First time derivative of '//trim(Vars%x(i)%LinNames(1))//'/s'])
+
+         ! Remove aero map flag from velocity variable
+         call MV_ClearFlags(Vars%x(size(Vars%x)), VF_AeroMap)
+      end do
    end if
-   nu = nu &
-      + u%PlatformPtMesh%NNodes * 6            & ! 3 forces + 3 moments at each node
-      + u%TowerPtLoads%NNodes   * 6            & ! 3 forces + 3 moments at each node
-      + u%HubPtLoad%NNodes      * 6            & ! 3 forces + 3 moments at each node
-      + u%NacelleLoads%NNodes   * 6            & ! 3 forces + 3 moments at each node
-      + p%NumBl                                & ! blade pitch command (BlPitchCom)    
-      + 2                                        ! YawMom and GenTrq
-         
-   ! note: all other inputs are ignored
-      
-   !....................                        
-   ! fill matrix to store index to help us figure out what the ith value of the u vector really means
-   ! (see elastodyn::ed_perturb_u ... these MUST match )
-   ! column 1 indicates module's mesh and field
-   ! column 2 indicates the first index of the acceleration/load field
-   ! column 3 is the node
-   !....................
-      
-   !...............
-   ! ED input mappings stored in p%Jac_u_indx:   
-   !...............
-   call AllocAry(p%Jac_u_indx, nu, 3, 'p%Jac_u_indx', ErrStat2, ErrMsg2)
-      call SetErrStat(ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName)   
-   if (ErrStat >= AbortErrLev) return
-     
-      
-   index = 1
-   if (allocated(u%BladePtLoads)) then
-      !Module/Mesh/Field: u%BladePtLoads(1)%Force  = 1;
-      !Module/Mesh/Field: u%BladePtLoads(1)%Moment = 2;
-      !Module/Mesh/Field: u%BladePtLoads(2)%Force  = 3;
-      !Module/Mesh/Field: u%BladePtLoads(2)%Moment = 4;
-      !Module/Mesh/Field: u%BladePtLoads(3)%Force  = 5;
-      !Module/Mesh/Field: u%BladePtLoads(3)%Moment = 6;      
-      do k=1,p%NumBl
-         
-         do i_meshField = 1,2
-            do i=1,u%BladePtLoads(k)%NNodes
-               do j=1,3
-                  p%Jac_u_indx(index,1) =  i_meshField + (k-1)*2 !Module/Mesh/Field: u%BladePtLoads(k)%{Force/Moment} = m
-                  p%Jac_u_indx(index,2) =  j !index:  j
-                  p%Jac_u_indx(index,3) =  i !Node:   i
-                  index = index + 1
-               end do !j      
-            end do !i
-            
-         end do !i_meshField                            
-      end do !k
-                        
-   end if
-   
-   !if MaxBl ever changes (i.e., MaxBl /=3), we need to modify this accordingly:
-   do i_meshField = 7,8
-      do i=1,u%PlatformPtMesh%NNodes
-         do j=1,3
-            p%Jac_u_indx(index,1) =  i_meshField !Module/Mesh/Field: u%PlatformPtMesh%Force = 7; u%PlatformPtMesh%Moment = 8;
-            p%Jac_u_indx(index,2) =  j !index:  j
-            p%Jac_u_indx(index,3) =  i !Node:   i
-            index = index + 1
-         end do !j      
-      end do !i
-   end do
-  
-   do i_meshField = 9,10
-      do i=1,u%TowerPtLoads%NNodes
-         do j=1,3
-            p%Jac_u_indx(index,1) =  i_meshField !Module/Mesh/Field: u%TowerPtLoads%Force = 9; u%TowerPtLoads%Moment = 10;
-            p%Jac_u_indx(index,2) =  j !index:  j
-            p%Jac_u_indx(index,3) =  i !Node:   i
-            index = index + 1
-         end do !j      
-      end do !i
-   end do
-         
-   do i_meshField = 11,12
-      do i=1,u%HubPtLoad%NNodes
-         do j=1,3
-            p%Jac_u_indx(index,1) =  i_meshField !Module/Mesh/Field: u%HubPtLoad%Force = 11; u%HubPtLoad%Moment = 12;
-            p%Jac_u_indx(index,2) =  j !index:  j
-            p%Jac_u_indx(index,3) =  i !Node:   i
-            index = index + 1
-         end do !j      
-      end do !i
-   end do   
-   
-   do i_meshField = 13,14
-      do i=1,u%NacelleLoads%NNodes
-         do j=1,3
-            p%Jac_u_indx(index,1) =  i_meshField !Module/Mesh/Field: u%NacelleLoads%Force = 13; u%NacelleLoads%Moment = 14;
-            p%Jac_u_indx(index,2) =  j !index:  j
-            p%Jac_u_indx(index,3) =  i !Node:   i
-            index = index + 1
-         end do !j      
-      end do !i
-   end do
-   
-   do i_meshField = 1,p%NumBl ! scalars   
-      p%Jac_u_indx(index,1) =  15 !Module/Mesh/Field: u%BlPitchCom = 15;
-      p%Jac_u_indx(index,2) =  1 !index:  n/a
-      p%Jac_u_indx(index,3) =  i_meshField !Node:   blade
-      index = index + 1      
-   end do
-   
-   do i_meshField = 16,17 ! scalars   
-      p%Jac_u_indx(index,1) =  i_meshField !Module/Mesh/Field: u%YawMom = 16; u%GenTrq = 17;
-      p%Jac_u_indx(index,2) =  1 !index:  j
-      p%Jac_u_indx(index,3) =  1 !Node:   i
-      index = index + 1
-   end do
-   
-   !................
-   ! input perturbations, du:
-   !................
-   call AllocAry(p%du, 17, 'p%du', ErrStat2, ErrMsg2) ! 17 = number of unique values in p%Jac_u_indx(:,1) 
-      call SetErrStat(ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName)      
-   if (ErrStat >= AbortErrLev) return
-   
-      ! p%TipRad is set to 0 for BeamDyn simulations, so we're using a copy of the value from the input file here
+
+   !----------------------------------------------------------------------------
+   ! Input variables
+   !----------------------------------------------------------------------------
+
+   ! Calculate values used for input perturbations
+   ! p%TipRad is set to 0 for BeamDyn simulations, so we're using a copy of the value from the input file here
    ScaleLength = max(p%TipRad, p%TowerHt, 1.0_ReKi)
    MaxThrust = 490.0_R8Ki * pi_D /  9.0_R8Ki * ScaleLength**2
    MaxTorque = 122.5_R8Ki * pi_D / 27.0_R8Ki * ScaleLength**3
-   
+
+   ! Blade Point Loads
    if (allocated(u%BladePtLoads)) then
-      do k=1,p%NumBl
-         p%du(2*k-1) = MaxThrust / real(100*p%NumBl*u%BladePtLoads(k)%NNodes,R8Ki) ! u%BladePtLoads(k)%Force  = 2*k-1
-         p%du(2*k  ) = MaxTorque / real(100*p%NumBl*u%BladePtLoads(k)%NNodes,R8Ki) ! u%BladePtLoads(k)%Moment = 2*k
-      end do !k
-   else
-      p%du(1:6) = 0.0_R8Ki
-   end if
-   
-   p%du( 7) = MaxThrust / 100.0_R8Ki                           ! u%PlatformPtMesh%Force = 7
-   p%du( 8) = MaxTorque / 100.0_R8Ki                           ! u%PlatformPtMesh%Moment = 8
-   p%du( 9) = MaxThrust / real(100*u%TowerPtLoads%NNodes,R8Ki) ! u%TowerPtLoads%Force = 9
-   p%du(10) = MaxTorque / real(100*u%TowerPtLoads%NNodes,R8Ki) ! u%TowerPtLoads%Moment = 10
-   p%du(11) = MaxThrust / 100.0_R8Ki                           ! u%HubPtLoad%Force = 11
-   p%du(12) = MaxTorque / 100.0_R8Ki                           ! u%HubPtLoad%Moment = 12
-   p%du(13) = MaxThrust / 100.0_R8Ki                           ! u%NacelleLoads%Force = 13
-   p%du(14) = MaxTorque / 100.0_R8Ki                           ! u%NacelleLoads%Moment = 14   
-   p%du(15) = 2.0_R8Ki * D2R_D                                 ! u%BlPitchCom = 15 
-   p%du(16) = MaxTorque / 100.0_R8Ki                           ! u%YawMom = 16
-   p%du(17) = MaxTorque / (100.0_R8Ki*p%GBRatio)               ! u%GenTrq = 17
-      
-   !Set some limits in case perturbation is very small
-   do i=1,size(p%du)
-      p%du(i) = max(p%du(i), MinPerturb)
-   end do
-
-   !................
-   ! names of the columns, InitOut%LinNames_u:
-   !................
-   call AllocAry(InitOut%LinNames_u, nu+1, 'LinNames_u', ErrStat2, ErrMsg2); call SetErrStat(ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName)
-   call AllocAry(InitOut%RotFrame_u, nu+1, 'RotFrame_u', ErrStat2, ErrMsg2); call SetErrStat(ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName)
-   call AllocAry(InitOut%IsLoad_u,   nu+1, 'IsLoad_u',   ErrStat2, ErrMsg2); call SetErrStat(ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName)
-      if (ErrStat >= AbortErrLev) return
-      
-   InitOut%IsLoad_u   = .true.  ! most of ED's inputs are loads; we will override the non-load inputs below.
-   InitOut%RotFrame_u = .false.
-   index = 1
-   if (allocated(u%BladePtLoads)) then
-      index_last = index
-      do k=1,p%NumBl
-         call PackLoadMesh_Names(u%BladePtLoads(k), 'Blade '//trim(num2lstr(k)), InitOut%LinNames_u, index)   
+      do i = 1, p%NumBl
+         Flags = VF_None
+         if (i == 1) Flags = ior(Flags, VF_AeroMap)
+         call MV_AddMeshVar(Vars%u, "Blade "//Num2LStr(i), LoadFields, &
+                            DL=DatLoc(ED_u_BladePtLoads, i), &
+                            Mesh=u%BladePtLoads(i), &
+                            Flags=Flags, &
+                            Perturbs=[MaxThrust / (100.0_R8Ki*p%NumBl*p%BldNodes), &
+                                      MaxTorque / (100.0_R8Ki*p%NumBl*p%BldNodes)])
       end do
-      !InitOut%RotFrame_u(index_last:index-1) = .true. ! values on the mesh are in global, not rotating frame
    end if
-   call PackLoadMesh_Names(u%PlatformPtMesh, 'Platform', InitOut%LinNames_u, index)   
-   call PackLoadMesh_Names(u%TowerPtLoads, 'Tower', InitOut%LinNames_u, index)   
-   call PackLoadMesh_Names(u%HubPtLoad, 'Hub', InitOut%LinNames_u, index)   
-   call PackLoadMesh_Names(u%NacelleLoads, 'Nacelle', InitOut%LinNames_u, index)   
-      
-   do k = 1,p%NumBl ! scalars
-      InitOut%LinNames_u(index) = 'Blade '//trim(num2lstr(k))//' pitch command, rad'
-      InitOut%IsLoad_u(  index) = .false.
-      InitOut%RotFrame_u(index) = .true.
-      index = index + 1
-   end do
 
-   InitOut%LinNames_u(index) = 'Yaw moment, Nm' ; index = index + 1
-   InitOut%LinNames_u(index) = 'Generator torque, Nm' ; index = index + 1
-   InitOut%LinNames_u(index) = 'Extended input: collective blade-pitch command, rad'
-   InitOut%IsLoad_u(  index) = .false.
-   
-END SUBROUTINE ED_Init_Jacobian
-!----------------------------------------------------------------------------------------------------------------------------------
-!> This routine perturbs the nth element of the u array (and mesh/field it corresponds to)
-!! Do not change this without making sure subroutine elastodyn::ed_init_jacobian is consistant with this routine!
-SUBROUTINE ED_Perturb_u( p, n, perturb_sign, u, du )
-
-   TYPE(ED_ParameterType)              , INTENT(IN   ) :: p                      !< parameters
-   INTEGER( IntKi )                    , INTENT(IN   ) :: n                      !< number of array element to use 
-   INTEGER( IntKi )                    , INTENT(IN   ) :: perturb_sign           !< +1 or -1 (value to multiply perturbation by; positive or negative difference)
-   TYPE(ED_InputType)                  , INTENT(INOUT) :: u                      !< perturbed ED inputs
-   REAL( R8Ki )                        , INTENT(  OUT) :: du                     !< amount that specific input was perturbed
-   
-
-   ! local variables
-   INTEGER                                             :: fieldIndx
-   INTEGER                                             :: node
-   
-      
-   fieldIndx = p%Jac_u_indx(n,2) 
-   node      = p%Jac_u_indx(n,3) 
-   
-   du = p%du(  p%Jac_u_indx(n,1) )
-   
-      ! determine which mesh we're trying to perturb and perturb the input:
-   SELECT CASE( p%Jac_u_indx(n,1) )
-      
-   CASE ( 1) !Module/Mesh/Field: u%BladePtLoads(1)%Force = 1      
-      u%BladePtLoads(1)%Force( fieldIndx,node) = u%BladePtLoads(1)%Force( fieldIndx,node) + du * perturb_sign       
-   CASE ( 2) !Module/Mesh/Field: u%BladePtLoads(1)%Moment = 2
-      u%BladePtLoads(1)%Moment(fieldIndx,node) = u%BladePtLoads(1)%Moment(fieldIndx,node) + du * perturb_sign            
-   CASE ( 3) !Module/Mesh/Field: u%BladePtLoads(2)%Force = 3
-      u%BladePtLoads(2)%Force( fieldIndx,node) = u%BladePtLoads(2)%Force( fieldIndx,node) + du * perturb_sign       
-   CASE ( 4) !Module/Mesh/Field: u%BladePtLoads(2)%Moment = 4
-      u%BladePtLoads(2)%Moment(fieldIndx,node) = u%BladePtLoads(2)%Moment(fieldIndx,node) + du * perturb_sign            
-   CASE ( 5) !Module/Mesh/Field: u%BladePtLoads(2)%Force = 5
-      u%BladePtLoads(3)%Force( fieldIndx,node) = u%BladePtLoads(3)%Force( fieldIndx,node) + du * perturb_sign       
-   CASE ( 6) !Module/Mesh/Field: u%BladePtLoads(2)%Moment = 6
-      u%BladePtLoads(3)%Moment(fieldIndx,node) = u%BladePtLoads(3)%Moment(fieldIndx,node) + du * perturb_sign            
-               
-   CASE ( 7) !Module/Mesh/Field: u%PlatformPtMesh%Force = 7
-      u%PlatformPtMesh%Force( fieldIndx,node) = u%PlatformPtMesh%Force( fieldIndx,node) + du * perturb_sign       
-   CASE ( 8) !Module/Mesh/Field: u%PlatformPtMesh%Moment = 8
-      u%PlatformPtMesh%Moment(fieldIndx,node) = u%PlatformPtMesh%Moment(fieldIndx,node) + du * perturb_sign            
-                     
-   CASE ( 9) !Module/Mesh/Field: u%TowerPtLoads%Force = 9
-      u%TowerPtLoads%Force( fieldIndx,node) = u%TowerPtLoads%Force( fieldIndx,node) + du * perturb_sign       
-   CASE (10) !Module/Mesh/Field: u%TowerPtLoads%Moment = 10
-      u%TowerPtLoads%Moment(fieldIndx,node) = u%TowerPtLoads%Moment(fieldIndx,node) + du * perturb_sign            
-
-   CASE (11) !Module/Mesh/Field: u%HubPtLoad%Force = 11
-      u%HubPtLoad%Force( fieldIndx,node) = u%HubPtLoad%Force( fieldIndx,node) + du * perturb_sign       
-   CASE (12) !Module/Mesh/Field: u%HubPtLoad%Moment = 12
-      u%HubPtLoad%Moment(fieldIndx,node) = u%HubPtLoad%Moment(fieldIndx,node) + du * perturb_sign            
-  
-   CASE (13) !Module/Mesh/Field: u%NacelleLoads%Force = 13
-      u%NacelleLoads%Force( fieldIndx,node) = u%NacelleLoads%Force( fieldIndx,node) + du * perturb_sign       
-   CASE (14) !Module/Mesh/Field: u%NacelleLoads%Moment = 14
-      u%NacelleLoads%Moment(fieldIndx,node) = u%NacelleLoads%Moment(fieldIndx,node) + du * perturb_sign            
-   
-   CASE (15) !Module/Mesh/Field: u%BlPitchCom = 15
-      u%BlPitchCom(node) = u%BlPitchCom(node) + du * perturb_sign
-   CASE (16) !Module/Mesh/Field: u%YawMom = 16
-      u%YawMom = u%YawMom + du * perturb_sign
-   CASE (17) !Module/Mesh/Field: u%GenTrq = 17
-      u%GenTrq = u%GenTrq + du * perturb_sign
-      
-   END SELECT
-                                             
-END SUBROUTINE ED_Perturb_u
-!----------------------------------------------------------------------------------------------------------------------------------
-!> This routine perturbs the nth element of the continuous state array.
-!! Do not change this without making sure subroutine elastodyn::ed_init_jacobian is consistant with this routine!
-SUBROUTINE ED_Perturb_x( p, n, perturb_sign, x, dx )
-
-   TYPE(ED_ParameterType)              , INTENT(IN   ) :: p                      !< parameters
-   INTEGER( IntKi )                    , INTENT(IN   ) :: n                      !< number of array element to use 
-   INTEGER( IntKi )                    , INTENT(IN   ) :: perturb_sign           !< +1 or -1 (value to multiply perturbation by; positive or negative difference)
-   TYPE(ED_ContinuousStateType)        , INTENT(INOUT) :: x                      !< perturbed ED states
-   REAL( R8Ki )                        , INTENT(  OUT) :: dx                     !< amount that specific state was perturbed
-   
-
-   ! local variables
-   integer(intKi)                                      :: indx
-   
-   
-   if (n > p%DOFs%NActvDOF) then
-      indx = p%DOFs%PS(n-p%DOFs%NActvDOF)
-      dx   = p%dx( indx )
-
-      x%QDT( indx ) = x%QDT( indx ) + dx * perturb_sign 
-   else
-      indx = p%DOFs%PS(n)
-      dx   = p%dx( indx )
-      
-      x%QT(  indx ) = x%QT(  indx ) + dx * perturb_sign 
-   end if
-                                                
-END SUBROUTINE ED_Perturb_x
-!----------------------------------------------------------------------------------------------------------------------------------
-!> This routine uses values of two output types to compute an array of differences.
-!! Do not change this packing without making sure subroutine elastodyn::ed_init_jacobian is consistant with this routine!
-SUBROUTINE Compute_dY(p, y_p, y_m, delta, dY)
-   
-   TYPE(ED_ParameterType)            , INTENT(IN   ) :: p         !< parameters
-   TYPE(ED_OutputType)               , INTENT(IN   ) :: y_p       !< ED outputs at \f$ u + \Delta u \f$ or \f$ x + \Delta x \f$ (p=plus)
-   TYPE(ED_OutputType)               , INTENT(IN   ) :: y_m       !< ED outputs at \f$ u - \Delta u \f$ or \f$ x - \Delta x \f$ (m=minus)   
-   REAL(R8Ki)                        , INTENT(IN   ) :: delta     !< difference in inputs or states \f$ delta = \Delta u \f$ or \f$ delta = \Delta x \f$
-   REAL(R8Ki)                        , INTENT(INOUT) :: dY(:)     !< column of dYdu or dYdx: \f$ \frac{\partial Y}{\partial u_i} = \frac{y_p - y_m}{2 \, \Delta u}\f$ or \f$ \frac{\partial Y}{\partial x_i} = \frac{y_p - y_m}{2 \, \Delta x}\f$
-   
-      ! local variables:
-   INTEGER(IntKi)                                    :: k                      ! loop over blades
-   INTEGER(IntKi)                                    :: indx_first             ! index indicating next value of dY to be filled 
-   LOGICAL                                           :: Mask(FIELDMASK_SIZE)   ! flags to determine if this field is part of the packing
-
-   
-   Mask  = .false.
-   Mask(MASKID_TRANSLATIONDISP) = .true.
-   Mask(MASKID_ORIENTATION) = .true.
-   Mask(MASKID_ROTATIONVEL) = .true.   
-   
-   
-   indx_first = 1            
-   if (allocated(y_p%BladeLn2Mesh)) then
-      do k=1,p%NumBl
-         call PackMotionMesh_dY(y_p%BladeLn2Mesh(k), y_m%BladeLn2Mesh(k), dY, indx_first)                  
-      end do      
-   end if
-   
-   call PackMotionMesh_dY(y_p%PlatformPtMesh, y_m%PlatformPtMesh, dY, indx_first)                  
-   call PackMotionMesh_dY(y_p%TowerLn2Mesh,   y_m%TowerLn2Mesh,   dY, indx_first)                  
-   call PackMotionMesh_dY(y_p%HubPtMotion,    y_m%HubPtMotion,    dY, indx_first, FieldMask=Mask)  
-   do k=1,p%NumBl
-      call PackMotionMesh_dY(y_p%BladeRootMotion(k),   y_m%BladeRootMotion(k),   dY, indx_first)                  
-   end do
-   call PackMotionMesh_dY(y_p%NacelleMotion,  y_m%NacelleMotion,  dY, indx_first)                  
-                     
-   dY(indx_first) = y_p%Yaw     - y_m%Yaw;       indx_first = indx_first + 1    
-   dY(indx_first) = y_p%YawRate - y_m%YawRate;   indx_first = indx_first + 1    
-   dY(indx_first) = y_p%HSS_Spd - y_m%HSS_Spd;   indx_first = indx_first + 1
-   
-   !indx_last = indx_first + p%NumOuts - 1
-   do k=1,p%NumOuts + p%BldNd_TotNumOuts
-      dY(k+indx_first-1) = y_p%WriteOutput(k) - y_m%WriteOutput(k)
-   end do   
-   
-   dY = dY / (2.0_R8Ki*delta)
-   
-END SUBROUTINE Compute_dY
-!----------------------------------------------------------------------------------------------------------------------------------
-!> Routine to pack the data structures representing the operating points into arrays for linearization.
-SUBROUTINE ED_GetOP( t, u, p, x, xd, z, OtherState, y, m, ErrStat, ErrMsg, u_op, y_op, x_op, dx_op, xd_op, z_op, NeedLogMap )
-
-   REAL(DbKi),                           INTENT(IN   )           :: t          !< Time in seconds at operating point
-   TYPE(ED_InputType),                   INTENT(IN   )           :: u          !< Inputs at operating point (may change to inout if a mesh copy is required)
-   TYPE(ED_ParameterType),               INTENT(IN   )           :: p          !< Parameters
-   TYPE(ED_ContinuousStateType),         INTENT(IN   )           :: x          !< Continuous states at operating point
-   TYPE(ED_DiscreteStateType),           INTENT(IN   )           :: xd         !< Discrete states at operating point
-   TYPE(ED_ConstraintStateType),         INTENT(IN   )           :: z          !< Constraint states at operating point
-   TYPE(ED_OtherStateType),              INTENT(IN   )           :: OtherState !< Other states at operating point
-   TYPE(ED_OutputType),                  INTENT(IN   )           :: y          !< Output at operating point
-   TYPE(ED_MiscVarType),                 INTENT(INOUT)           :: m          !< Misc/optimization variables
-   INTEGER(IntKi),                       INTENT(  OUT)           :: ErrStat    !< Error status of the operation
-   CHARACTER(*),                         INTENT(  OUT)           :: ErrMsg     !< Error message if ErrStat /= ErrID_None
-   REAL(ReKi), ALLOCATABLE, OPTIONAL,    INTENT(INOUT)           :: u_op(:)    !< values of linearized inputs
-   REAL(ReKi), ALLOCATABLE, OPTIONAL,    INTENT(INOUT)           :: y_op(:)    !< values of linearized outputs
-   REAL(ReKi), ALLOCATABLE, OPTIONAL,    INTENT(INOUT)           :: x_op(:)    !< values of linearized continuous states
-   REAL(ReKi), ALLOCATABLE, OPTIONAL,    INTENT(INOUT)           :: dx_op(:)   !< values of first time derivatives of linearized continuous states
-   REAL(ReKi), ALLOCATABLE, OPTIONAL,    INTENT(INOUT)           :: xd_op(:)   !< values of linearized discrete states
-   REAL(ReKi), ALLOCATABLE, OPTIONAL,    INTENT(INOUT)           :: z_op(:)    !< values of linearized constraint states
-   LOGICAL,                 OPTIONAL,    INTENT(IN   )           :: NeedLogMap !< whether a y_op values should contain log maps instead of full orientation matrices
-
-
-
-   INTEGER(IntKi)                                    :: i, k, index
-   INTEGER(IntKi)                                    :: ny
-   INTEGER(IntKi)                                    :: ErrStat2
-   CHARACTER(ErrMsgLen)                              :: ErrMsg2
-   CHARACTER(*), PARAMETER                           :: RoutineName = 'ED_GetOP'
-   LOGICAL                                           :: ReturnLogMap
-   TYPE(ED_ContinuousStateType)                      :: dx          !< derivative of continuous states at operating point
-   LOGICAL                                           :: Mask(FIELDMASK_SIZE)               !< flags to determine if this field is part of the packing
-   
-   
-      ! Initialize ErrStat
-
-   ErrStat = ErrID_None
-   ErrMsg  = ''
-
-   !..................................
-   IF ( PRESENT( u_op ) ) THEN
-      if (.not. allocated(u_op)) then         
-         call AllocAry(u_op, size(p%Jac_u_indx,1)+1,'u_op',ErrStat2,ErrMsg2) ! +1 for extended input here
-            call SetErrStat(ErrStat2,ErrMsg2,ErrStat,ErrMsg,RoutineName)
-         if (ErrStat>=AbortErrLev) return
-      end if
-            
-      index = 1
-      if (allocated(u%BladePtLoads)) then
-         do k=1,p%NumBl
-            call PackLoadMesh(u%BladePtLoads(k), u_op, index)   
-         end do
-      end if
-      call PackLoadMesh(u%PlatformPtMesh, u_op, index)   
-      call PackLoadMesh(u%TowerPtLoads, u_op, index)   
-      call PackLoadMesh(u%HubPtLoad, u_op, index)   
-      call PackLoadMesh(u%NacelleLoads, u_op, index)   
-      
-      do k = 1,p%NumBl ! scalars
-         u_op(index) = u%BlPitchCom(k)
-         index = index + 1
+   ! Blade Root Loads
+   if (p%BD4Blades) then
+      do i = 1, p%NumBl
+         call MV_AddMeshVar(Vars%u, "Blade root "//Num2LStr(i), LoadFields, &
+                            DL=DatLoc(ED_u_BladeRootLoads, i), &
+                            Mesh=u%BladeRootLoads(i), &
+                            Flags = VF_None, &
+                            Perturbs=[MaxThrust / (100.0_R8Ki*p%NumBl), &
+                                      MaxTorque / (100.0_R8Ki*p%NumBl)])
       end do
-      u_op(index) = u%YawMom ; index = index + 1
-      u_op(index) = u%GenTrq ; index = index + 1
-      
-         ! extended input:
-      u_op(index) = u%BlPitchCom(1)
-      
-      do k = 2,p%NumBl
-         if (.not. EqualRealNos( u%BlPitchCom(1), u%BlPitchCom(k) ) ) then
-            call SetErrStat(ErrID_Info,"Operating point of collective pitch extended input is invalid because "// &
-                     "the commanded blade pitch angles are not the same for each blade.", ErrStat, ErrMsg, RoutineName)
-            exit
-         end if      
-      end do      
-      
-   END IF
+   end if
 
-   !..................................
-   IF ( PRESENT( y_op ) ) THEN
-      if (present(NeedLogMap)) then
-         ReturnLogMap = NeedLogMap
+   ! Platform point loads
+   call MV_AddMeshVar(Vars%u, "Platform", LoadFields, &
+                      DL=DatLoc(ED_u_PlatformPtMesh), &
+                      Mesh=u%PlatformPtMesh, &
+                      Perturbs=[MaxThrust / 100.0_R8Ki, &
+                                MaxTorque / 100.0_R8Ki])
+   ! Tower point loads
+   call MV_AddMeshVar(Vars%u, "Tower", LoadFields, &
+                      DL=DatLoc(ED_u_TowerPtLoads), &
+                      Mesh=u%TowerPtLoads, &
+                      Perturbs=[MaxThrust / (100.0_R8Ki*p%NumBl*p%TwrNodes), &
+                                MaxTorque / (100.0_R8Ki*p%NumBl*p%TwrNodes)])
+   ! Hub point loads
+   call MV_AddMeshVar(Vars%u, "Hub", LoadFields, &
+                      DL=DatLoc(ED_u_HubPtLoad), &
+                      Mesh=u%HubPtLoad, &
+                      Perturbs=[MaxThrust / 100.0_R8Ki, &
+                                MaxTorque / 100.0_R8Ki])
+   ! Nacelle point loads
+   call MV_AddMeshVar(Vars%u, "Nacelle", LoadFields, &
+                      DL=DatLoc(ED_u_NacelleLoads), &
+                      Mesh=u%NacelleLoads, &
+                      Perturbs=[MaxThrust / 100.0_R8Ki, &
+                                MaxTorque / 100.0_R8Ki])
+                   
+   ! TFinCM point loads
+   call MV_AddMeshVar(Vars%u, "Tailfin", LoadFields, &
+                      DL=DatLoc(ED_u_TFinCMLoads), &
+                      Mesh=u%TFinCMLoads, &
+                      Perturbs=[MaxThrust / 100.0_R8Ki, &
+                                MaxTorque / 100.0_R8Ki])
+
+   ! Non-mesh input variables
+   call MV_AddVar(Vars%u, "BlPitchCom", FieldScalar, &
+                  DL=DatLoc(ED_u_BlPitchCom), iAry=1, &
+                  Num=p%NumBl, &
+                  Flags=VF_RotFrame + VF_Linearize + VF_2PI, &
+                  Perturb=2.0_R8Ki * D2R_D, &
+                  LinNames=[('Blade '//trim(num2lstr(i))//' pitch command, rad', i=1,p%NumBl)])
+
+   call MV_AddVar(Vars%u, "BlPitchMom", FieldScalar, &
+                  DL=DatLoc(ED_u_BlPitchMom), iAry=1, &
+                  Num=p%NumBl, &
+                  Flags=VF_RotFrame + VF_Linearize, &
+                  Perturb=MaxTorque / 100.0_R8Ki, &
+                  LinNames=[('Blade '//trim(num2lstr(i))//' pitch moment, Nm', i=1,p%NumBl)])
+
+   call MV_AddVar(Vars%u, "YawMom", FieldScalar, &
+                  DL=DatLoc(ED_u_YawMom), &
+                  Flags=VF_Linearize, &
+                  Perturb=MaxTorque / 100.0_R8Ki, &
+                  LinNames=['Yaw moment, Nm'])
+
+   call MV_AddVar(Vars%u, "GenTrq", FieldScalar, &
+                  DL=DatLoc(ED_u_GenTrq), &
+                  Flags=VF_Linearize, &
+                  Perturb=MaxTorque / (100.0_R8Ki*p%GBRatio), &
+                  LinNames=['Generator torque, Nm'])
+
+   call MV_AddVar(Vars%u, "BlPitchComC", FieldScalar, &
+                  DL=DatLoc(ED_u_BlPitchComC), &
+                  Flags=VF_ExtLin + VF_Linearize + VF_2PI, &
+                  LinNames=['Extended input: collective blade-pitch command, rad'])
+
+   ! Set minimum input perturbations
+   do i = 1,size(Vars%u)
+      Vars%u(i)%Perturb = max(Vars%u(i)%Perturb, MinPerturb)
+   end do
+
+   !----------------------------------------------------------------------------
+   ! Output variables
+   !----------------------------------------------------------------------------
+
+   if (allocated(y%BladeLn2Mesh))then
+      do i = 1, p%NumBl
+         Flags = VF_None
+         if (i == 1) Flags = ior(Flags, VF_AeroMap)
+         call MV_AddMeshVar(Vars%y, 'Blade '//Num2LStr(i), [FieldTransDisp, FieldOrientation, FieldTransVel, FieldAngularVel], &
+                            DatLoc(ED_y_BladeLn2Mesh, i), &
+                            Flags=Flags, &
+                            Mesh=y%BladeLn2Mesh(i))
+         call MV_AddMeshVar(Vars%y, 'Blade '//Num2LStr(i), [FieldTransAcc, FieldAngularAcc], &
+                            DatLoc(ED_y_BladeLn2Mesh, i), &
+                            Mesh=y%BladeLn2Mesh(i))
+      end do
+   end if 
+
+   call MV_AddMeshVar(Vars%y, 'Platform', MotionFields, &
+                      DatLoc(ED_y_PlatformPtMesh), &
+                      Mesh=y%PlatformPtMesh)
+
+   call MV_AddMeshVar(Vars%y, 'Tower', MotionFields, &
+                      DatLoc(ED_y_TowerLn2Mesh), &
+                      Mesh=y%TowerLn2Mesh, &
+                      Flags=VF_Line)
+
+   call MV_AddMeshVar(Vars%y, 'Hub', [FieldTransDisp, FieldOrientation, FieldAngularVel], &
+                      DatLoc(ED_y_HubPtMotion), &
+                      Mesh=y%HubPtMotion)
+
+   do i = 1, p%NumBl
+      call MV_AddMeshVar(Vars%y, 'Blade root '//Num2LStr(i), MotionFields, &
+                         DatLoc(ED_y_BladeRootMotion, i), &
+                         Mesh=y%BladeRootMotion(i))
+   end do
+
+   call MV_AddVar(Vars%y, 'BlPitch', FieldScalar, &
+                  DatLoc(ED_y_BlPitch), &
+                  Num=p%NumBl, &
+                  LinNames=[('Blade '//trim(num2lstr(i))//' pitch angle, rad', i=1,p%NumBl)])
+
+   call MV_AddVar(Vars%y, 'BlPRate', FieldScalar, &
+                  DatLoc(ED_y_BlPRate), &
+                  Num=p%NumBl, &
+                  LinNames=[('Blade '//trim(num2lstr(i))//' pitch rate, rad/s', i=1,p%NumBl)])
+
+   call MV_AddMeshVar(Vars%y, 'Nacelle', MotionFields, &
+                      DatLoc(ED_y_NacelleMotion), &
+                      Mesh=y%NacelleMotion)
+
+   call MV_AddMeshVar(Vars%y, 'TailFin', [FieldTransDisp, FieldOrientation, FieldTransVel, FieldAngularVel], &
+                      DatLoc(ED_y_TFinCMMotion), &
+                      Mesh=y%TFinCMMotion)
+
+   call MV_AddVar(Vars%y, 'Yaw', FieldScalar, &
+                  DatLoc(ED_y_Yaw), &
+                  Flags=VF_2PI, &
+                  LinNames=['Yaw, rad'])
+
+   call MV_AddVar(Vars%y, 'YawRate', FieldScalar, &
+                  DatLoc(ED_y_YawRate), &
+                  LinNames=['YawRate, rad/s'])
+
+   call MV_AddVar(Vars%y, 'HSS_Spd', FieldScalar, &
+                  DatLoc(ED_y_HSS_Spd), &
+                  LinNames=['HSS_Spd, rad/s'])
+
+   ! Write output variables
+   do i = 1, p%NumOuts
+      call MV_AddVar(Vars%y, p%OutParam(i)%Name, FieldScalar, &
+                     DatLoc(ED_y_WriteOutput), iAry=i, &
+                     Flags=VF_WriteOut + OutParamFlags(p%OutParam(i)%Indx), &
+                     LinNames=[trim(p%OutParam(i)%Name)//', '//trim(p%OutParam(i)%Units)], &
+                     Active=(p%OutParam(i)%Indx > 0))
+   end do
+   k = p%NumOuts + 1
+   do i = 1, p%BldNd_NumOuts
+      do j = 1, p%BldNd_BladesOut
+         call MV_AddVar(Vars%y, p%BldNd_OutParam(i)%Name, FieldScalar, &
+                        DatLoc(ED_y_WriteOutput), iAry=k, &
+                        Num=p%BldNodes, &
+                        Flags=VF_WriteOut + VF_RotFrame, &
+                        LinNames=[(BldOutLinName(p%BldNd_OutParam(i), j, k), k=1, p%BldNodes)], &
+                        Active=(p%BldNd_OutParam(i)%Indx > 0))
+         k = k + p%BldNodes
+      end do
+   end do
+
+   !----------------------------------------------------------------------------
+   ! Initialization dependent on linearization
+   !----------------------------------------------------------------------------
+
+   call MV_InitVarsJac(Vars, m%Jac, Linearize .or. p%CompAeroMaps, ErrStat2, ErrMsg2); if (Failed()) return
+
+   if (Linearize .or. p%CompAeroMaps) then
+      call ED_CopyContState(x, m%x_perturb, MESH_NEWCOPY, ErrStat2, ErrMsg2); if (Failed()) return
+      call ED_CopyContState(x, m%dxdt_lin, MESH_NEWCOPY, ErrStat2, ErrMsg2); if (Failed()) return
+      call ED_CopyInput(u, m%u_perturb, MESH_NEWCOPY, ErrStat2, ErrMsg2); if (Failed()) return
+      call ED_CopyOutput(y, m%y_lin, MESH_NEWCOPY, ErrStat2, ErrMsg2); if (Failed()) return
+   end if
+
+contains
+   function BldOutLinName(OutParam, iBlade, iNode) result(Name)
+      integer(IntKi), intent(in)    :: iBlade, iNode
+      type(OutParmType), intent(in) :: OutParam
+      character(LinChanLen)         :: Name
+      write(Name, '("B",I1.1,"N",I3.3,A,", ",A)') iBlade, iNode, trim(OutParam%Name), trim(OutParam%Units)
+   end function
+   function OutParamFlags(indx) result(flagsRes)
+      integer(IntKi), intent(in) :: indx
+      integer(IntKi)             :: flagsRes
+      integer(IntKi), parameter  :: RotatingFrameIndices(*) = [&
+         TipDxc, TipDyc, TipDzc, TipDxb, TipDyb, &
+         TipALxb, TipALyb, TipALzb, TipRDxb, TipRDyb, TipRDzc, TipClrnc, &
+         PtchPMzc, &
+         RootFxc, RootFyc, RootFzc, RootFxb, RootFyb, &
+         RootMxc, RootMyc, RootMzc, RootMxb, RootMyb, &
+         SpnALxb, SpnALyb, SpnALzb, SpnFLxb, SpnFLyb, SpnFLzb, &
+         SpnMLxb, SpnMLyb, SpnMLzb, SpnTDxb, SpnTDyb, SpnTDzb, &
+         SpnRDxb, SpnRDyb, SpnRDzb]
+      if (any(RotatingFrameIndices == indx)) then
+         flagsRes = VF_RotFrame
       else
-         ReturnLogMap = .false.
+         flagsRes = VF_None
       end if
-      
-      if (.not. allocated(y_op)) then 
-            ! our operating point includes DCM (orientation) matrices, not just small angles like the perturbation matrices do
-         ny = p%Jac_ny + y%PlatformPtMesh%NNodes * 6 & ! Jac_ny has 3 for Orientation, but we need 9 at each node
-                       + y%TowerLn2Mesh%NNodes   * 6 & ! Jac_ny has 3 for Orientation, but we need 9 at each node 
-                       + y%HubPtMotion%NNodes    * 6 & ! Jac_ny has 3 for Orientation, but we need 9 at each node
-                       + y%NacelleMotion%NNodes  * 6   ! Jac_ny has 3 for Orientation, but we need 9 at each node
-            
-         if (allocated(y%BladeLn2Mesh)) then
-            do k=1,p%NumBl
-               ny = ny + y%BladeLn2Mesh(k)%NNodes * 6  ! Jac_ny has 3 for Orientation, but we need 9 (at each node on each blade)
-            end do      
-         end if
-         do k=1,p%NumBl
-            ny = ny + y%BladeRootMotion(k)%NNodes * 6  ! Jac_ny has 3 for Orientation, but we need 9 at each node on each blade
-         end do
-                                    
-         call AllocAry(y_op, ny,'y_op',ErrStat2,ErrMsg2)
-            call SetErrStat(ErrStat2,ErrMsg2,ErrStat,ErrMsg,RoutineName)
-         if (ErrStat>=AbortErrLev) return
-      end if
-            
-      
-      
-      Mask  = .false.
-      Mask(MASKID_TRANSLATIONDISP) = .true.
-      Mask(MASKID_ORIENTATION) = .true.
-      Mask(MASKID_ROTATIONVEL) = .true.
-   
-      index = 1
-      if (allocated(y%BladeLn2Mesh)) then
-         do k=1,p%NumBl
-            call PackMotionMesh(y%BladeLn2Mesh(k), y_op, index, UseLogMaps=ReturnLogMap)
-         end do      
-      end if
-      call PackMotionMesh(y%PlatformPtMesh, y_op, index, UseLogMaps=ReturnLogMap)
-      call PackMotionMesh(y%TowerLn2Mesh, y_op, index, UseLogMaps=ReturnLogMap)
-      call PackMotionMesh(y%HubPtMotion, y_op, index, FieldMask=Mask, UseLogMaps=ReturnLogMap)
-      do k=1,p%NumBl
-         call PackMotionMesh(y%BladeRootMotion(k), y_op, index, UseLogMaps=ReturnLogMap)
-      end do   
-      call PackMotionMesh(y%NacelleMotion, y_op, index, UseLogMaps=ReturnLogMap)
-      
-      y_op(index) = y%Yaw     ; index = index + 1    
-      y_op(index) = y%YawRate ; index = index + 1    
-      y_op(index) = y%HSS_Spd 
-   
-      do i=1,p%NumOuts + p%BldNd_TotNumOuts
-         y_op(i+index) = y%WriteOutput(i)
-      end do   
-                        
-   END IF
-
-   !..................................
-   IF ( PRESENT( x_op ) ) THEN
-
-      if (.not. allocated(x_op)) then                           
-         call AllocAry(x_op, p%DOFs%NActvDOF * 2,'x_op',ErrStat2,ErrMsg2)
-            call SetErrStat(ErrStat2,ErrMsg2,ErrStat,ErrMsg,RoutineName)
-         if (ErrStat>=AbortErrLev) return
-      end if
-      
-      do i=1,p%DOFs%NActvDOF ! Loop through all active (enabled) DOFs
-         x_op(i) = x%QT( p%DOFs%PS(i) )
-      end do
-      do i=1,p%DOFs%NActvDOF ! Loop through all active (enabled) DOFs
-         x_op(i+p%DOFs%NActvDOF) = x%QDT( p%DOFs%PS(i) )
-      end do                                
-      
-   END IF
-
-   !..................................
-   IF ( PRESENT( dx_op ) ) THEN
-
-      if (.not. allocated(dx_op)) then                           
-         call AllocAry(dx_op, p%DOFs%NActvDOF * 2,'dx_op',ErrStat2,ErrMsg2)
-            call SetErrStat(ErrStat2,ErrMsg2,ErrStat,ErrMsg,RoutineName)
-         if (ErrStat>=AbortErrLev) return
-      end if
-      
-      call ED_CalcContStateDeriv( t, u, p, x, xd, z, OtherState, m, dx, ErrStat2, ErrMsg2 ) 
-         call SetErrStat(ErrStat2,ErrMsg2,ErrStat,ErrMsg,RoutineName) 
-         if (ErrStat>=AbortErrLev) then
-            call ED_DestroyContState( dx, ErrStat2, ErrMsg2)
-            return
-         end if
-                     
-      do i=1,p%DOFs%NActvDOF ! Loop through all active (enabled) DOFs
-         dx_op(i) = dx%QT( p%DOFs%PS(i) )
-      end do
-      do i=1,p%DOFs%NActvDOF ! Loop through all active (enabled) DOFs
-         dx_op(i+p%DOFs%NActvDOF) = dx%QDT( p%DOFs%PS(i) )
-      end do                                
-      
-      call ED_DestroyContState( dx, ErrStat2, ErrMsg2)
-            
-   END IF
-
-   !..................................
-   IF ( PRESENT( xd_op ) ) THEN
-   END IF
-   
-   !..................................
-   IF ( PRESENT( z_op ) ) THEN
-   END IF
-
-END SUBROUTINE ED_GetOP
-!----------------------------------------------------------------------------------------------------------------------------------
-
+   end function
+   logical function Failed()
+      call SetErrStat(ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName) 
+      Failed =  ErrStat >= AbortErrLev
+   end function Failed
+end subroutine
 
 END MODULE ElastoDyn
 !**********************************************************************************************************************************

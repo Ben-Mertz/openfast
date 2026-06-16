@@ -42,8 +42,9 @@ macro(set_fast_fortran)
 
   # Abort if we do not have gfortran or Intel Fortran Compiler.
   if (NOT (${CMAKE_Fortran_COMPILER_ID} STREQUAL "GNU" OR
-        ${CMAKE_Fortran_COMPILER_ID} STREQUAL "Intel"))
-    message(FATAL_ERROR "OpenFAST requires either GFortran or Intel Fortran Compiler. Compiler detected by CMake: ${FCNAME}.")
+        ${CMAKE_Fortran_COMPILER_ID} MATCHES "^Intel" OR
+        ${CMAKE_Fortran_COMPILER_ID} STREQUAL "Flang"))
+    message(FATAL_ERROR "OpenFAST requires GFortran, Intel, or Flang Compiler. Compiler detected by CMake: ${FCNAME}.")
   endif()
 
   # Verify proper compiler versions are available
@@ -54,7 +55,7 @@ macro(set_fast_fortran)
     elseif("${CMAKE_Fortran_COMPILER_VERSION}" VERSION_LESS "4.6.0")  
         message(FATAL_ERROR "A version of GNU GFortran greater than 4.6.0 is required. GFortran version detected by CMake: ${CMAKE_Fortran_COMPILER_VERSION}.")
     endif()
-  elseif(${CMAKE_Fortran_COMPILER_ID} STREQUAL "Intel")
+  elseif(${CMAKE_Fortran_COMPILER_ID} MATCHES "^Intel")
     if("${CMAKE_Fortran_COMPILER_VERSION}" VERSION_LESS "11")
       message(FATAL_ERROR "A version of Intel ifort greater than 11 is required. ifort version detected by CMake: ${CMAKE_Fortran_COMPILER_VERSION}.")
     endif()
@@ -68,9 +69,18 @@ macro(set_fast_fortran)
   # Get OS/Compiler specific options
   if (${CMAKE_Fortran_COMPILER_ID} STREQUAL "GNU")
     set_fast_gfortran()
-  elseif(${CMAKE_Fortran_COMPILER_ID} STREQUAL "Intel")
+  elseif(${CMAKE_Fortran_COMPILER_ID} MATCHES "^Intel")
     set_fast_intel_fortran()
+  elseif(${CMAKE_Fortran_COMPILER_ID} STREQUAL "Flang")
+    set_fast_flang()
   endif()
+
+  # If double precision option enabled, set preprocessor define to use
+  # real64 for ReKi reals
+  if (DOUBLE_PRECISION)
+    add_definitions(-DOPENFAST_DOUBLE_PRECISION)
+  endif()
+
 endmacro(set_fast_fortran)
 
 #
@@ -99,23 +109,28 @@ endmacro(check_f2008_features)
 #
 macro(set_fast_gfortran)
   if(NOT WIN32)
-    set(CMAKE_Fortran_FLAGS "${CMAKE_Fortran_FLAGS} -fpic ")
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fpic")
+    set(CMAKE_Fortran_FLAGS "${CMAKE_Fortran_FLAGS} -fPIC ")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fPIC")
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fPIC")
   endif(NOT WIN32)
 
   # Fix free-form compilation for OpenFAST
   #set(CMAKE_Fortran_FLAGS "${CMAKE_Fortran_FLAGS} -ffree-line-length-none -cpp -fopenmp")
   set(CMAKE_Fortran_FLAGS "${CMAKE_Fortran_FLAGS} -ffree-line-length-none -cpp")
 
-  # Deal with Double/Single precision
+  # Disable stack reuse within routines: issues seen with gfortran 9.x, but others may also exhibit
+  #   see section 3.16 of https://gcc.gnu.org/onlinedocs/gcc-9.2.0/gcc.pdf
+  #   and https://github.com/OpenFAST/openfast/pull/595
+  set(CMAKE_Fortran_FLAGS "${CMAKE_Fortran_FLAGS} -fstack-reuse=none")
+
+  # If double precision, make constants double precision
   if (DOUBLE_PRECISION)
-    add_definitions(-DOPENFAST_DOUBLE_PRECISION)
-    set(CMAKE_Fortran_FLAGS "${CMAKE_Fortran_FLAGS} -fdefault-real-8")
-  endif (DOUBLE_PRECISION)
+    set(CMAKE_Fortran_FLAGS "${CMAKE_Fortran_FLAGS} -fdefault-real-8 -fdefault-double-8")
+  endif()
 
   # debug flags
   if(CMAKE_BUILD_TYPE MATCHES Debug)
-    set( CMAKE_Fortran_FLAGS_DEBUG "${CMAKE_Fortran_FLAGS_DEBUG} -fcheck=all -pedantic -fbacktrace " )
+    set( CMAKE_Fortran_FLAGS_DEBUG "${CMAKE_Fortran_FLAGS_DEBUG} -fcheck=all,no-array-temps -pedantic -fbacktrace -finit-real=inf -finit-integer=9999." )
   endif()
 
   if(CYGWIN)
@@ -124,11 +139,9 @@ macro(set_fast_gfortran)
     set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS},--stack,${stack_size}")
   endif()
 
-  # OPENMP
-  if (OPENMP)
-     set(CMAKE_Fortran_FLAGS "${CMAKE_Fortran_FLAGS} -fopenmp")
-     set(CMAKE_Fortran_FLAGS_DEBUG "${CMAKE_Fortran_FLAGS_DEBUG} -fopenmp" )
-  endif()
+  # Profiling
+  # set(CMAKE_Fortran_FLAGS "${CMAKE_Fortran_FLAGS} -pg")
+  # set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -pg")
 
   check_f2008_features()
 endmacro(set_fast_gfortran)
@@ -150,24 +163,45 @@ endmacro(set_fast_intel_fortran)
 #
 macro(set_fast_intel_fortran_posix)
   set(CMAKE_Fortran_FLAGS "${CMAKE_Fortran_FLAGS} -fpic -fpp")
-  # Deal with Double/Single precision
-  if (DOUBLE_PRECISION)
-    add_definitions(-DOPENFAST_DOUBLE_PRECISION)
-    set(CMAKE_Fortran_FLAGS "${CMAKE_Fortran_FLAGS} -r8 -double_size 128")
-  endif (DOUBLE_PRECISION)
 
   # debug flags
   if(CMAKE_BUILD_TYPE MATCHES Debug)
-    set( CMAKE_Fortran_FLAGS_DEBUG "${CMAKE_Fortran_FLAGS_DEBUG} -check all -traceback" )
+    if(${CMAKE_Fortran_COMPILER_ID} MATCHES "IntelLLVM")
+      # NOTE: there is a bug in the 2024 and 2025 IFX compiler causing conflicts between the `check:uninit` and `-lm -ldl` flags
+      #     When this is fixed in IFX, we will want to update this to check against versions before fix
+      #     See here: https://community.intel.com/t5/Intel-Fortran-Compiler/ifx-IFX-2023-2-0-20230721-linker-problems-with-check-uninit/m-p/1527816
+      set( CMAKE_Fortran_FLAGS_DEBUG "${CMAKE_Fortran_FLAGS_DEBUG} -check all,noarg_temp_created,nouninit -traceback -init=huge,infinity" )
+    else()
+      set( CMAKE_Fortran_FLAGS_DEBUG "${CMAKE_Fortran_FLAGS_DEBUG} -check all,noarg_temp_created -traceback -init=huge,infinity" )
+    endif()
   endif()
 
-  # OPENMP
-  if (OPENMP)
-     set(CMAKE_Fortran_FLAGS "${CMAKE_Fortran_FLAGS} -qopenmp")
-     set(CMAKE_Fortran_FLAGS_DEBUG "${CMAKE_Fortran_FLAGS_DEBUG} -qopenmp" )
+  # If double precision, make real and double constants 64 bits
+  if (DOUBLE_PRECISION)
+    if("${CMAKE_Fortran_COMPILER_VERSION}" VERSION_GREATER "19")
+      set(CMAKE_Fortran_FLAGS "${CMAKE_Fortran_FLAGS} -real-size 64 -double-size 64")
+    else()
+      set(CMAKE_Fortran_FLAGS "${CMAKE_Fortran_FLAGS} -real_size 64 -double_size 64")
+    endif()
   endif()
 
   check_f2008_features()
+
+  ### Intel profiling flags
+
+  # https://software.intel.com/content/www/us/en/develop/documentation/fortran-compiler-developer-guide-and-reference/top/compiler-reference/compiler-options/compiler-option-details/optimization-report-options/qopt-report-qopt-report.html
+  # phases: vec, par, openmp
+  # set(CMAKE_Fortran_FLAGS_RELWITHDEBINFO "${CMAKE_Fortran_FLAGS_RELWITHDEBINFO} -qopt-report-phase=vec,openmp -qopt-report=5")
+  # set(CMAKE_Fortran_FLAGS_RELWITHDEBINFO "${CMAKE_Fortran_FLAGS_RELWITHDEBINFO} -qopt-report-routine=Create_Augmented_Ln2_Src_Mesh") # Create_Augmented_Ln2_Src_Mesh, Morison_CalcOutput, VariousWaves_Init
+
+  # https://software.intel.com/content/www/us/en/develop/documentation/fortran-compiler-developer-guide-and-reference/top/compiler-reference/compiler-options/compiler-option-details/output-debug-and-precompiled-header-pch-options/debug-linux-and-macos.html
+  # set(CMAKE_Fortran_FLAGS_RELWITHDEBINFO "${CMAKE_Fortran_FLAGS_RELWITHDEBINFO} -debug all")
+  # set(CMAKE_Fortran_FLAGS_RELWITHDEBINFO "${CMAKE_Fortran_FLAGS_RELWITHDEBINFO} -debug inline-debug-info")
+
+  # Intel processor feature sets
+  # https://software.intel.com/content/www/us/en/develop/documentation/fortran-compiler-developer-guide-and-reference/top/compiler-reference/compiler-options/compiler-option-details/code-generation-options/xhost-qxhost.html
+  # set(CMAKE_Fortran_FLAGS_RELWITHDEBINFO "${CMAKE_Fortran_FLAGS_RELWITHDEBINFO} -xHOST")   # Use feature set for CPU used to compile
+  # set(CMAKE_Fortran_FLAGS_RELWITHDEBINFO "${CMAKE_Fortran_FLAGS_RELWITHDEBINFO} -xSKYLAKE-AVX512")   # Use Eagle processor feature set
 endmacro(set_fast_intel_fortran_posix)
 
 #
@@ -180,11 +214,14 @@ macro(set_fast_intel_fortran_windows)
   # - 5268: 132 column limit
   set(CMAKE_Fortran_FLAGS "${CMAKE_Fortran_FLAGS} /Qdiag-disable:5199,5268 /fpp")
 
-  # Deal with Double/Single precision
+  # If double precision, make constants double precision
   if (DOUBLE_PRECISION)
-    add_definitions(-DOPENFAST_DOUBLE_PRECISION)
-    set(CMAKE_Fortran_FLAGS "${CMAKE_Fortran_FLAGS} /real_size:64 /double_size:128")
-  endif (DOUBLE_PRECISION)
+    if("${CMAKE_Fortran_COMPILER_VERSION}" VERSION_GREATER "19")
+      set(CMAKE_Fortran_FLAGS "${CMAKE_Fortran_FLAGS} /real-size:64 /double-size:64")
+    else()
+      set(CMAKE_Fortran_FLAGS "${CMAKE_Fortran_FLAGS} /real_size:64 /double_size:64")
+    endif()
+  endif()
 
   # increase the default 2MB stack size to 16 MB
   MATH(EXPR stack_size "16 * 1024 * 1024")
@@ -192,14 +229,30 @@ macro(set_fast_intel_fortran_windows)
 
   # debug flags
   if(CMAKE_BUILD_TYPE MATCHES Debug)
-    set( CMAKE_Fortran_FLAGS_DEBUG "${CMAKE_Fortran_FLAGS_DEBUG} /check:all /traceback" )
-  endif()
-
-  # OPENMP
-  if (OPENMP)
-     set(CMAKE_Fortran_FLAGS "${CMAKE_Fortran_FLAGS} /qopenmp")
-     set(CMAKE_Fortran_FLAGS_DEBUG "${CMAKE_Fortran_FLAGS_DEBUG} /qopenmp" )
+    if(${CMAKE_Fortran_COMPILER_ID} MATCHES "IntelLLVM")
+      set( CMAKE_Fortran_FLAGS_DEBUG "${CMAKE_Fortran_FLAGS_DEBUG} /check:all,noarg_temp_created,nouninit /traceback /Qinit=huge,infinity" )
+    else()
+      set( CMAKE_Fortran_FLAGS_DEBUG "${CMAKE_Fortran_FLAGS_DEBUG} /check:all,noarg_temp_created /traceback /Qinit=huge,infinity" )
+    endif()
   endif()
 
   check_f2008_features()
 endmacro(set_fast_intel_fortran_windows)
+
+#
+# set_fast_flang - Customizations for GNU Fortran compiler
+#
+macro(set_fast_flang)
+
+  set(CMAKE_Fortran_FLAGS "${CMAKE_Fortran_FLAGS} -fno-backslash -cpp -fPIC")
+
+  # Deal with Double/Single precision
+  if (DOUBLE_PRECISION)
+    add_definitions(-DOPENFAST_DOUBLE_PRECISION)
+    set(CMAKE_Fortran_FLAGS "${CMAKE_Fortran_FLAGS} -fdefault-real-8")
+  endif (DOUBLE_PRECISION)
+
+  add_definitions(-DFLANG_COMPILER)
+
+  check_f2008_features()
+endmacro(set_fast_flang)

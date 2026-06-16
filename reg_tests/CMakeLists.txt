@@ -18,7 +18,7 @@
 # -- OpenFAST Testing
 # -----------------------------------------------------------
 
-cmake_minimum_required(VERSION 2.8.12)
+cmake_minimum_required(VERSION 3.15)
 project(OpenFAST_RegressionTest Fortran)
 
 include(CTest)
@@ -34,45 +34,137 @@ endif()
 # Set the default plotting flag to OFF
 option(CTEST_PLOT_ERRORS "Generate plots of regression test errors." OFF)
 
+# Do not display outputs when running openfast, store in log file
+option(CTEST_RUN_VERBOSE_FLAG  "Display run outputs or store to log file." OFF)
+
+option(CTEST_NO_RUN_FLAG  "Complete the regression test comparison but do not execute the simulation. Local results must already be generated." OFF)
+
 # Set the OpenFAST executable configuration option and default
-set(CTEST_OPENFAST_EXECUTABLE "${CMAKE_BINARY_DIR}/glue-codes/openfast/openfast" CACHE FILEPATH "Specify the OpenFAST executable to use in testing.")
+set(CTEST_OPENFAST_EXECUTABLE "${CMAKE_BINARY_DIR}/glue-codes/openfast/openfast${CMAKE_EXECUTABLE_SUFFIX}" CACHE FILEPATH "Specify the OpenFAST executable to use in testing.")
+
+if(BUILD_OPENFAST_CPP_DRIVER)
+  # Set the OpenFAST executable configuration option and default
+  set(CTEST_OPENFASTCPP_EXECUTABLE "${CMAKE_BINARY_DIR}/glue-codes/openfast-cpp/openfastcpp${CMAKE_EXECUTABLE_SUFFIX}" CACHE FILEPATH "Specify the OpenFAST C++ executable to use in testing.")
+endif()
+
+# Set the FASTFarm executable configuration option and default
+set(CTEST_FASTFARM_EXECUTABLE "${CMAKE_BINARY_DIR}/glue-codes/fast-farm/FAST.Farm${CMAKE_EXECUTABLE_SUFFIX}" CACHE FILEPATH "Specify the FASTFarm executable to use in testing.")
+
+# Set the AeroDyn executable configuration option and default
+set(CTEST_AERODYN_EXECUTABLE "${CMAKE_BINARY_DIR}/modules/aerodyn/aerodyn_driver${CMAKE_EXECUTABLE_SUFFIX}" CACHE FILEPATH "Specify the AeroDyn driver executable to use in testing.")
+
+# Set the UADriver executable configuration option and default
+set(CTEST_UADRIVER_EXECUTABLE "${CMAKE_BINARY_DIR}/modules/aerodyn/unsteadyaero_driver${CMAKE_EXECUTABLE_SUFFIX}" CACHE FILEPATH "Specify the UADriver executable to use in testing.")
 
 # Set the BeamDyn executable configuration option and default
-set(CTEST_BEAMDYN_EXECUTABLE "${CMAKE_BINARY_DIR}/modules/beamdyn/beamdyn_driver" CACHE FILEPATH "Specify the BeamDyn driver executable to use in testing.")
+set(CTEST_BEAMDYN_EXECUTABLE "${CMAKE_BINARY_DIR}/modules/beamdyn/beamdyn_driver${CMAKE_EXECUTABLE_SUFFIX}" CACHE FILEPATH "Specify the BeamDyn driver executable to use in testing.")
 
 # Set the HydroDyn executable configuration option and default
-set(CTEST_HYDRODYN_EXECUTABLE "${CMAKE_BINARY_DIR}/modules/hydrodyn/hydrodyn_driver" CACHE FILEPATH "Specify the HydroDyn driver executable to use in testing.")
+set(CTEST_HYDRODYN_EXECUTABLE "${CMAKE_BINARY_DIR}/modules/hydrodyn/hydrodyn_driver${CMAKE_EXECUTABLE_SUFFIX}" CACHE FILEPATH "Specify the HydroDyn driver executable to use in testing.")
 
-# Set the python executable configuration option and default
-if(NOT EXISTS ${PYTHON_EXECUTABLE})
-  find_program(PYTHON_EXECUTABLE NAMES python3 python py)
-  if(NOT EXISTS ${PYTHON_EXECUTABLE})
-    message(FATAL_ERROR "CMake cannot find a Python interpreter in your path. Python is required to run OpenFAST tests." )
-  endif()
-endif()
+# Set the SubDyn executable configuration option and default
+set(CTEST_SUBDYN_EXECUTABLE "${CMAKE_BINARY_DIR}/modules/subdyn/subdyn_driver${CMAKE_EXECUTABLE_SUFFIX}" CACHE FILEPATH "Specify the SubDyn driver executable to use in testing.")
+
+# Set the InflowWind executable configuration option and default
+set(CTEST_INFLOWWIND_EXECUTABLE "${CMAKE_BINARY_DIR}/modules/inflowwind/inflowwind_driver${CMAKE_EXECUTABLE_SUFFIX}" CACHE FILEPATH "Specify the InflowWind driver executable to use in testing.")
+
+# Set the MoorDyn executable configuration option and default
+set(CTEST_MOORDYN_EXECUTABLE "${CMAKE_BINARY_DIR}/modules/moordyn/moordyn_driver${CMAKE_EXECUTABLE_SUFFIX}" CACHE FILEPATH "Specify the MoorDyn driver executable to use in testing.")
+
+# Set the SeaState executable configuration option and default
+set(CTEST_SEASTATE_EXECUTABLE "${CMAKE_BINARY_DIR}/modules/seastate/seastate_driver" CACHE FILEPATH "Specify the SeaState driver executable to use in testing.")
+
+# Set the AeroDisk executable configuration option and default
+set(CTEST_AERODISK_EXECUTABLE "${CMAKE_BINARY_DIR}/modules/aerodisk/aerodisk_driver" CACHE FILEPATH "Specify the AeroDisk driver executable to use in testing.")
+
+# Set the SED executable configuration option and default
+set(CTEST_SED_EXECUTABLE "${CMAKE_BINARY_DIR}/modules/simple-elastodyn/sed_driver" CACHE FILEPATH "Specify the SED driver executable to use in testing.")
+
 
 # Set the testing tolerance
-set(CTEST_REGRESSION_TOL "0.00001" CACHE STRING "Set the tolerance for the regression test. Leave empty to automatically set.")
-if(NOT ${CTEST_REGRESSION_TOL} STREQUAL "")
-  set(TOLERANCE ${CTEST_REGRESSION_TOL})
-else(NOT ${CTEST_REGRESSION_TOL} STREQUAL "")
-  set(TOLERANCE 0.00001)
-endif()
+set(CTEST_RTEST_RTOL "2" CACHE STRING "Sets the relative orders of magnitude to allow to deviate from the baseline.")
+set(CTEST_RTEST_ATOL "1.9" CACHE STRING "Set the absolute orders of magnitude to consider as testable values; any deviations smaller than this always pass.")
 
 # include the r-test cmake projects (servodyn controllers)
 add_subdirectory("${CMAKE_CURRENT_LIST_DIR}/r-test")
 
 # build and seed the test directories with the data they need to run the tests
 file(MAKE_DIRECTORY ${CTEST_BINARY_DIR})
-foreach(regTest glue-codes/openfast modules/beamdyn modules/hydrodyn)
+foreach(regTest glue-codes/openfast glue-codes/openfast-cpp modules/aerodyn modules/beamdyn modules/hydrodyn modules/inflowwind modules/moordyn modules/subdyn openfast_io)
   file(MAKE_DIRECTORY ${CTEST_BINARY_DIR}/${regTest})
 endforeach()
+foreach(srcDir BAR_Baseline)
+  file(COPY "${CMAKE_CURRENT_LIST_DIR}/r-test/modules/aerodyn/${srcDir}"
+       DESTINATION "${CTEST_BINARY_DIR}/modules/aerodyn/")
+endforeach()
+foreach(srcDir seastate_wr_kin1)
+  file(COPY "${CMAKE_CURRENT_LIST_DIR}/r-test/modules/seastate/${srcDir}"
+       DESTINATION "${CTEST_BINARY_DIR}/modules/seastate/")
+endforeach()
 
-## openfast seed
-foreach(turbineDirectory 5MW_Baseline AOC AWT27 SWRT UAE_VI WP_Baseline)
-  file(COPY "${CMAKE_CURRENT_LIST_DIR}/r-test/glue-codes/openfast/${turbineDirectory}"
-  DESTINATION "${CTEST_BINARY_DIR}/glue-codes/openfast/")
+## openfast test directories
+foreach(srcDir 5MW_Baseline AOC AWT27 SWRT UAE_VI WP_Baseline)
+  file(COPY "${CMAKE_CURRENT_LIST_DIR}/r-test/glue-codes/openfast/${srcDir}"
+       DESTINATION "${CTEST_BINARY_DIR}/glue-codes/openfast/")
+endforeach()
+
+## python test directories
+foreach(srcDir 5MW_Baseline)
+  file(COPY "${CMAKE_CURRENT_LIST_DIR}/r-test/glue-codes/openfast/${srcDir}"
+       DESTINATION "${CTEST_BINARY_DIR}/glue-codes/python/")
+endforeach()
+
+## fastfarm seed
+foreach(srcDir 5MW_Baseline WAT_MannBoxDB)
+  file(COPY "${CMAKE_CURRENT_LIST_DIR}/r-test/glue-codes/fast-farm/${srcDir}"
+       DESTINATION "${CTEST_BINARY_DIR}/glue-codes/fast-farm/")
 endforeach()
 
 # add the tests
 include(${CMAKE_CURRENT_LIST_DIR}/CTestList.cmake)
+
+# Copy the DISCON controllers to the 5MW turbine directories
+set(of_dest "${CTEST_BINARY_DIR}/glue-codes/openfast/5MW_Baseline/ServoData/")
+set(ofpy_dest "${CTEST_BINARY_DIR}/glue-codes/python/5MW_Baseline/ServoData/")
+set(ff_dest "${CTEST_BINARY_DIR}/glue-codes/fast-farm/5MW_Baseline/ServoData/")
+add_custom_target(
+  regression_test_controllers
+  DEPENDS
+    DISCON
+    DISCON_ITIBarge
+    DISCON_OC3Hywind
+  # OpenFAST
+  COMMAND "${CMAKE_COMMAND}" -E copy $<TARGET_FILE:DISCON> ${of_dest}
+  COMMAND "${CMAKE_COMMAND}" -E copy $<TARGET_FILE:DISCON_ITIBarge> ${of_dest}
+  COMMAND "${CMAKE_COMMAND}" -E copy $<TARGET_FILE:DISCON_OC3Hywind> ${of_dest}
+  COMMAND "${CMAKE_COMMAND}" -E copy $<TARGET_FILE:DISCON_OC3Hywind> ${of_dest}/DISCON_OC3Hywind-1.dll
+  COMMAND "${CMAKE_COMMAND}" -E copy $<TARGET_FILE:DISCON_OC3Hywind> ${of_dest}/DISCON_OC3Hywind-2.dll
+  # Python
+  COMMAND "${CMAKE_COMMAND}" -E copy $<TARGET_FILE:DISCON> ${ofpy_dest}
+  COMMAND "${CMAKE_COMMAND}" -E copy $<TARGET_FILE:DISCON_ITIBarge> ${ofpy_dest}
+  COMMAND "${CMAKE_COMMAND}" -E copy $<TARGET_FILE:DISCON_OC3Hywind> ${ofpy_dest}
+  # FAST.Farm
+  COMMAND "${CMAKE_COMMAND}" -E copy $<TARGET_FILE:DISCON> ${ff_dest}/DISCON_WT1.dll
+  COMMAND "${CMAKE_COMMAND}" -E copy $<TARGET_FILE:DISCON> ${ff_dest}/DISCON_WT2.dll
+  COMMAND "${CMAKE_COMMAND}" -E copy $<TARGET_FILE:DISCON> ${ff_dest}/DISCON_WT3.dll
+  COMMAND "${CMAKE_COMMAND}" -E copy $<TARGET_FILE:DISCON> ${ff_dest}/DISCON_WT4.dll
+)
+
+add_custom_target(
+  regression_tests ALL
+  DEPENDS
+    openfast
+    regression_test_controllers
+)
+
+add_custom_target(
+  regression_test_module_drivers ALL
+  DEPENDS
+    aerodyn_driver
+    beamdyn_driver
+    hydrodyn_driver
+    inflowwind_driver
+    moordyn_driver
+    seastate_driver
+    subdyn_driver
+)

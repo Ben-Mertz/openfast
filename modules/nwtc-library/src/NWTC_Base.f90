@@ -33,11 +33,14 @@ MODULE NWTC_Base
       ! General constants:
 
    INTEGER, PARAMETER            :: BITS_IN_ADDR  = C_INTPTR_T*8                  !< The number of bits in an address (32-bit or 64-bit).
-   INTEGER, PARAMETER            :: ErrMsgLen = 1024                              !< The maximum number of characters in an error message in the FAST framework
+   INTEGER, PARAMETER            :: ErrMsgLen = 8196                              !< The maximum number of characters in an error message in the FAST framework
    
    INTEGER(IntKi), PARAMETER     :: ChanLen   = 20                                !< The maximum allowable length of channel names (i.e., width of output columns) in the FAST framework
+   INTEGER(IntKi), PARAMETER     :: OutStrLenM1 = ChanLen - 1                     !< The maximum allowable length of channel names without optional "-" or "M" at the beginning to indicate the negative of the channel
+   
    INTEGER(IntKi), PARAMETER     :: MinChanLen = 10                               !< The min allowable length of channel names (i.e., width of output columns), used because some modules (like Bladed DLL outputs) have excessively long names
    INTEGER(IntKi), PARAMETER     :: LinChanLen = 200                              !< The allowable length of row/column names in linearization files
+   INTEGER(IntKi), PARAMETER     :: MaxFileInfoLineLen = 8192                     !< The allowable length of an input line stored in FileInfoType%Lines
 
    INTEGER(IntKi), PARAMETER     :: NWTC_Verbose = 10                             !< The maximum level of verbosity
    INTEGER(IntKi), PARAMETER     :: NWTC_VerboseLevel = 5                         !< a number in [0, NWTC_Verbose]: 0 = no output; NWTC_Verbose=verbose; 
@@ -53,23 +56,58 @@ MODULE NWTC_Base
    INTEGER(IntKi)                :: AbortErrLev  = ErrID_Fatal                    !< ErrStat that indicates the error level when program should end; ErrID_Fatal by default. Note that this is not a PARAMETER
 
    
-   INTEGER(IntKi), PARAMETER     :: NWTC_MAX_DLL_PROC  = 3                        !< maximum number of procedures that can be dynamically loaded from a DLL (see DLL_Type nwtc_base::dll_type)
+   INTEGER(IntKi), PARAMETER     :: NWTC_MAX_DLL_PROC  = 5                        !< maximum number of procedures that can be dynamically loaded from a DLL (see DLL_Type nwtc_base::dll_type)
    
+#ifdef FLANG_COMPILER
+   TYPE(C_FUNPTR), PARAMETER     :: NULL_PROC_ADDR(NWTC_MAX_DLL_PROC) = C_NULL_FUNPTR  !< this is a hack so the Flang compiler will initialize ProcAddr to C_NULL_FUNPTR in DLL_Type (remove if no longer needed)
+#endif
 
       !> Type definition for dynamically loaded libraries:
       !! Note that changes here may need to be reflected in DLLTypePack() (nwtc_io::dlltypepack) DLLTypeUnPack() (nwtc_io::dlltypeunpack), 
       !! and the FAST Registry executable.
-   
+
    TYPE DLL_Type 
 
-      INTEGER(C_INTPTR_T)       :: FileAddr                                        !< The address of file FileName.         (RETURN value from LoadLibrary ) [Windows]
+      INTEGER(C_INTPTR_T)       :: FileAddr  = INT(0,C_INTPTR_T)                   !< The address of file FileName.         (RETURN value from LoadLibrary ) [Windows]
       TYPE(C_PTR)               :: FileAddrX = C_NULL_PTR                          !< The address of file FileName.         (RETURN value from dlopen ) [Linux]
-      TYPE(C_FUNPTR)            :: ProcAddr(NWTC_MAX_DLL_PROC)  = C_NULL_FUNPTR    !< The address of procedure ProcName.    (RETURN value from GetProcAddress or dlsym) [initialized to Null for pack/unpack]
+#ifdef FLANG_COMPILER
+      TYPE(C_FUNPTR)            :: ProcAddr(NWTC_MAX_DLL_PROC) = NULL_PROC_ADDR    !< The address of procedure ProcName.    (RETURN value from GetProcAddress or dlsym) [initialized to Null for pack/unpack]
+#else
+      TYPE(C_FUNPTR)            :: ProcAddr(NWTC_MAX_DLL_PROC) = C_NULL_FUNPTR     !< The address of procedure ProcName.    (RETURN value from GetProcAddress or dlsym) [initialized to Null for pack/unpack]
+#endif
 
       CHARACTER(1024)           :: FileName                                        !< The name of the DLL file including the full path to the current working directory.
       CHARACTER(1024)           :: ProcName(NWTC_MAX_DLL_PROC)  = ""               !< The name of the procedure in the DLL that will be called.
 
    END TYPE DLL_Type
 
+contains
+
+   !=======================================================================
+   !> This routine sets the error status and error message for a routine      
+   !!  that may set non-AbortErrLev errors. It concatenates error messages
+   !!  and has the ability to provide a sort of traceback message of called
+   !!  routines (if this is called consistently).
+   !!  Modules in the FAST framework are recommended to use it.
+   pure subroutine SetErrStat (ErrStatLcl, ErrMessLcl, ErrStat, ErrMess, RoutineName)
+      
+      INTEGER(IntKi), INTENT(IN   )  :: ErrStatLcl   ! Error status of the operation
+      CHARACTER(*),   INTENT(IN   )  :: ErrMessLcl   ! Error message if ErrStat /= ErrID_None
+                                                                        
+      INTEGER(IntKi), INTENT(INOUT)  :: ErrStat      ! Error status of the operation
+      CHARACTER(*),   INTENT(INOUT)  :: ErrMess      ! Error message if ErrStat /= ErrID_None
+   
+      CHARACTER(*),   INTENT(IN   )  :: RoutineName  ! Name of the routine error occurred in
+      
+      IF ( ErrStatLcl /= ErrID_None ) THEN
+         IF (ErrStat /= ErrID_None) then
+            ErrMess = TRIM(ErrMess)//new_line('a')//TRIM(RoutineName)//':'//TRIM(ErrMessLcl)
+         else
+            ErrMess = TRIM(RoutineName)//':'//TRIM(ErrMessLcl)
+         END IF
+         ErrStat = MAX(ErrStat, ErrStatLcl)
+      END IF
+         
+   end subroutine    
 
 END MODULE NWTC_Base

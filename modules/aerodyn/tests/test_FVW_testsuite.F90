@@ -17,32 +17,26 @@ subroutine test_AD_FVW()
     ! initialize NWTC_Num constants
     call SetConstants()
 
-!This is a single routine that contains the test cases below.   
-   ! --------------------------------------------------------------------------    
-   testname = "Set of FVW tests"
-   call FVW_RunTests( ErrStat, ErrMsg )
-   @assertEqual(0, ErrStat, testname)
+   ! --- Run all tests at once
+   call FVW_RunTests                  (errStat,errMsg); 
+   @assertEqual(0, errStat, 'All FVW tests                 ')
 
+   ! --- Run individual tests
+   !call Test_LinSolve                 (errStat,errMsg); 
+   !@assertEqual(0, errStat, 'Test_LinSolve                 ')
+   !call Test_SrcPnl_Sphere            (errStat,errMsg); 
+   !@assertEqual(0, errStat, 'Test_SrcPnl_Sphere            ')
+   !call Test_BiotSavart_SrcPnl        (errStat,errMsg); 
+   !@assertEqual(0, errStat, 'Test_BiotSavart_SrcPnl        ')
+   !call Test_BiotSavart_Sgmt          (errStat,errMsg); 
+   !@assertEqual(0, errStat, 'Test_BiotSavart_Sgmt          ')
+   !call Test_BiotSavart_Part          (errStat,errMsg); 
+   !@assertEqual(0, errStat, 'Test_BiotSavart_Part          ')
+   !call Test_BiotSavart_PartTree      (errStat,errMsg); 
+   !@assertEqual(0, errStat, 'Test_BiotSavart_PartTree      ')
+   !call Test_SegmentsToPart           (errStat,errMsg); 
+   !@assertEqual(0, errStat, 'Test_SegmentsToPart           ')
+   !call FVW_Test_WakeInducedVelocities(errStat,errMsg); 
+   !@assertEqual(0, errStat, 'FVW_Test_WakeInducedVelocities')
 
-! test routines from FVW_RunTests to be run individually -- except these are all private
-!   ! --------------------------------------------------------------------------    
-!   testname = "known valid Biot-Savart segment"
-!   call Test_BiotSavart_Sgmt(testname, ErrStat, ErrMsg)
-!   @assertEqual(0, ErrStat, testname)
-!
-!   ! --------------------------------------------------------------------------    
-!   testname = "known valid Biot-Savart part"
-!   call Test_BiotSavart_Part(testname, ErrStat, ErrMsg)
-!   @assertEqual(0, ErrStat, testname)
-!
-!   ! --------------------------------------------------------------------------    
-!   testname = "known valid Biot-Savart to part-tree"
-!   call Test_BiotSavart_PartTree(testname, ErrStat, ErrMsg)
-!   @assertEqual(0, ErrStat, testname)
-!
-!   ! --------------------------------------------------------------------------    
-!   testname = "known valid segment split to parts"
-!   call Test_SegmentsToPart(testname, ErrStat, ErrMsg)
-!   @assertEqual(0, ErrStat, testname)
- 
 end subroutine test_AD_FVW

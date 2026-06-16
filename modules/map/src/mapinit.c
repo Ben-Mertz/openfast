@@ -1777,7 +1777,7 @@ MAP_ERROR_CODE allocate_types_for_nodes(MAP_InputType_t* u_type, MAP_ConstraintS
     while (i_parsed<parsed->qty-1) { /* iterating through all strings */              
       if (parsed->entry[i_parsed]->slen) { /* if the string length is not 0 */
         if (next==1) {
-          if (biseqcstrcaseless(parsed->entry[i_parsed],"FIX")) {
+          if (biseqcstrcaseless(parsed->entry[i_parsed],"FIX") || biseqcstrcaseless(parsed->entry[i_parsed],"FIXED")) {
             fix_num++;
             break; /* break the while-loop because the agenda is reached */
           } else if (biseqcstrcaseless(parsed->entry[i_parsed],"CONNECT")) {
@@ -1898,7 +1898,7 @@ MAP_ERROR_CODE set_node_list(const MAP_ParameterType_t* p_type,  MAP_InputType_t
         if (next==0) {            
           next++;
         } else if (next==1) {
-          if (biseqcstrcaseless(parsed->entry[i_parsed],"FIX")) {
+          if (biseqcstrcaseless(parsed->entry[i_parsed],"FIX") || biseqcstrcaseless(parsed->entry[i_parsed],"FIXED")) {
             node_iter->type = FIX;
             fix_num++;                   /* VarTypePtr              FAST derived  array index */
             success = associate_vartype_ptr(&node_iter->position_ptr.x, other_type->x, fix_num);
@@ -2304,7 +2304,14 @@ MAP_ERROR_CODE push_variable_to_output_list(OutputList* y_list, const int i, dou
   size = list_size(&y_list->out_list_ptr);
   iter_vartype = (VarTypePtr*)list_get_at(&y_list->out_list_ptr, size-1);
   iter_vartype->value = variable_ref;
-  iter_vartype->name = bformat("%s[%d]", alias, i);
+  if (i >= 0)
+  {
+    iter_vartype->name = bformat("%s[%d]", alias, i);
+  }
+  else
+  {
+    iter_vartype->name = bformat(alias);
+  }
   iter_vartype->units = bformat("%s", units);      
 
   return MAP_SAFE;
@@ -2325,49 +2332,50 @@ MAP_ERROR_CODE set_output_list(Domain* domain, MAP_InitOutputType_t* io_type, ch
     line_iter = (Line*)list_iterator_next(&domain->line);    
     
     if (line_iter->options.gx_anchor_pos_flag) {
-      list_append(&y_list->out_list_ptr, &line_iter->anchor->position_ptr.x);      
+      success = push_variable_to_output_list(y_list, -1, line_iter->anchor->position_ptr.x.value, line_iter->anchor->position_ptr.x.name->data, line_iter->anchor->position_ptr.x.units->data);      
       io_type->writeOutputHdr_Len++;
       io_type->writeOutputUnt_Len++;
     };
 
     if (line_iter->options.gy_anchor_pos_flag) {
-      list_append(&y_list->out_list_ptr, &line_iter->anchor->position_ptr.y);
+      success = push_variable_to_output_list(y_list, -1, line_iter->anchor->position_ptr.x.value, line_iter->anchor->position_ptr.x.name->data, line_iter->anchor->position_ptr.x.units->data);
       io_type->writeOutputHdr_Len++;
       io_type->writeOutputUnt_Len++;
     };
 
     if (line_iter->options.gz_anchor_pos_flag) {
-      list_append(&y_list->out_list_ptr, &line_iter->anchor->position_ptr.z);
+      success = push_variable_to_output_list(y_list, -1, line_iter->anchor->position_ptr.x.value, line_iter->anchor->position_ptr.x.name->data, line_iter->anchor->position_ptr.x.units->data);
       io_type->writeOutputHdr_Len++;
       io_type->writeOutputUnt_Len++;
     };
 
     if (line_iter->options.gx_pos_flag) {
       list_append(&y_list->out_list_ptr, &line_iter->fairlead->position_ptr.x);
+      success = push_variable_to_output_list(y_list, -1, line_iter->fairlead->position_ptr.x.value, line_iter->fairlead->position_ptr.x.name->data, line_iter->fairlead->position_ptr.x.units->data);
       io_type->writeOutputHdr_Len++;
       io_type->writeOutputUnt_Len++;
     };
 
     if (line_iter->options.gy_pos_flag) {
-      list_append(&y_list->out_list_ptr, &line_iter->fairlead->position_ptr.y);
+      success = push_variable_to_output_list(y_list, -1, line_iter->fairlead->position_ptr.y.value, line_iter->fairlead->position_ptr.y.name->data, line_iter->fairlead->position_ptr.y.units->data);
       io_type->writeOutputHdr_Len++;
       io_type->writeOutputUnt_Len++;
     };
 
     if (line_iter->options.gz_pos_flag) {
-      list_append(&y_list->out_list_ptr, &line_iter->fairlead->position_ptr.z);
+      success = push_variable_to_output_list(y_list, -1, line_iter->fairlead->position_ptr.z.value, line_iter->fairlead->position_ptr.z.name->data, line_iter->fairlead->position_ptr.z.units->data);
       io_type->writeOutputHdr_Len++;
       io_type->writeOutputUnt_Len++;
     };
 
     if (line_iter->options.H_flag) {
-      list_append(&y_list->out_list_ptr, &line_iter->H);
+      success = push_variable_to_output_list(y_list, -1, line_iter->H.value, line_iter->H.name->data, line_iter->H.units->data);
       io_type->writeOutputHdr_Len++;
       io_type->writeOutputUnt_Len++;
     };
 
     if (line_iter->options.V_flag) {
-      list_append(&y_list->out_list_ptr, &line_iter->V);
+      success = push_variable_to_output_list(y_list, -1, line_iter->V.value, line_iter->V.name->data, line_iter->V.units->data);
       io_type->writeOutputHdr_Len++;
       io_type->writeOutputUnt_Len++;
     };
@@ -2433,19 +2441,19 @@ MAP_ERROR_CODE set_output_list(Domain* domain, MAP_InitOutputType_t* io_type, ch
     };
 
     if (line_iter->options.azimuth_flag) {
-      success = push_variable_to_output_list(y_list, line_num, &line_iter->psi, "psi", "[m]");
+      success = push_variable_to_output_list(y_list, line_num, &line_iter->psi, "psi", "[rad]");
       io_type->writeOutputHdr_Len++;
       io_type->writeOutputUnt_Len++;
     };
 
     if (line_iter->options.altitude_flag) {
-      success = push_variable_to_output_list(y_list, line_num, &line_iter->alpha, "alpha", "[m]");
+      success = push_variable_to_output_list(y_list, line_num, &line_iter->alpha, "alpha", "[rad]");
       io_type->writeOutputHdr_Len++;
       io_type->writeOutputUnt_Len++;
     };
 
     if (line_iter->options.altitude_anchor_flag) {
-      success = push_variable_to_output_list(y_list, line_num, &line_iter->alpha_at_anchor, "alpha_a", "[m]");
+      success = push_variable_to_output_list(y_list, line_num, &line_iter->alpha_at_anchor, "alpha_a", "[rad]");
       io_type->writeOutputHdr_Len++;
       io_type->writeOutputUnt_Len++;
     };
@@ -2673,7 +2681,6 @@ void log_initialization_information(MAP_InitInputType_t* init_type, MAP_Paramete
     success = write_summary_file(init_data, p_type, domain, map_msg, ierr); CHECKERRQ(MAP_FATAL_37); 
   }
 
-  success = write_summary_file(init_data, p_type, domain, map_msg, ierr); CHECKERRQ(MAP_FATAL_37);           
   success = get_iteration_output_stream(y_type, other_type, map_msg, ierr); // @todo CHECKERRQ()    
   MAP_END_ERROR_LOG; 
 };
@@ -2797,8 +2804,8 @@ MAP_ERROR_CODE print_help_to_screen()
   printf("      -v_anch,       --Vertical force at anchor (does NOT include applied forces) [N]\n");
   printf("      -tension_fair, --Line force-magnitude at fairlead (include applied loads) [N]\n");
   printf("      -tension_anch, --Line force-magnitude at anchor (include applied loads) [N]\n");
-  printf("      -azimuth,      --Line lateral offset angle global X axis [deg]\n");
-  printf("      -altitude,     --Line inclination angle relative to global XY plane at fairlead [deg]\n");
+  printf("      -azimuth,      --Line lateral offset angle global X axis [rad]\n");
+  printf("      -altitude,     --Line inclination angle relative to global XY plane at fairlead [rad]\n");
   printf("      -lay_length,   --Length of line on seabed [m]\n");
   printf("      -line_tension, -- \n");
   printf("    Model features:\n");

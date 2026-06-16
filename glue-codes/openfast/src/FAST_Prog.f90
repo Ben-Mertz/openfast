@@ -32,7 +32,8 @@ PROGRAM FAST
 
 
 USE FAST_Subs   ! all of the ModuleName and ModuleName_types modules are inherited from FAST_Subs
-                       
+USE FAST_AeroMap, ONLY : FAST_RunSteadyStateDriver
+
 IMPLICIT  NONE
    
    ! Local parameters:
@@ -57,8 +58,8 @@ INTEGER(IntKi)                        :: Restart_step                           
       !+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
       ! determine if this is a restart from checkpoint
       !+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-   CALL NWTC_Init() ! open console for writing
-   ProgName = 'OpenFAST'
+   CALL NWTC_Init() ! initialize NWTC library (set some global constants and if necessary, open console for writing)
+   ProgName = FAST_Ver%Name
    InputFile = ""
    CheckpointRoot = ""
 
@@ -76,6 +77,12 @@ INTEGER(IntKi)                        :: Restart_step                           
       Restart_step = Turbine(1)%p_FAST%n_TMax_m1 + 1
       CALL ExitThisProgram_T( Turbine(1), ErrID_None, .true., SkipRunTimeMsg = .TRUE. )
       
+   ELSE IF ( TRIM(FlagArg) == 'STEADYSTATE' ) THEN ! Do steady-state analysis, not time-marching -- this works for only 1 turbine (i.e., NumTurbines==1)!
+
+      ! this runs the steady-state solver driver and ENDS the program:
+      CALL FAST_RunSteadyStateDriver( Turbine(1) )
+      CALL ExitThisProgram_T( Turbine(1), ErrID_None, .true., SkipRunTimeMsg = .TRUE. )
+   
    ELSEIF ( LEN( TRIM(FlagArg) ) > 0 ) THEN ! Any other flag, end normally
       CALL NormStop()
 
@@ -125,7 +132,7 @@ TIME_STEP_LOOP:  DO n_t_global = Restart_step, Turbine(1)%p_FAST%n_TMax_m1
       
       
       ! write checkpoint file if requested
-      IF (mod(n_t_global, Turbine(1)%p_FAST%n_ChkptTime) == 0 .AND. Restart_step /= n_t_global .and. .not. Turbine(1)%m_FAST%Lin%FoundSteady) then
+      IF (mod(n_t_global, Turbine(1)%p_FAST%n_ChkptTime) == 0 .AND. Restart_step /= n_t_global .and. .not. Turbine(1)%m_Glue%CS%FoundSteady) then
          CheckpointRoot = TRIM(Turbine(1)%p_FAST%OutFileRoot)//'.'//TRIM(Num2LStr(n_t_global))
          
          CALL FAST_CreateCheckpoint_Tary(t_initial, n_t_global, Turbine, CheckpointRoot, ErrStat, ErrMsg)
@@ -149,13 +156,13 @@ TIME_STEP_LOOP:  DO n_t_global = Restart_step, Turbine(1)%p_FAST%n_TMax_m1
          CALL FAST_Linearize_T(t_initial, n_t_global+1, Turbine(i_turb), ErrStat, ErrMsg)
             CALL CheckError( ErrStat, ErrMsg  )
             
-         IF ( Turbine(i_turb)%m_FAST%Lin%FoundSteady) EXIT TIME_STEP_LOOP
+         IF ( Turbine(i_turb)%m_Glue%CS%FoundSteady) EXIT TIME_STEP_LOOP
       END DO
 
    END DO TIME_STEP_LOOP ! n_t_global
   
    DO i_turb = 1,NumTurbines
-      if ( Turbine(i_turb)%p_FAST%CalcSteady .and. .not. Turbine(i_turb)%m_FAST%Lin%FoundSteady) then
+      if ( Turbine(i_turb)%p_FAST%CalcSteady .and. .not. Turbine(i_turb)%m_Glue%CS%FoundSteady) then
          CALL CheckError( ErrID_Fatal, "Unable to find steady-state solution." )
       end if
   END DO

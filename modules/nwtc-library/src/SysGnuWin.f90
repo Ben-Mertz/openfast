@@ -32,7 +32,7 @@ MODULE SysSubs
    !     SUBROUTINE  OpenCon
    !     SUBROUTINE  OpenUnfInpBEFile ( Un, InFile, RecLen, Error )
    !     SUBROUTINE  ProgExit ( StatCode )
-   !     SUBROUTINE  Set_IEEE_Constants( NaN_D, Inf_D, NaN, Inf )   
+   !     SUBROUTINE  Set_IEEE_Constants( NaN_D, Inf_D, NaN, Inf, NaN_S, Inf_S )   
    !     SUBROUTINE  UsrAlarm
    !     SUBROUTINE  WrNR ( Str )
    !     SUBROUTINE  WrOver ( Str )
@@ -47,18 +47,16 @@ MODULE SysSubs
    INTERFACE NWTC_ERF ! Returns the ERF value of its argument
       MODULE PROCEDURE NWTC_ERFR4
       MODULE PROCEDURE NWTC_ERFR8
-      MODULE PROCEDURE NWTC_ERFR16
    END INTERFACE
 
    INTERFACE NWTC_gamma ! Returns the gamma value of its argument
          ! note: gamma is part of the F08 standard, but may not be implemented everywhere...
       MODULE PROCEDURE NWTC_gammaR4
       MODULE PROCEDURE NWTC_gammaR8
-      MODULE PROCEDURE NWTC_gammaR16
    END INTERFACE
 
    INTEGER, PARAMETER            :: ConRecL     = 120                               ! The record length for console output.
-   INTEGER, PARAMETER            :: CU          = 6                                 ! The I/O unit for the console.  Unit 6 causes ADAMS to crash.
+   INTEGER, PUBLIC               :: CU          = 6                                 ! The I/O unit for the console (Can be changed with SetConsoleUnit subroutine)
    INTEGER, PARAMETER            :: MaxWrScrLen = 98                                ! The maximum number of characters allowed to be written to a line in WrScr
    LOGICAL, PARAMETER            :: KBInputOK   = .TRUE.                            ! A flag to tell the program that keyboard input is allowed in the environment.
    CHARACTER(*),  PARAMETER      :: NewLine     = ACHAR(10)                         ! The delimiter for New Lines [ Windows is CHAR(13)//CHAR(10); MAC is CHAR(13); Unix is CHAR(10) {CHAR(13)=\r is a line feed, CHAR(10)=\n is a new line}]
@@ -90,6 +88,14 @@ FUNCTION FileSize( Unit )
 
    RETURN
 END FUNCTION FileSize ! ( Unit )
+!=======================================================================
+SUBROUTINE SetConsoleUnit( Unit )
+   ! This subroutine sets the console unit for output.
+
+INTEGER, INTENT(IN)  :: Unit  !< The new I/O unit number for the console.
+CU = Unit
+
+END SUBROUTINE SetConsoleUnit
 !=======================================================================
 FUNCTION Is_NaN( DblNum )
 
@@ -131,18 +137,6 @@ FUNCTION NWTC_ERFR8( x )
 
 END FUNCTION NWTC_ERFR8
 !=======================================================================
-FUNCTION NWTC_ERFR16( x )
-
-   ! Returns the ERF value of its argument. The result has a value equal  
-   ! to the error function: 2/pi * integral_from_0_to_x of e^(-t^2) dt. 
-
-   REAL(QuKi), INTENT(IN)     :: x             ! input 
-   REAL(QuKi)                 :: NWTC_ERFR16   ! result
-   
-   NWTC_ERFR16 = ERF( x )
-
-END FUNCTION NWTC_ERFR16
-!=======================================================================
 FUNCTION NWTC_GammaR4( x )
 
    ! Returns the gamma value of its argument. The result has a value equal  
@@ -166,18 +160,6 @@ FUNCTION NWTC_GammaR8( x )
    NWTC_GammaR8 = gamma( x )
 
 END FUNCTION NWTC_GammaR8
-!=======================================================================
-FUNCTION NWTC_GammaR16( x )
-
-   ! Returns the gamma value of its argument. The result has a value equal  
-   ! to a processor-dependent approximation to the gamma function of x. 
-
-   REAL(QuKi), INTENT(IN)     :: x             ! input 
-   REAL(QuKi)                 :: NWTC_GammaR16  ! result
-   
-   NWTC_GammaR16 = gamma( x )
-
-END FUNCTION NWTC_GammaR16
 !=======================================================================
 SUBROUTINE FlushOut ( Unit )
 
@@ -288,7 +270,7 @@ SUBROUTINE ProgExit ( StatCode )
 
 END SUBROUTINE ProgExit ! ( StatCode )
 !=======================================================================
-SUBROUTINE Set_IEEE_Constants( NaN_D, Inf_D, NaN, Inf )   
+SUBROUTINE Set_IEEE_Constants( NaN_D, Inf_D, NaN, Inf, NaN_S, Inf_S )   
       
    ! routine that sets the values of NaN_D, Inf_D, NaN, Inf (IEEE 
    ! values for not-a-number and infinity in sindle and double 
@@ -301,10 +283,13 @@ SUBROUTINE Set_IEEE_Constants( NaN_D, Inf_D, NaN, Inf )
    REAL(DbKi), INTENT(inout)           :: NaN_D          ! IEEE value for Inf (infinity) in double precision
    REAL(ReKi), INTENT(inout)           :: Inf            ! IEEE value for NaN (not-a-number)
    REAL(ReKi), INTENT(inout)           :: NaN            ! IEEE value for Inf (infinity)
+   REAL(SiKi), INTENT(inout)           :: Inf_S          ! IEEE value for NaN (not-a-number) in single precision
+   REAL(SiKi), INTENT(inout)           :: NaN_S          ! IEEE value for Inf (infinity) in single precision
 
       ! local variables for getting values of NaN and Inf (not necessary when using ieee_arithmetic)
    REAL(DbKi)                          :: Neg_D          ! a negative real(DbKi) number
    REAL(ReKi)                          :: Neg            ! a negative real(ReKi) number
+   REAL(SiKi)                          :: Neg_S          ! a negative real(SiKi) number
 
    
       ! if compiling with floating-point-exception traps, this will not work, so we've added a compiler directive.
@@ -314,16 +299,20 @@ SUBROUTINE Set_IEEE_Constants( NaN_D, Inf_D, NaN, Inf )
       ! set variables to negative numbers to calculate NaNs (compilers may complain when taking sqrt of negative constants)
    Neg_D = -1.0_DbKi
    Neg   = -1.0_ReKi
+   Neg_S = -1.0_SiKi
 
    NaN_D = SQRT ( Neg_D )
    NaN   = SQRT ( Neg )
+   NaN_S = SQRT ( Neg_S )
 
       ! set variables to zero to calculate Infs (using division by zero)
    Neg_D = 0.0_DbKi
    Neg   = 0.0_ReKi
+   Neg_S = 0.0_SiKi
    
    Inf_D = 1.0_DbKi / Neg_D
    Inf   = 1.0_ReKi / Neg
+   Inf_S = 1.0_SiKi / Neg_S
 #endif 
 
 END SUBROUTINE Set_IEEE_Constants
@@ -476,7 +465,7 @@ SUBROUTINE LoadDynamicLibProc ( DLL, ErrStat, ErrMsg )
       if ( len_trim( DLL%ProcName(i) ) > 0 ) then
          DLL%ProcAddr(i) = GetProcAddress( DLL%FileAddr, TRIM(DLL%ProcName(i))//C_NULL_CHAR )  !the "C_NULL_CHAR" converts the Fortran string to a C-type string (i.e., adds //CHAR(0) to the end)
          IF(.NOT. C_ASSOCIATED(DLL%ProcAddr(i))) THEN
-            ErrStat = ErrID_Fatal
+            ErrStat = ErrID_Fatal + i - 1
             ErrMsg  = 'The procedure '//TRIM(DLL%ProcName(i))//' in file '//TRIM(DLL%FileName)//' could not be loaded.'
             RETURN
          END IF
@@ -510,6 +499,9 @@ SUBROUTINE FreeDynamicLib ( DLL, ErrStat, ErrMsg )
 
    END INTERFACE
 
+   ErrStat = ErrID_None
+   ErrMsg = ''
+      
    ! Free the DLL:
    IF ( DLL%FileAddr == INT(0,C_INTPTR_T) ) RETURN
 

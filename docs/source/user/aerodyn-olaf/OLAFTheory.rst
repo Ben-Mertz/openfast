@@ -94,7 +94,7 @@ a line of varying circulation. The line follows the motion of the blade and is
 referred to as “bound” circulation. The bound circulation does not follow the
 same dynamic equation as the free vorticity of the wake. Instead, the intensity
 is linked to airfoil lift via the Kutta-Joukowski theorem. Spanwise variation of
-the bound circulation results in vorticity being emitted into the the wake. This
+the bound circulation results in vorticity being emitted into the wake. This
 is referred to as “trailed vorticity”. Time changes of the bound circulation are
 also emitted in the wake, referred to as “shed” vorticity. The subsequent
 paragraphs describe the representation of the bound vorticity.
@@ -241,7 +241,7 @@ approach using the following steps:
 
    .. math::
       \begin{aligned}
-         \Gamma_{ll,j} =\frac{1}{2} C_{l,j}(\alpha_j) \frac{\left[ (\vec{v}_j  \cdot \vec{N})^2 +  (\vec{v}_j  \cdot \vec{T})^2\right]^2\,dA}{
+         \Gamma_{ll,j} =\frac{1}{2} C_{l,j}(\alpha_j) \frac{\left[ (\vec{v}_j  \cdot \vec{N})^2 +  (\vec{v}_j  \cdot \vec{T})^2\right]\,dA}{
          \sqrt{\left[(\vec{v}_j\times \vec{dl})\cdot\vec{N}\right]^2 + \left[(\vec{v}_j\times \vec{dl})\cdot\vec{T}\right]^2}
          }   %\label{eq:}
       ,\quad\text{with}
@@ -278,11 +278,13 @@ approach using the following steps:
 No-flow-through Method
 ^^^^^^^^^^^^^^^^^^^^^^
 
-A Weissinger-L-based representation (:cite:`olaf-Weissinger47_1`)
-of the lifting surface is also
-available (:cite:`olaf-Bagai94_1,olaf-Gupta06_1,olaf-Ribera07_1`). In this
-method, the circulation is solved by satisfying a no-flow through
-condition at the 1/4-chord points.  It is selected with **CircSolvMethod=[2]**.
+A no-flow-through circulation solving method
+(sometimes called Weissinger-L-based method)
+might be implemented in the future
+(:cite:`olaf-Weissinger47_1,olaf-Bagai94_1,olaf-Gupta06_1,olaf-Ribera07_1`).
+In this method, the circulation is solved by satisfying a no-flow through
+condition at the 1/4-chord points.  
+It would be selected with **CircSolvMethod=[2]** but is currently no implemented.
 
 Prescribed Circulation
 ^^^^^^^^^^^^^^^^^^^^^^
@@ -309,9 +311,10 @@ markers are the end points of the vortex filaments. The Lagrangian convection of
 the filaments stretches the filaments and thus automatically accounts for strain
 in the vorticity equation.
 
-At present, a first-order forward Euler method is used to numerically solve the
-left-hand side of Eq. :eq:`VortFilCart` for the vortex filament location
-(**IntMethod=[5]**). This is an explicit method solved using
+At present, the Runge-Kutta 4th order (**IntMethod=[1]**) or first order forward Euler
+(**IntMethod=[5]**) methods are implemented to numerically solve the
+left-hand side of Eq. :eq:`VortFilCart` for the vortex filament location.
+In the case of the first order Euler method, the convection is then simply:
 Eq. :eq:`eq:Euler`. 
 
 .. math::
@@ -341,14 +344,39 @@ where :math:`d\psi/dt=\Omega` and
 :math:`\vec{r}(\psi,\zeta)` is the position vector of a Lagrangian
 marker, and :math:`\vec{V}[\vec{r}(\psi,\zeta)]` is the velocity.
 
-..
-   At present, first-order forward Euler method is used to numerically solve the
-   left-hand side of Eq. :eq:`VortFil_expanded` for the vortex-filament location
-   [**IntMethod=5**]. This is an explicit method solved using Eq. :eq:`Euler`.
 
-   .. math::
-      \vec{r}(\psi+\Delta\psi_i,\zeta+\Delta\zeta)  = \vec{r}(\psi,\zeta) + \vec{V}(\psi,\zeta) \Delta t
-      :label: Euler
+.. _sec:vortconvfrozen:
+
+Frozen Vorticity Convection
+---------------------------
+
+For computational efficiency, the user can define "frozen" near wake and far wake zones.
+In these zones, the Lagrangian markers are convected using an common induced velocity
+which is independent of the radial location of the marker, and potentially a function of the wake age. 
+The convection equation of the Lagrangian markers in the frozen zone is:
+
+.. math::
+   \frac{d\vec{r}_\zeta}{dt}=\vec{V}_0(\vec{r}_\zeta,t) + \vec{V}_\text{avg}(t)*k(\zeta)
+
+where :math:`\vec{V}_\text{avg}(t)` is an average induced velocity computed based on the convection velocity of a subset of the "free" markers.
+:math:`k(\zeta)` is a decay factor between 1 and 0 based on the wake age :math:`\zeta`.
+A constant decay factor of 1 would result in a uniform convection velocity across the frozen wake. 
+This is what is used for the far-wake. 
+For the near-wake, typical values are such that the decay factor is 1 at the beginning of the frozen wake, and
+0.5 at the end of the frozen wake.
+In fact, current verification indicated that starting at :math:`k(0)=0.75` was better, as otherwise the 
+average convection velocity (computed over a subset of the free markers) ended up too low, and the 
+frozen wake would be more condensed, leading to higher inductions at the rotor.
+Clearly, the choice of the average velocity and its decay are tuning parameters that might change in future releases. 
+These parameters are currently not directly exposed in the input file.
+
+In general, convecting the whole "frozen" wake with a unique induced velocity introduces some error, but greatly reduces the computational time.
+The advantage of having a "frozen" far-wake region, is that it mitigates the impact of wake truncation which is an erroneous boundary condition (vortex lines cannot end in the fluid). If the wake is truncated while still being "free", then the vorticity will rollup on itself in this region. 
+Another advantage is that in the absence of diffusion, the wake tends to become excessively distorted downstream, reaching limit on the validity of the vortex filament representation. 
+
+
+
+
 
 Induced Velocity and Velocity Field
 -----------------------------------
@@ -453,10 +481,10 @@ The regularization parameter is both a function of the physics being modeled
 (blade boundary layer and wake) and the choice of discretization. Contributing
 factors are the chord length, the boundary layer height, and the volume that
 each vortex filament is approximating.  Currently the choice is left to the user
-(**RegDetMethod=[0]**).  Empirical results for a rotating blade are found in the
+(**RegDeterMethod=[0]**).  Empirical results for a rotating blade are found in the
 work of Gupta (:cite:`olaf-Gupta06_1`). As a guideline, the regularization parameter
 may be chosen as twice the average spanwise discretization of the blade. This
-guideline is implemented when the user chooses **RegDetMethod=[1]**. Further
+guideline is implemented when the user chooses **RegDeterMethod=[1]**. Further
 refinement of this option will be considered in the future.
 
 .. _sec:RegularizationFunction:
@@ -577,6 +605,8 @@ Here, :math:`\epsilon` is the vortex-filament strain, :math:`l` is the filament
 length, and :math:`\Delta l` is the change of length between two time steps. The
 integral in Eq. :eq:`stretch` represents strain effects.
 
+This option is not yet implemented.
+
 Wake Age / Core-Spreading
 ^^^^^^^^^^^^^^^^^^^^^^^^^
 
@@ -599,6 +629,16 @@ vorticity itself or between the wake vorticity and the background flow. It is
 often referred to as the core-spreading method. Setting **DiffusionMethod=[1]**
 is the same as using the wake age method (**WakeRegMethod=[3]**).
 
+The time evolution of the core radius is implemented as:
+
+.. math::
+
+    \frac{d r_c}{dt} = \frac{2\alpha\delta\nu}{r_c(t)}
+
+and :math:`\frac{d r_c}{dt}=0` on the blades.
+
+
+
 Stretching and Wake Age
 ^^^^^^^^^^^^^^^^^^^^^^^
 
@@ -609,6 +649,8 @@ Eq. :eq:`stretchandage`.
 .. math::
    r_c(\zeta,\epsilon) = \sqrt{r_{c0}^2 + 4\alpha\delta\nu \zeta  \big(1+\epsilon\big)^{-1} }
    :label: stretchandage
+
+This option is not yet implemented.
 
 .. _sec:diffusion:
 

@@ -3,7 +3,7 @@ MODULE TurbSim_Types
 
 use NWTC_Library
 
-   TYPE(ProgDesc), PARAMETER :: TurbSim_Ver = ProgDesc( 'TurbSim', '', '' )
+   TYPE(ProgDesc)            :: TurbSim_Ver = ProgDesc( 'TurbSim', '', '' )
 
    LOGICAL,        PARAMETER :: MVK         = .FALSE.                       ! This parameter has been added to replace the NON-STANDARD compiler directive previously used
    LOGICAL,        PARAMETER :: PeriodicY   = .FALSE. !.TRUE.
@@ -54,7 +54,8 @@ use NWTC_Library
    INTEGER(IntKi), PARAMETER :: FileExt_UVW       =  6  ! .u, .v, .w files  : formatted FF data (Traditional SNLWIND-3D format) [WrFMTFF]
    INTEGER(IntKi), PARAMETER :: FileExt_CTS       =  7  ! .cts file         : coherent turbulence
    INTEGER(IntKi), PARAMETER :: FileExt_TWR       =  8  ! .twr file         : AeroDyn tower data (binary)
-   INTEGER(IntKi), PARAMETER :: NumFileFmt        =  8  ! TOTAL number of output file formats (used to dimension array)
+   INTEGER(IntKi), PARAMETER :: FileExt_HAWC      =  9  ! -u.bin, -v.bin, -w.bin .hawc files: binary HAWC FF data [WrHAWCFF]
+   INTEGER(IntKi), PARAMETER :: NumFileFmt        =  9  ! TOTAL number of output file formats (used to dimension array)
    
       ! other parameters:
    REAL(ReKi),     PARAMETER :: ZJetMax_UB        = 490.0_ReKi    ! upper bound on height where jet maximum occurs
@@ -89,8 +90,8 @@ use NWTC_Library
       REAL(ReKi)                   :: DistScl                                  ! Disturbance scale for AeroDyn coherent turbulence events
    
                   
-      CHARACTER(200)               :: CTEventPath                              ! String used to store the name of the coherent event definition file
-      CHARACTER(200)               :: CTEventFile                              ! String used to store the name of the coherent event definition file
+      CHARACTER(1024)              :: CTEventPath                              ! String used to store the name of the coherent event definition file
+      CHARACTER(1024)              :: CTEventFile                              ! String used to store the name of the coherent event definition file
       CHARACTER(  3)               :: CTExt                                    ! String used to determine the type of coherent structures ("dns" or "les")
 
    END TYPE CohStr_ParameterType
@@ -136,7 +137,6 @@ use NWTC_Library
       INTEGER(IntKi)               :: NumOutSteps                              ! Number of output time steps.
                   
       LOGICAL                      :: Periodic                                 ! Flag to indicate that output files must contain exactly one full (time) period
-      LOGICAL                      :: Clockwise                                ! Flag to indicate clockwise rotation when looking downwind.
       
    end type Grid_ParameterType
    
@@ -276,8 +276,8 @@ use NWTC_Library
       INTEGER                          :: US  = -1                    ! I/O unit for summary file.
               
       
-      CHARACTER(200)                   :: DescStr                     ! String used to describe the run (and the first line of the summary file)
-      CHARACTER(197)                   :: RootName                    ! Root name of the I/O files.
+      CHARACTER(1024)                  :: DescStr                     ! String used to describe the run (and the first line of the summary file)
+      CHARACTER(1024)                  :: RootName                    ! Root name of the I/O files.
       TYPE(RandNum_ParameterType)      :: RNG                         ! parameters for random numbers p_RandNum
       TYPE(Grid_ParameterType)         :: grid                        ! parameters for TurbSim (specify grid/frequency size)
       TYPE(Meteorology_ParameterType)  :: met                         ! parameters for TurbSim 

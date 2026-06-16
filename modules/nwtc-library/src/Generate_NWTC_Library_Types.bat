@@ -1,8 +1,8 @@
 @ECHO OFF
 
-SET REG_Loc=C:\Users\bjonkman\Documents\DATA\DesignCodes\miscellaneous\FAST_Registry\bin
-SET Registry=%REG_Loc%\Registry_Win32.exe
-:: SET Registry=%REG_Loc%\Registry.exe
+SET REG_Loc=..\..\..\build\bin
+::SET Registry=%REG_Loc%\Registry_Win32.exe
+SET Registry=%REG_Loc%\Registry.exe
 
 SET ModuleName=%1
 
@@ -13,11 +13,13 @@ REM ---------------- RUN THE REGISTRY TO AUTO-GENERATE FILES -------------------
 REM ----------------------------------------------------------------------------
 ECHO on
 :mesh
-%REGISTRY% Registry_NWTC_Library_typedef_mesh.txt  -noextrap
+%REGISTRY% Registry_NWTC_Library_mesh.txt  -noextrap -incsubs
+type Registry_NWTC_Library_base.txt Registry_NWTC_Library_mesh.txt > Registry_NWTC_Library.txt
 goto end
 
 :nomesh
-%REGISTRY% Registry_NWTC_Library_typedef_nomesh.txt  -noextrap
+%REGISTRY% Registry_NWTC_Library_base.txt  -noextrap
+type Registry_NWTC_Library_base.txt Registry_NWTC_Library_mesh.txt > Registry_NWTC_Library.txt
 
 
 :end

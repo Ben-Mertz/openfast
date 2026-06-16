@@ -50,18 +50,16 @@ MODULE SysSubs
    INTERFACE NWTC_ERF ! Returns the ERF value of its argument
       MODULE PROCEDURE NWTC_ERFR4
       MODULE PROCEDURE NWTC_ERFR8
-      MODULE PROCEDURE NWTC_ERFR16
    END INTERFACE
 
    INTERFACE NWTC_gamma ! Returns the gamma value of its argument
          ! note: gamma is part of the F08 standard, but may not be implemented everywhere...
       MODULE PROCEDURE NWTC_gammaR4
       MODULE PROCEDURE NWTC_gammaR8
-      MODULE PROCEDURE NWTC_gammaR16
    END INTERFACE
 
    INTEGER, PARAMETER            :: ConRecL     = 120                               ! The record length for console output.
-   INTEGER, PARAMETER            :: CU          = 6                                 ! The I/O unit for the console.  Unit 6 causes ADAMS to crash.
+   INTEGER, PUBLIC               :: CU          = 6                                 ! The I/O unit for the console (Can be changed with SetConsoleUnit subroutine)
    INTEGER, PARAMETER            :: MaxWrScrLen = 98                                ! The maximum number of characters allowed to be written to a line in WrScr
    LOGICAL, PARAMETER            :: KBInputOK   = .FALSE.                           ! A flag to tell the program that keyboard input is allowed in the environment.
    CHARACTER(*),  PARAMETER      :: NewLine     = ACHAR(10)                         ! The delimiter for New Lines [ Windows is CHAR(13)//CHAR(10); MAC is CHAR(13); Unix is CHAR(10) {CHAR(13)=\r is a line feed, CHAR(10)=\n is a new line}]
@@ -95,6 +93,14 @@ FUNCTION FileSize( Unit )
 
    RETURN
 END FUNCTION FileSize ! ( Unit )
+!=======================================================================
+SUBROUTINE SetConsoleUnit( Unit )
+   ! This subroutine sets the console unit for output.
+
+INTEGER, INTENT(IN)  :: Unit  !< The new I/O unit number for the console.
+CU = Unit
+
+END SUBROUTINE SetConsoleUnit
 !=======================================================================
 FUNCTION Is_NaN( DblNum )
 
@@ -137,18 +143,6 @@ FUNCTION NWTC_ERFR8( x )
 
 END FUNCTION NWTC_ERFR8
 !=======================================================================
-FUNCTION NWTC_ERFR16( x )
-
-   ! Returns the ERF value of its argument. The result has a value equal  
-   ! to the error function: 2/pi * integral_from_0_to_x of e^(-t^2) dt. 
-
-   REAL(QuKi), INTENT(IN)     :: x             ! input 
-   REAL(QuKi)                 :: NWTC_ERFR16   ! result
-
-   NWTC_ERFR16 = ERF( x )
-
-END FUNCTION NWTC_ERFR16
-!=======================================================================
 FUNCTION NWTC_GammaR4( x )
 
    ! Returns the gamma value of its argument. The result has a value equal  
@@ -172,18 +166,6 @@ FUNCTION NWTC_GammaR8( x )
    NWTC_GammaR8 = gamma( x )
 
 END FUNCTION NWTC_GammaR8
-!=======================================================================
-FUNCTION NWTC_GammaR16( x )
-
-   ! Returns the gamma value of its argument. The result has a value equal  
-   ! to a processor-dependent approximation to the gamma function of x. 
-
-   REAL(QuKi), INTENT(IN)     :: x             ! input 
-   REAL(QuKi)                 :: NWTC_GammaR16 ! result
-   
-   NWTC_GammaR16 = gamma( x )
-
-END FUNCTION NWTC_GammaR16
 !=======================================================================
 SUBROUTINE FlushOut ( Unit )
 
@@ -297,8 +279,8 @@ SUBROUTINE ProgExit ( StatCode )
 
 END SUBROUTINE ProgExit ! ( StatCode )
 !=======================================================================
-SUBROUTINE Set_IEEE_Constants( NaN_D, Inf_D, NaN, Inf )   
-
+SUBROUTINE Set_IEEE_Constants( NaN_D, Inf_D, NaN, Inf, NaN_S, Inf_S )   
+      
    ! routine that sets the values of NaN_D, Inf_D, NaN, Inf (IEEE 
    ! values for not-a-number and infinity in sindle and double 
    ! precision) This uses standard F03 intrinsic routines,  
@@ -313,12 +295,18 @@ SUBROUTINE Set_IEEE_Constants( NaN_D, Inf_D, NaN, Inf )
    REAL(ReKi), INTENT(inout)           :: Inf            ! IEEE value for NaN (not-a-number)
    REAL(ReKi), INTENT(inout)           :: NaN            ! IEEE value for Inf (infinity)
 
+   REAL(SiKi), INTENT(inout)           :: Inf_S          ! IEEE value for NaN (not-a-number) in single precision
+   REAL(SiKi), INTENT(inout)           :: NaN_S          ! IEEE value for Inf (infinity) in single precision
+
    
    NaN_D = ieee_value(0.0_DbKi, ieee_quiet_nan)
    Inf_D = ieee_value(0.0_DbKi, ieee_positive_inf)
 
    NaN   = ieee_value(0.0_ReKi, ieee_quiet_nan)
    Inf   = ieee_value(0.0_ReKi, ieee_positive_inf)   
+
+   NaN_S = ieee_value(0.0_SiKi, ieee_quiet_nan)
+   Inf_S = ieee_value(0.0_SiKi, ieee_positive_inf)
 
 END SUBROUTINE Set_IEEE_Constants  
 !=======================================================================
@@ -478,7 +466,7 @@ SUBROUTINE LoadDynamicLibProc ( DLL, ErrStat, ErrMsg )
          DLL%ProcAddr(i) = dlSym( DLL%FileAddrX, TRIM(DLL%ProcName(i))//C_NULL_CHAR )  !the "C_NULL_CHAR" converts the Fortran string to a C-type string (i.e., adds //CHAR(0) to the end)
 
          IF(.NOT. C_ASSOCIATED(DLL%ProcAddr(i))) THEN
-            ErrStat = ErrID_Fatal
+            ErrStat = ErrID_Fatal + i - 1
             ErrMsg  = 'The procedure '//TRIM(DLL%ProcName(i))//' in file '//TRIM(DLL%FileName)//' could not be loaded.'
             RETURN
          END IF
@@ -523,6 +511,9 @@ SUBROUTINE FreeDynamicLib ( DLL, ErrStat, ErrMsg )
 
    END INTERFACE
 
+   ErrStat = ErrID_None
+   ErrMsg = ''
+      
    ! Close the library:
 
    IF( .NOT. C_ASSOCIATED(DLL%FileAddrX) ) RETURN

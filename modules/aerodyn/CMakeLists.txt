@@ -15,9 +15,11 @@
 #
 
 if (GENERATE_TYPES)
-  generate_f90_types(src/AeroAcoustics_Registry.txt ${CMAKE_CURRENT_LIST_DIR}/src/AeroAcoustics_Types.f90)
+  generate_f90_types(src/AeroAcoustics_Registry.txt ${CMAKE_CURRENT_LIST_DIR}/src/AeroAcoustics_Types.f90 -noextrap)
   generate_f90_types(src/AeroDyn_Registry.txt ${CMAKE_CURRENT_LIST_DIR}/src/AeroDyn_Types.f90)
-  generate_f90_types(src/AirfoilInfo_Registry.txt ${CMAKE_CURRENT_LIST_DIR}/src/AirfoilInfo_Types.f90)
+  generate_f90_types(src/AeroDyn_Inflow_Registry.txt ${CMAKE_CURRENT_LIST_DIR}/src/AeroDyn_Inflow_Types.f90 -noextrap)
+  generate_f90_types(src/AeroDyn_Inflow_C_Binding_Registry.txt ${CMAKE_CURRENT_LIST_DIR}/src/AeroDyn_Inflow_C_Binding_Types.f90 -noextrap)
+  generate_f90_types(src/AirfoilInfo_Registry.txt ${CMAKE_CURRENT_LIST_DIR}/src/AirfoilInfo_Types.f90 -noextrap)
   generate_f90_types(src/BEMT_Registry.txt ${CMAKE_CURRENT_LIST_DIR}/src/BEMT_Types.f90)
   generate_f90_types(src/DBEMT_Registry.txt ${CMAKE_CURRENT_LIST_DIR}/src/DBEMT_Types.f90)
   generate_f90_types(src/UnsteadyAero_Registry.txt ${CMAKE_CURRENT_LIST_DIR}/src/UnsteadyAero_Types.f90)
@@ -25,18 +27,31 @@ if (GENERATE_TYPES)
   generate_f90_types(src/FVW_Registry.txt ${CMAKE_CURRENT_LIST_DIR}/src/FVW_Types.f90)
 endif()
 
+# BasicAero Library
+add_library(basicaerolib STATIC
+  # UnsteadyAero lib
+  src/UnsteadyAero.f90
+  src/UnsteadyAero_Types.f90
 
-# AeroAcoustics - Main
-set(AEROACOUSTIC_SOURCES
+  # AirFoil Info lib
+  src/AirfoilInfo.f90
+  src/AirfoilInfo_Types.f90
+)
+target_link_libraries(basicaerolib ifwlib nwtclibs)
+
+# AeroAcoustics library
+add_library(aeroacousticslib STATIC
   src/AeroAcoustics_TNO.f90
   src/AeroAcoustics.f90
   src/AeroAcoustics_IO.f90
   src/AeroAcoustics_Types.f90
 )
+target_link_libraries(aeroacousticslib basicaerolib nwtclibs)
 
-# AeroDyn lib
-set(AD_LIBS_SOURCES
+# AeroDyn Library
+add_library(aerodynlib STATIC
   src/AeroDyn.f90
+  src/AeroDyn_IO_Params.f90
   src/AeroDyn_IO.f90
   src/AeroDyn_AllBldNdOuts_IO.f90
   src/BEMT.f90
@@ -46,22 +61,8 @@ set(AD_LIBS_SOURCES
   src/AeroDyn_Types.f90
   src/BEMT_Types.f90
   src/DBEMT_Types.f90
-)
 
-# UnsteadyAero lib
-set(UA_LIBS_SOURCES
-  src/UnsteadyAero.f90
-  src/UnsteadyAero_Types.f90
-)
-
-# AirFoil Info lib
-set(AFINFO_LIBS_SOURCES
-  src/AirfoilInfo.f90
-  src/AirfoilInfo_Types.f90
-)
-
-# FVW lib
-set(FVW_LIBS_SOURCES
+  # FVW lib
   src/FVW.f90
   src/FVW_IO.f90
   src/FVW_VortexTools.f90
@@ -70,48 +71,76 @@ set(FVW_LIBS_SOURCES
   src/FVW_BiotSavart.f90
   src/FVW_Tests.f90
   src/FVW_Types.f90
-  src/FVW_VTK.f90
 )
+target_link_libraries(aerodynlib basicaerolib aeroacousticslib seastlib nwtclibs)
 
-# UnsteadyAero lib
-add_library(uaaerolib ${UA_LIBS_SOURCES})
-target_link_libraries(uaaerolib afinfolib nwtclibs)
+# ADI lib
+add_library(adilib STATIC
+  src/AeroDyn_Inflow.f90
+  src/AeroDyn_Inflow_Types.f90
+)
+target_link_libraries(adilib aerodynlib ifwlib)
 
-# AirfoilInfo lib
-add_library(afinfolib ${AFINFO_LIBS_SOURCES})
-target_link_libraries(afinfolib nwtclibs)
-
-# this lib is only for the ctest
-add_library(fvwlib ${FVW_LIBS_SOURCES})
-target_link_libraries(fvwlib uaaerolib afinfolib nwtclibs)
-
-# Aero acoustics
-add_library(aeroacoustics ${AEROACOUSTIC_SOURCES})
-target_link_libraries(aeroacoustics afinfolib nwtclibs)
-
-add_library(aerodynlib ${AD_LIBS_SOURCES})
-target_link_libraries(aerodynlib fvwlib uaaerolib afinfolib nwtclibs aeroacoustics)
-
-# AeroDyn driver
-set(AD_DRIVER_SOURCES
-  src/AeroDyn_Driver.f90
+# AeroDyn Driver Subs Library
+add_library(aerodyn_driver_subs STATIC
   src/AeroDyn_Driver_Subs.f90
   src/AeroDyn_Driver_Types.f90
 )
+target_link_libraries(aerodyn_driver_subs adilib aerodynlib versioninfolib)
 
-add_executable(aerodyn_driver ${AD_DRIVER_SOURCES})
-target_link_libraries(aerodyn_driver aerodynlib fvwlib uaaerolib afinfolib nwtclibs versioninfolib aeroacoustics ${CMAKE_DL_LIBS})
+# AeroDyn Driver
+add_executable(aerodyn_driver 
+  src/AeroDyn_Driver.f90
+)
+target_link_libraries(aerodyn_driver aerodyn_driver_subs)
 
-# UnsteadyAero driver
-set(UA_DRIVER_SOURCES
+# AeroAcoustics driver
+add_executable(aeroacoustics_driver
+   src/AeroAcoustics_Driver_Subs.f90
+   src/AeroAcoustics_Driver.f90
+)
+target_link_libraries(aeroacoustics_driver aeroacousticslib versioninfolib)
+
+# UnsteadyAero Driver
+add_executable(unsteadyaero_driver 
   src/UnsteadyAero_Driver.f90
   src/UA_Dvr_Subs.f90
 )
-add_executable(unsteadyaero_driver ${UA_DRIVER_SOURCES})
-target_link_libraries(unsteadyaero_driver aerodynlib fvwlib uaaerolib afinfolib nwtclibs versioninfolib ${CMAKE_DL_LIBS})
+target_link_libraries(unsteadyaero_driver basicaerolib lindynlib versioninfolib)
 
-install(TARGETS unsteadyaero_driver aerodyn_driver aerodynlib fvwlib uaaerolib afinfolib aeroacoustics
+
+# AeroDyn-InflowWind c-bindings interface library
+#   create object instead of directly linking into shared and static -- causes issues in parallel builds
+#   This is only required because we are static linking the library for wavetank
+#   NOTE: target linking at the object, static, and shared libraries.  Different CMake versions handle this
+#         slightly differently with unpredictable results if I don't.
+add_library(aerodyn_inflow_c_binding_object OBJECT
+  src/AeroDyn_Inflow_C_Binding_Types.f90
+  src/AeroDyn_Inflow_C_Binding.f90
+)
+target_link_libraries(aerodyn_inflow_c_binding_object adilib aerodyn_driver_subs nwtclibs versioninfolib)
+set_property(TARGET aerodyn_inflow_c_binding_object PROPERTY POSITION_INDEPENDENT_CODE 1) # required for shared libs
+if(APPLE OR UNIX)
+   target_compile_definitions(aerodyn_inflow_c_binding_object PRIVATE IMPLICIT_DLLEXPORT)
+endif()
+
+#   shared
+add_library(aerodyn_inflow_c_binding SHARED $<TARGET_OBJECTS:aerodyn_inflow_c_binding_object>)
+target_link_libraries(aerodyn_inflow_c_binding adilib aerodyn_driver_subs nwtclibs versioninfolib)
+
+
+# C-bindings non-shared interface
+# This is a workaround for building wavetank into a single DLL (also allows setting CU globaly for sending screen to file for labview integration)
+add_library(aerodyn_inflow_c_bind_static STATIC $<TARGET_OBJECTS:aerodyn_inflow_c_binding_object>)
+target_link_libraries(aerodyn_inflow_c_bind_static adilib aerodyn_driver_subs nwtclibs versioninfolib)
+if(APPLE OR UNIX)
+   target_compile_definitions(aerodyn_inflow_c_bind_static PRIVATE IMPLICIT_DLLEXPORT)
+endif()
+
+
+install(TARGETS aerodynlib aeroacousticslib basicaerolib aerodyn_driver_subs aerodyn_driver aeroacoustics_driver unsteadyaero_driver aerodyn_inflow_c_binding adilib aerodyn_inflow_c_bind_static
   EXPORT "${CMAKE_PROJECT_NAME}Libraries"
   RUNTIME DESTINATION bin
   LIBRARY DESTINATION lib
-  ARCHIVE DESTINATION lib)
+  ARCHIVE DESTINATION lib
+)

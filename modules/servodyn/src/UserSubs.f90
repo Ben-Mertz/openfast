@@ -85,9 +85,6 @@ contains
 !   !              the DOF, respectively.  Turning off the DOF forces the
 !   !              current RATE to remain fixed.  If the rate is currently zero,
 !   !              the current POSITION will remain fixed as well.
-!   !       Note that this technique WILL NOT work for user-defined routines
-!   !       written for ADAMS datasets extracted using the FAST-to-ADAMS
-!   !       preprocessor.
 !
 !
 !USE                             Precision
@@ -148,9 +145,6 @@ SUBROUTINE UserHSSBr ( GenTrq, ElecPwr, HSS_Spd, NumBl, ZTime, DT, DirRoot, HSSB
    !              the DOF, respectively.  Turning off the DOF forces the
    !              current RATE to remain fixed.  If the rate is currently zero,
    !              the current POSITION will remain fixed as well.
-   !       Note that this technique WILL NOT work for user-defined routines
-   !       written for ADAMS datasets extracted using the FAST-to-ADAMS
-   !       preprocessor.
 
 
 USE                             Precision
@@ -174,7 +168,7 @@ CHARACTER(1024), INTENT(IN ) :: DirRoot                                         
 
 
 
-HSSBrFrac = 0.0   ! NOTE: This must be specified as a real number between 0.0 (off - no brake torque) and 1.0 (full - max brake torque = HSSBrTqF); FAST/ADAMS will Abort otherwise.
+HSSBrFrac = 0.0   ! NOTE: This must be specified as a real number between 0.0 (off - no brake torque) and 1.0 (full - max brake torque = HSSBrTqF); FAST will Abort otherwise.
 
 
 
@@ -256,9 +250,6 @@ END SUBROUTINE UserTFin
 !   !              the DOF, respectively.  Turning off the DOF forces the
 !   !              current RATE to remain fixed.  If the rate is currently zero,
 !   !              the current POSITION will remain fixed as well.
-!   !       Note that this technique WILL NOT work for user-defined routines
-!   !       written for ADAMS datasets extracted using the FAST-to-ADAMS
-!   !       preprocessor.
 !
 !
 !USE                             Precision
@@ -419,13 +410,11 @@ SUBROUTINE UserYawCont ( YawPos, YawRate, WindDir, YawError, NumBl, ZTime, DT, D
    !              setting YawDOF to False.
    !       This technique is useful, for example, if the yaw bearing has
    !       an electromagnetic latch that will unlock and relock the hinge under
-   !       certain specified conditions.
-   !       Note that this technique WILL NOT work for user-defined routines
-   !       written for ADAMS datasets extracted using the FAST-to-ADAMS
-   !       preprocessor.
+   !       certain specified conditions..
 
 
 USE                             Precision
+USE                             NWTC_Library
 
 
 IMPLICIT                        NONE
@@ -451,9 +440,58 @@ CHARACTER(1024), INTENT(IN ) :: DirRoot                                         
 YawPosCom  = 0.0
 YawRateCom = 0.0
 
+!JASON: IMPOSE YAW STEP FOR FAST.Farm CALIBRATION CASE - START
+IF (      ( ZTime >= 648.0_DbKi ) .AND. ( ZTime < 650.0_DbKi ) ) THEN
+   YawRateCom = ( 10.0_ReKi/2.0_ReKi )*D2R 
+   YawPosCom  =  0.0          + YawRateCom*( ZTime - 648.0_DbKi )
+ELSE IF ( ( ZTime >= 650.0_DbKi ) .AND. ( ZTime < 948.0_DbKi ) ) THEN    
+   YawRateCom =  0.0
+   YawPosCom  = 10.0_ReKi*D2R
+ELSE IF ( ( ZTime >= 948.0_DbKi ) .AND. ( ZTime < 950.0_DbKi ) ) THEN    
+   YawRateCom = ( 15.0_ReKi/2.0_ReKi )*D2R 
+   YawPosCom  = 10.0_ReKi*D2R + YawRateCom*( ZTime - 948.0_DbKi )
+ELSE IF ( ( ZTime >= 950.0_DbKi )                               ) THEN
+   YawRateCom =  0.0
+   YawPosCom  = 25.0_ReKi*D2R
+END IF
+!JASON: IMPOSE YAW STEP FOR FAST.Farm CALIBRATION CASE - END
 
 
 RETURN
 END SUBROUTINE UserYawCont
+
+!==========================================================================
+! Template for user-defined structural control subroutine used with StC_CMODE=3
+!    Currently, this can only be used with
+!               StC_DOF_MODE = 1 (three independent StC/TMD DOFs),
+!                              2 (2DOF (XY)  omni-directional StC/TMDs),
+!                              3 (3DOF (XYZ) omni-directional StC/TMDs),
+!                           or 7 (external forces and moments).
+!    d is the apparent 3DOF displacement of the TMD mass relative to the parent structure.
+!    v is the apparent 3DOF velocity     of the TMD mass relative to the parent structure.
+!    For blade control, UserStC is called for each mesh point separately.
+SUBROUTINE UserStC(d,v,K_ctrl,C_ctrl,C_Brake,F_ctrl,M_ctrl)
+
+USE         Precision
+USE         NWTC_Library
+IMPLICIT    NONE
+
+REAL(ReKi), INTENT(IN )  :: d(3)       !< TMD mass apparent relative displacement
+REAL(ReKi), INTENT(IN )  :: v(3)       !< TMD mass apparent relative velocity
+REAL(ReKi), INTENT(OUT)  :: K_ctrl(3)  !< stiffness  commanded
+REAL(ReKi), INTENT(OUT)  :: C_ctrl(3)  !< damping    commanded
+REAL(ReKi), INTENT(OUT)  :: C_Brake(3) !< brake dmpg commanded
+REAL(ReKi), INTENT(OUT)  :: F_ctrl(3)  !< force      commanded
+REAL(ReKi), INTENT(OUT)  :: M_ctrl(3)  !< moment     commanded
+
+! Replace the lines below with controller/actuator logic
+K_ctrl  = 0.0_ReKi
+C_ctrl  = 0.0_ReKi
+C_Brake = 0.0_ReKi
+F_ctrl  = 0.0_ReKi
+M_ctrl  = 0.0_ReKi
+
+END SUBROUTINE UserStc
+
 !=======================================================================
 end module UserSubs

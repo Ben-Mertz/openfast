@@ -36,26 +36,23 @@ MODULE SysSubs
    INTERFACE NWTC_ERF ! Returns the ERF value of its argument
       MODULE PROCEDURE NWTC_ERFR4
       MODULE PROCEDURE NWTC_ERFR8
-      MODULE PROCEDURE NWTC_ERFR16
    END INTERFACE   
 
    INTERFACE NWTC_gamma ! Returns the gamma value of its argument
          ! note: gamma is part of the F08 standard, but may not be implemented everywhere...
       MODULE PROCEDURE NWTC_gammaR4
       MODULE PROCEDURE NWTC_gammaR8
-      MODULE PROCEDURE NWTC_gammaR16
    END INTERFACE
 
 !=======================================================================
 
 
-   INTEGER, PARAMETER            :: ConRecL     = 120                               ! The record length for console output.
-   INTEGER, PARAMETER            :: CU          = 6                                 ! The I/O unit for the console.  Unit 6 causes ADAMS to crash.
+   INTEGER, PUBLIC               :: CU          = 6                                 ! The I/O unit for the console (Can be changed with SetConsoleUnit subroutine)
    INTEGER, PARAMETER            :: MaxWrScrLen = 98                                ! The maximum number of characters allowed to be written to a line in WrScr
 
    LOGICAL, PARAMETER            :: KBInputOK   = .FALSE.                           ! A flag to tell the program that keyboard input is allowed in the environment.
 
-   CHARACTER(*),  PARAMETER      :: NewLine     = ACHAR(10)                         ! The delimiter for New Lines [ Windows is CHAR(13)//CHAR(10); MAC is CHAR(13); Unix is CHAR(10) {CHAR(13)=\r is a line feed, CHAR(10)=\n is a new line}]
+   CHARACTER(*),  PARAMETER      :: NewLine     = ACHAR(10)                         ! The delimiter for New Lines [ Windows is CHAR(13)//CHAR(10); MAC is CHAR(13); Unix is CHAR(10) {CHAR(13)=\r is a line feed, CHAR(10)=\n is a new line}]; Note: NewLine change to ACHAR(10) here on Windows to fix issues with C/Fortran interoperability using WrScr
    CHARACTER(*),  PARAMETER      :: OS_Desc     = 'Intel Visual Fortran for Windows/Matlab' ! Description of the language/OS
    CHARACTER( 1), PARAMETER      :: PathSep     = '\'                               ! The path separator.
    CHARACTER( 1), PARAMETER      :: SwChar      = '/'                               ! The switch character for command-line options.
@@ -85,6 +82,14 @@ END IF
 
 RETURN
 END FUNCTION FileSize ! ( Unit )
+!=======================================================================
+SUBROUTINE SetConsoleUnit( Unit )
+   ! This subroutine sets the console unit for output.
+
+INTEGER, INTENT(IN)  :: Unit  !< The new I/O unit number for the console.
+CU = Unit
+
+END SUBROUTINE SetConsoleUnit
 !=======================================================================
    SUBROUTINE FlushOut ( Unit )
 
@@ -175,19 +180,6 @@ FUNCTION NWTC_ERFR8( x )
 
 END FUNCTION NWTC_ERFR8
 !=======================================================================
-!> \copydoc syssubs::nwtc_erfr4
-FUNCTION NWTC_ERFR16( x )
-
-   ! Returns the ERF value of its argument. The result has a value equal  
-   ! to the error function: 2/pi * integral_from_0_to_x of e^(-t^2) dt. 
-
-   REAL(QuKi), INTENT(IN)     :: x             ! input 
-   REAL(QuKi)                 :: NWTC_ERFR16   ! result
-   
-   NWTC_ERFR16 = ERF( x )
-
-END FUNCTION NWTC_ERFR16
-!=======================================================================
 !> Returns the gamma value of its argument. The result has a value equal  
 !! to a processor-dependent approximation to the gamma function of x:
 !! \f{equation}{
@@ -214,16 +206,6 @@ FUNCTION NWTC_GammaR8( x )
    NWTC_GammaR8 = gamma( x )
 
 END FUNCTION NWTC_GammaR8
-!=======================================================================
-!> \copydoc syssubs::nwtc_gammar4
-FUNCTION NWTC_GammaR16( x )
-
-   REAL(QuKi), INTENT(IN)     :: x             ! input 
-   REAL(QuKi)                 :: NWTC_GammaR16  ! result
-   
-   NWTC_GammaR16 = gamma( x )
-
-END FUNCTION NWTC_GammaR16
 !=======================================================================
 !> This routine creates a given directory if it does not already exist.
 SUBROUTINE MKDIR ( new_directory_path )
@@ -310,26 +292,35 @@ SUBROUTINE ProgExit ( StatCode )
 
    END SUBROUTINE ProgExit ! ( StatCode )
 !=======================================================================
-!> This routine sets the values of NaN_D, Inf_D, NaN, Inf (IEEE 
-!! values for not-a-number and infinity in sindle and double 
-!! precision) This uses standard F03 intrinsic routines,  
-!! however Gnu has not yet implemented it, so we've placed this
-!! routine in the system-specific code.
-SUBROUTINE Set_IEEE_Constants( NaN_D, Inf_D, NaN, Inf )   
+SUBROUTINE Set_IEEE_Constants( NaN_D, Inf_D, NaN, Inf, NaN_S, Inf_S )   
+
+   ! routine that sets the values of NaN_D, Inf_D, NaN, Inf (IEEE 
+   ! values for not-a-number and infinity in sindle and double 
+   ! precision) This uses standard F03 intrinsic routines,  
+   ! however Gnu has not yet implemented it, so we've placed this
+   ! routine in the system-specific code.
+
 
    USE, INTRINSIC :: ieee_arithmetic  ! use this for compilers that have implemented ieee_arithmetic from F03 standard (otherwise see logic in SysGnu*.f90)
 
-   REAL(DbKi), INTENT(inout)           :: Inf_D          !< IEEE value for NaN (not-a-number) in double precision
-   REAL(DbKi), INTENT(inout)           :: NaN_D          !< IEEE value for Inf (infinity) in double precision
+   REAL(DbKi), INTENT(inout)           :: Inf_D          ! IEEE value for NaN (not-a-number) in double precision
+   REAL(DbKi), INTENT(inout)           :: NaN_D          ! IEEE value for Inf (infinity) in double precision
 
-   REAL(ReKi), INTENT(inout)           :: Inf            !< IEEE value for NaN (not-a-number)
-   REAL(ReKi), INTENT(inout)           :: NaN            !< IEEE value for Inf (infinity)
+   REAL(ReKi), INTENT(inout)           :: Inf            ! IEEE value for NaN (not-a-number)
+   REAL(ReKi), INTENT(inout)           :: NaN            ! IEEE value for Inf (infinity)
+
+   REAL(SiKi), INTENT(inout)           :: Inf_S          ! IEEE value for NaN (not-a-number) in single precision
+   REAL(SiKi), INTENT(inout)           :: NaN_S          ! IEEE value for Inf (infinity) in single precision
+
    
    NaN_D = ieee_value(0.0_DbKi, ieee_quiet_nan)
    Inf_D = ieee_value(0.0_DbKi, ieee_positive_inf)
 
    NaN   = ieee_value(0.0_ReKi, ieee_quiet_nan)
    Inf   = ieee_value(0.0_ReKi, ieee_positive_inf)   
+
+   NaN_S = ieee_value(0.0_SiKi, ieee_quiet_nan)
+   Inf_S = ieee_value(0.0_SiKi, ieee_positive_inf)
 
 END SUBROUTINE Set_IEEE_Constants  
 !=======================================================================
@@ -472,7 +463,7 @@ SUBROUTINE LoadDynamicLibProc ( DLL, ErrStat, ErrMsg )
          DLL%ProcAddr(i) = TRANSFER(ProcAddr, DLL%ProcAddr(i))  !convert INTEGER(LPVOID) to INTEGER(C_FUNPTR) [used only for compatibility with gfortran]
 
          IF(.NOT. C_ASSOCIATED(DLL%ProcAddr(i))) THEN
-            ErrStat = ErrID_Fatal
+            ErrStat = ErrID_Fatal + i - 1
             ErrMsg  = 'The procedure '//TRIM(DLL%ProcName(i))//' in file '//TRIM(DLL%FileName)//' could not be loaded.'
             RETURN
          END IF
@@ -495,6 +486,9 @@ SUBROUTINE FreeDynamicLib ( DLL, ErrStat, ErrMsg )
    INTEGER(HANDLE)                           :: FileAddr    ! The address of file FileName.  (RETURN value from LoadLibrary in kernel32.f90)
    INTEGER(BOOL)                             :: Success     ! Whether or not the call to FreeLibrary was successful
 
+   ErrStat = ErrID_None
+   ErrMsg = ''
+   
    IF ( DLL%FileAddr == INT(0,C_INTPTR_T) ) RETURN
    
    FileAddr = TRANSFER(DLL%FileAddr, FileAddr) !convert INTEGER(C_INTPTR_T) to INTEGER(HANDLE) [used only for compatibility with gfortran]

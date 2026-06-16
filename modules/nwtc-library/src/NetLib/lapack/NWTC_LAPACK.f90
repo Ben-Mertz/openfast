@@ -8,25 +8,8 @@
 !**********************************************************************************************************************************
 MODULE NWTC_LAPACK
 
-   USE NWTC_Base        ! we only need the precision and error level constants
+   USE NWTC_IO        ! we need the precision and error level constants, plus SetErrStat and AllocAry routines from NWTC_Library
    
-   
-!   USE, INTRINSIC               :: ISO_C_Binding, only: C_FLOAT, C_DOUBLE          ! this is included in NWTC_Library
-
-      ! Notes:
-
-         ! Your project must include the following files:
-         ! From the NWTC Subroutine Library:
-         !     SingPrec.f90          [from NWTC Library]
-         !     Sys*.f90              [from NWTC Library]
-         !     NWTC_Base.f90         [from NWTC Library]
-         ! lapack library (preferably a binary, but available in source form from http://www.netlib.org/, too)
-         ! This wrapper file:
-         !     NWTC_LAPACK.f90
-
-   !INTEGER, PARAMETER  :: Lib_ReKi = SiKi   !
-   !INTEGER, PARAMETER  :: Lib_DbKi = R8Ki   ! DbKi
-   !
    ! bjj: when using the built-in (or dynamic) lapack libraries, S=Real(SiKi); D=Real(R8Ki).
    !      if people are compiling the lapack source, S=real; D=double precision. (default real and doubles)
    !      we need to check this somehow to make sure the right routines are called.
@@ -36,7 +19,14 @@ MODULE NWTC_LAPACK
    
    
    IMPLICIT  NONE
+   
+   !> Computes the linear least squares solution for a real general matrix A, where A is assumed to have full rank. Minimizes Norm(B-A*X)
+   INTERFACE LAPACK_gels
+      MODULE PROCEDURE LAPACK_dgels
+      MODULE PROCEDURE LAPACK_sgels
+   END INTERFACE
 
+   
    !> Computes the solution to system of linear equations A * X = B for GB matrices.
    INTERFACE LAPACK_gbsv 
       MODULE PROCEDURE LAPACK_dgbsv
@@ -44,7 +34,7 @@ MODULE NWTC_LAPACK
    END INTERFACE
 
    !> Computes scalar1*op( A )*op( B ) + scalar2*C where op(x) = x or op(x) = x**T for matrices A, B, and C.
-   INTERFACE LAPACK_gemm   
+   INTERFACE LAPACK_gemm
       MODULE PROCEDURE LAPACK_dgemm
       MODULE PROCEDURE LAPACK_sgemm
    END INTERFACE
@@ -87,21 +77,31 @@ MODULE NWTC_LAPACK
       MODULE PROCEDURE LAPACK_sposv
    END INTERFACE
 
+   !> Compute the Cholesky factorization of a real symmetric positive definite matrix A stored in packed format (internally handled as unpacked).
+   INTERFACE LAPACK_potrf 
+      MODULE PROCEDURE LAPACK_dpotrf
+      MODULE PROCEDURE LAPACK_spotrf
+   END INTERFACE
+
    !> Compute the Cholesky factorization of a real symmetric positive definite matrix A stored in packed format.
    INTERFACE LAPACK_pptrf 
       MODULE PROCEDURE LAPACK_dpptrf
       MODULE PROCEDURE LAPACK_spptrf
    END INTERFACE
 
-!> Compute the SVD for a general matrix A = USV^T.
+   !> Compute the SVD for a general matrix A = USV^T.
    INTERFACE LAPACK_gesvd
       MODULE PROCEDURE LAPACK_dgesvd
       MODULE PROCEDURE LAPACK_sgesvd
    END INTERFACE
 
+   !> Unpack  packed (1D) to regular matrix format (2D)
+   INTERFACE LAPACK_TPTTR  
+      MODULE PROCEDURE LAPACK_STPTTR
+      MODULE PROCEDURE LAPACK_DTPTTR
+   END INTERFACE   
    
-!> straight-up lapack routines (from ExtPtfm_MCKF):
-      
+   !> straight-up lapack routines (from ExtPtfm_MCKF):
    INTERFACE LAPACK_COPY
        SUBROUTINE DCOPY(N,DX,INCX,DY,INCY)
            USE Precision, only: R8Ki
@@ -260,6 +260,178 @@ MODULE NWTC_LAPACK
    RETURN
    END SUBROUTINE LAPACK_SGBSV
 !=======================================================================
+!> SGELS solves overdetermined or underdetermined real linear systems
+!!     involving an M-by-N matrix A, or its transpose, using a QR or LQ
+!!     factorization of A.  It is assumed that A has full rank.
+   SUBROUTINE LAPACK_DGELS(TRANS, A, B, ErrStat, ErrMsg)
+
+      ! passed parameters
+      CHARACTER(1),    intent(in   ) :: TRANS             !< On entry, TRANS specifies the form of op( A ) to be used in the matrix multiplication as follows:
+                                                          !!     TRANSA = 'N' or 'n', op( A ) = A.
+                                                          !!     TRANSA = 'T' or 't', op( A ) = A**T.
+      REAL(R8Ki)      ,intent(inout) :: A( :, : )         !< On entry, the M-by-N matrix A. On exit, if M >= N, A is overwritten by details of its QR factorization as returned by SGEQRF;
+                                                          !!                                         if M <  N, A is overwritten by details of its LQ factorization as returned by SGELQF.
+
+      REAL(R8Ki)      ,intent(inout) :: B( :, : )         !< On entry, the matrix B of right hand side vectors, stored columnwise; B is M-by-NRHS if TRANS = 'N', or N-by-NRHS if TRANS = 'T'.
+                                                          !! On exit, if INFO = 0, B is overwritten by the solution vectors, stored columnwise:
+                                                          !!    if TRANS = 'N' and m >= n, rows 1 to n of B contain the least squares solution vectors; the residual sum of squares for the
+                                                          !!                               solution in each column is given by the sum of squares of elements N+1 to M in that column;
+                                                          !!    if TRANS = 'N' and m < n, rows 1 to N of B contain the minimum norm solution vectors;
+                                                          !!    if TRANS = 'T' and m >= n, rows 1 to M of B contain the minimum norm solution vectors;
+                                                          !!    if TRANS = 'T' and m < n, rows 1 to M of B contain the least squares solution vectors; the residual sum of squares
+                                                          !!                              for the solution in each column is given by the sum of squares of elements M+1 to N in that column.
+      
+      INTEGER(IntKi),  intent(  out) :: ErrStat           !< Error level
+      CHARACTER(*),    intent(  out) :: ErrMsg            !< Message describing error
+
+         ! local variables
+      REAL(R8Ki), ALLOCATABLE        :: WORK( : )         !< dimension (MAX(1,LWORK)); On exit, if INFO=0, then WORK(1) returns the optimal LWORK.
+      REAL(R8Ki)                     :: WORK_SIZE(1)      !< the optimal LWORK
+      INTEGER                        :: LWORK             !< The dimension of the array WORK. LWORK >= max( 1, MN + max( MN, NRHS ) ). For optimal performance LWORK >= max( 1, MN + max( MN, NRHS )*NB ), where MN = min(M,N) and NB is the optimum block size.
+                                                          !! If LWORK = -1, then a workspace query is assumed; the routine only calculates the optimal size of the WORK array, returns this value as the first
+                                                          !! entry of the WORK array, and no error message related to LWORK is issued by XERBLA.
+
+
+      INTEGER                        :: INFO              ! = 0:  successful exit; < 0:  if INFO = -i, the i-th argument had an illegal value; > 0: if INFO = i, the i-th diagonal element of the triangular factor of A is zero, so that A does not have full rank; the least squares solution could not be computed.
+
+      INTEGER                        :: LDA               ! The leading dimension of the array A.  LDA >= MAX(1,M).
+      INTEGER                        :: LDB               ! The leading dimension of the array B.  LDB >= MAX(1,M,N).
+      INTEGER                        :: M                 !< The number of rows of the matrix A.  M >= 0.
+      INTEGER                        :: N                 !< The number of columns of the matrix A.  N >= 0.
+      INTEGER                        :: NRHS              !< The number of right hand sides, i.e., the number of columns of the matrices B and X. NRHS >=0.
+
+      INTEGER(IntKi)                 :: ErrStat2          !< Error level
+      CHARACTER(ErrMsgLen)           :: ErrMsg2           !< Message describing error
+      CHARACTER(*), PARAMETER        :: RoutineName = 'LAPACK_DGELS'
+      
+      
+      ErrStat = ErrID_None
+      ErrMsg  = ""
+
+      M = SIZE(A,1)
+      N = SIZE(A,2)
+
+      LDA = SIZE(A,1)
+      
+      LDB = SIZE(B,1)
+      NRHS = SIZE(B,2)
+
+      IF ( M == 0 .or. N == 0 ) THEN
+         ! this is a null case...
+         RETURN
+      END IF
+      
+      
+      LWORK = -1 ! get size for work array
+      call DGELS(TRANS, M, N, NRHS, A, LDA, B, LDB, WORK_SIZE, LWORK, INFO)
+      
+      LWORK = WORK_SIZE(1)
+      call AllocAry(WORK, LWORK, 'Work', ErrStat2, ErrMsg2)
+         call SetErrStat(ErrStat2,ErrMsg2, ErrStat, ErrMsg,RoutineName)
+         if (ErrStat >= AbortErrLev) return
+      
+
+      call DGELS(TRANS, M, N, NRHS, A, LDA, B, LDB, WORK, LWORK, INFO)
+      deallocate(WORK)
+
+      IF (INFO /= 0) THEN
+         WRITE( ErrMsg2, * ) INFO
+         IF (INFO < 0) THEN
+            ErrMsg2  = "Illegal value in argument "//TRIM(ErrMsg2)//"."
+         ELSE
+            ErrMsg2 = "Diagonal element "//TRIM(ErrMsg2)//" of the triangular factor of A is zero, so that A does not have full rank. The least squares solution could not be computed."
+         END IF
+         call SetErrStat(ErrID_FATAL, ErrMsg2, ErrStat, ErrMsg, RoutineName)
+      END IF
+   
+   END SUBROUTINE LAPACK_DGELS
+!=======================================================================
+!> SGELS solves overdetermined or underdetermined real linear systems
+!!     involving an M-by-N matrix A, or its transpose, using a QR or LQ
+!!     factorization of A.  It is assumed that A has full rank.
+   SUBROUTINE LAPACK_SGELS(TRANS, A, B, ErrStat, ErrMsg)
+
+      ! passed parameters
+      CHARACTER(1),    intent(in   ) :: TRANS             !< On entry, TRANS specifies the form of op( A ) to be used in the matrix multiplication as follows:
+                                                          !!     TRANSA = 'N' or 'n', op( A ) = A.
+                                                          !!     TRANSA = 'T' or 't', op( A ) = A**T.
+      REAL(SiKi)      ,intent(inout) :: A( :, : )         !< On entry, the M-by-N matrix A. On exit, if M >= N, A is overwritten by details of its QR factorization as returned by SGEQRF;
+                                                          !!                                         if M <  N, A is overwritten by details of its LQ factorization as returned by SGELQF.
+
+      REAL(SiKi)      ,intent(inout) :: B( :, : )         !< On entry, the matrix B of right hand side vectors, stored columnwise; B is M-by-NRHS if TRANS = 'N', or N-by-NRHS if TRANS = 'T'.
+                                                          !! On exit, if INFO = 0, B is overwritten by the solution vectors, stored columnwise:
+                                                          !!    if TRANS = 'N' and m >= n, rows 1 to n of B contain the least squares solution vectors; the residual sum of squares for the
+                                                          !!                               solution in each column is given by the sum of squares of elements N+1 to M in that column;
+                                                          !!    if TRANS = 'N' and m < n, rows 1 to N of B contain the minimum norm solution vectors;
+                                                          !!    if TRANS = 'T' and m >= n, rows 1 to M of B contain the minimum norm solution vectors;
+                                                          !!    if TRANS = 'T' and m < n, rows 1 to M of B contain the least squares solution vectors; the residual sum of squares
+                                                          !!                              for the solution in each column is given by the sum of squares of elements M+1 to N in that column.
+      
+      INTEGER(IntKi),  intent(  out) :: ErrStat           !< Error level
+      CHARACTER(*),    intent(  out) :: ErrMsg            !< Message describing error
+
+         ! local variables
+      REAL(SiKi), ALLOCATABLE        :: WORK( : )         !< dimension (MAX(1,LWORK)); On exit, if INFO=0, then WORK(1) returns the optimal LWORK.
+      REAL(SiKi)                     :: WORK_SIZE(1)      !< the optimal LWORK
+      INTEGER                        :: LWORK             !< The dimension of the array WORK. LWORK >= max( 1, MN + max( MN, NRHS ) ). For optimal performance LWORK >= max( 1, MN + max( MN, NRHS )*NB ), where MN = min(M,N) and NB is the optimum block size.
+                                                          !! If LWORK = -1, then a workspace query is assumed; the routine only calculates the optimal size of the WORK array, returns this value as the first
+                                                          !! entry of the WORK array, and no error message related to LWORK is issued by XERBLA.
+
+
+      INTEGER                        :: INFO              ! = 0:  successful exit; < 0:  if INFO = -i, the i-th argument had an illegal value; > 0: if INFO = i, the i-th diagonal element of the triangular factor of A is zero, so that A does not have full rank; the least squares solution could not be computed.
+
+      INTEGER                        :: LDA               ! The leading dimension of the array A.  LDA >= MAX(1,M).
+      INTEGER                        :: LDB               ! The leading dimension of the array B.  LDB >= MAX(1,M,N).
+      INTEGER                        :: M                 !< The number of rows of the matrix A.  M >= 0.
+      INTEGER                        :: N                 !< The number of columns of the matrix A.  N >= 0.
+      INTEGER                        :: NRHS              !< The number of right hand sides, i.e., the number of columns of the matrices B and X. NRHS >=0.
+
+      INTEGER(IntKi)                 :: ErrStat2          !< Error level
+      CHARACTER(ErrMsgLen)           :: ErrMsg2           !< Message describing error
+      CHARACTER(*), PARAMETER        :: RoutineName = 'LAPACK_SGELS'
+      
+      
+      ErrStat = ErrID_None
+      ErrMsg  = ""
+
+      M = SIZE(A,1)
+      N = SIZE(A,2)
+
+      LDA = SIZE(A,1)
+      
+      LDB = SIZE(B,1)
+      NRHS = SIZE(B,2)
+
+      IF ( M == 0 .or. N == 0 ) THEN
+         ! this is a null case...
+         RETURN
+      END IF
+      
+      
+      LWORK = -1 ! get size for work array
+      call SGELS(TRANS, M, N, NRHS, A, LDA, B, LDB, WORK_SIZE, LWORK, INFO)
+      
+      LWORK = WORK_SIZE(1)
+      call AllocAry(WORK, LWORK, 'Work', ErrStat2, ErrMsg2)
+         call SetErrStat(ErrStat2,ErrMsg2, ErrStat, ErrMsg,RoutineName)
+         if (ErrStat >= AbortErrLev) return
+      
+
+      call SGELS(TRANS, M, N, NRHS, A, LDA, B, LDB, WORK, LWORK, INFO)
+      deallocate(WORK)
+
+      IF (INFO /= 0) THEN
+         WRITE( ErrMsg2, * ) INFO
+         IF (INFO < 0) THEN
+            ErrMsg2  = "Illegal value in argument "//TRIM(ErrMsg2)//"."
+         ELSE
+            ErrMsg2 = "Diagonal element "//TRIM(ErrMsg2)//" of the triangular factor of A is zero, so that A does not have full rank. The least squares solution could not be computed."
+         END IF
+         call SetErrStat(ErrID_FATAL, ErrMsg2, ErrStat, ErrMsg, RoutineName)
+      END IF
+   
+   END SUBROUTINE LAPACK_SGELS
+!=======================================================================
 !> general matrix multiply: computes C = alpha*op( A )*op( B ) + beta*C where op(x) = x or op(x) = x**T for matrices A, B, and C
 !! use LAPACK_GEMM (nwtc_lapack::lapack_gemm) instead of this specific function.
    SUBROUTINE LAPACK_DGEMM( TRANSA, TRANSB, ALPHA, A, B, BETA, C, ErrStat, ErrMsg )
@@ -408,7 +580,6 @@ MODULE NWTC_LAPACK
       END IF
 
       ErrStat = ErrID_None
-      ErrMsg  = ""
 
       
       IF ( K /= Kb ) THEN
@@ -1244,6 +1415,190 @@ MODULE NWTC_LAPACK
    END SUBROUTINE LAPACK_SPOSV
 !=======================================================================
 !> Compute the Cholesky factorization of a real symmetric positive definite matrix A stored in packed format.
+!! use LAPACK_POTRF (nwtc_lapack::lapack_potrf) instead of this specific function.
+   SUBROUTINE LAPACK_DPOTRF (UPLO, N, AP, ErrStat, ErrMsg)
+   
+      ! DPOTRF computes the Cholesky factorization of a real symmetric
+      ! positive definite matrix A stored in packed format.
+      !
+      ! Internally, packed storage is converted to full storage and DPOTRF
+      ! is called.  The result is converted back to packed storage.
+      !
+      ! The factorization has the form
+      !    A = U**T * U,  if UPLO = 'U', or
+      !    A = L  * L**T,  if UPLO = 'L'.
+   
+         INTEGER,         INTENT(IN   ) :: N
+         REAL(R8Ki),      INTENT(INOUT) :: AP(:)
+         INTEGER(IntKi),  INTENT(  OUT) :: ErrStat
+         CHARACTER(*),    INTENT(  OUT) :: ErrMsg
+         CHARACTER(1),    INTENT(IN   ) :: UPLO
+   
+         REAL(R8Ki), ALLOCATABLE :: A(:,:)
+         INTEGER :: I, J, IDX, INFO
+   
+         ErrStat = ErrID_None
+         ErrMsg  = ""
+   
+         IF (N <= 0) RETURN
+   
+         ALLOCATE(A(N,N))
+         A = 0.0_R8Ki
+   
+         IF (UPLO == 'U') THEN
+            IDX = 0
+            DO J = 1, N
+               DO I = 1, J
+                  IDX = IDX + 1
+                  A(I,J) = AP(IDX)
+               END DO
+            END DO
+         ELSE IF (UPLO == 'L') THEN
+            IDX = 0
+            DO J = 1, N
+               DO I = J, N
+                  IDX = IDX + 1
+                  A(I,J) = AP(IDX)
+               END DO
+            END DO
+         ELSE
+            ErrStat = ErrID_FATAL
+            ErrMsg  = "LAPACK_DPOTRF: invalid UPLO value."
+            DEALLOCATE(A)
+            RETURN
+         END IF
+   
+         CALL DPOTRF (UPLO, N, A, N, INFO)
+   
+         IF (INFO /= 0) THEN
+            ErrStat = ErrID_FATAL
+            WRITE(ErrMsg,*) INFO
+            IF (INFO < 0) THEN
+               ErrMsg = "LAPACK_DPOTRF: illegal value in argument "//TRIM(ErrMsg)//"."
+            ELSE
+               ErrMsg = "LAPACK_DPOTRF: Leading minor of order "//TRIM(ErrMsg)// &
+                        " of A is not positive definite, so Cholesky factorization could not be completed."
+            END IF
+            DEALLOCATE(A)
+            RETURN
+         END IF
+   
+         IF (UPLO == 'U') THEN
+            IDX = 0
+            DO J = 1, N
+               DO I = 1, J
+                  IDX = IDX + 1
+                  AP(IDX) = A(I,J)
+               END DO
+            END DO
+         ELSE
+            IDX = 0
+            DO J = 1, N
+               DO I = J, N
+                  IDX = IDX + 1
+                  AP(IDX) = A(I,J)
+               END DO
+            END DO
+         END IF
+   
+         DEALLOCATE(A)
+         RETURN
+   
+   END SUBROUTINE LAPACK_DPOTRF
+!=======================================================================
+!> Compute the Cholesky factorization of a real symmetric positive definite matrix A stored in packed format.
+!! use LAPACK_POTRF (nwtc_lapack::lapack_potrf) instead of this specific function.
+   SUBROUTINE LAPACK_SPOTRF (UPLO, N, AP, ErrStat, ErrMsg)
+   
+      ! SPOTRF computes the Cholesky factorization of a real symmetric
+      ! positive definite matrix A stored in packed format.
+      !
+      ! Internally, packed storage is converted to full storage and SPOTRF
+      ! is called.  The result is converted back to packed storage.
+      !
+      ! The factorization has the form
+      !    A = U**T * U,  if UPLO = 'U', or
+      !    A = L  * L**T,  if UPLO = 'L'.
+   
+         INTEGER,         INTENT(IN   ) :: N
+         REAL(SiKi),      INTENT(INOUT) :: AP(:)
+         INTEGER(IntKi),  INTENT(  OUT) :: ErrStat
+         CHARACTER(*),    INTENT(  OUT) :: ErrMsg
+         CHARACTER(1),    INTENT(IN   ) :: UPLO
+   
+         REAL(SiKi), ALLOCATABLE :: A(:,:)
+         INTEGER :: I, J, IDX, INFO
+   
+         ErrStat = ErrID_None
+         ErrMsg  = ""
+   
+         IF (N <= 0) RETURN
+   
+         ALLOCATE(A(N,N))
+         A = 0.0_SiKi
+   
+         IF (UPLO == 'U') THEN
+            IDX = 0
+            DO J = 1, N
+               DO I = 1, J
+                  IDX = IDX + 1
+                  A(I,J) = AP(IDX)
+               END DO
+            END DO
+         ELSE IF (UPLO == 'L') THEN
+            IDX = 0
+            DO J = 1, N
+               DO I = J, N
+                  IDX = IDX + 1
+                  A(I,J) = AP(IDX)
+               END DO
+            END DO
+         ELSE
+            ErrStat = ErrID_FATAL
+            ErrMsg  = "LAPACK_SPOTRF: invalid UPLO value."
+            DEALLOCATE(A)
+            RETURN
+         END IF
+   
+         CALL SPOTRF (UPLO, N, A, N, INFO)
+   
+         IF (INFO /= 0) THEN
+            ErrStat = ErrID_FATAL
+            WRITE(ErrMsg,*) INFO
+            IF (INFO < 0) THEN
+               ErrMsg = "LAPACK_SPOTRF: illegal value in argument "//TRIM(ErrMsg)//"."
+            ELSE
+               ErrMsg = "LAPACK_SPOTRF: Leading minor of order "//TRIM(ErrMsg)// &
+                        " of A is not positive definite, so Cholesky factorization could not be completed."
+            END IF
+            DEALLOCATE(A)
+            RETURN
+         END IF
+   
+         IF (UPLO == 'U') THEN
+            IDX = 0
+            DO J = 1, N
+               DO I = 1, J
+                  IDX = IDX + 1
+                  AP(IDX) = A(I,J)
+               END DO
+            END DO
+         ELSE
+            IDX = 0
+            DO J = 1, N
+               DO I = J, N
+                  IDX = IDX + 1
+                  AP(IDX) = A(I,J)
+               END DO
+            END DO
+         END IF
+   
+         DEALLOCATE(A)
+         RETURN
+   
+   END SUBROUTINE LAPACK_SPOTRF
+!=======================================================================
+!> Compute the Cholesky factorization of a real symmetric positive definite matrix A stored in packed format.
 !! use LAPACK_PPTRF (nwtc_lapack::lapack_pptrf) instead of this specific function.
    SUBROUTINE LAPACK_DPPTRF (UPLO, N, AP, ErrStat, ErrMsg)
 
@@ -1577,4 +1932,86 @@ MODULE NWTC_LAPACK
    RETURN
    END SUBROUTINE LAPACK_SGESVD
 !=======================================================================
+!INTERFACE LAPACK_TPTTR:
+!>  Unpack a by-column-packed array into a 2D matrix format
+!!  See documentation in  DTPTTR/STPTTR source code.
+!=======================================================================
+   SUBROUTINE LAPACK_DTPTTR( UPLO, N, AP, A, LDA, ErrStat, ErrMsg )
+          
+      ! passed parameters
+ 
+      CHARACTER(1),    intent(in   ) :: UPLO              !< = 'U': A is an upper triangular matrix; 'L': A is a lower triangular matrix
+      INTEGER,         intent(in   ) :: N                 !< The order of matrix A and AP.
+      INTEGER,         intent(in)    :: LDA               !< The leading dimension of the matrix A. LDA ? max(1,N)
+      INTEGER(IntKi),  intent(  out) :: ErrStat           !< Error level 
+      CHARACTER(*),    intent(  out) :: ErrMsg            !< Message describing error
+
+      !     .. Array Arguments ..
+      REAL(R8Ki),      intent(in)    :: AP( : )           !< Packed array
+      
+      REAL(R8Ki),      intent(out)   :: A( :,: )          !< Unpacked array : Note AP(1)=A(1,1); AP(2)=A(1,2); AP(3)=A(2,2); AP(4)=A(1,3) etc. by column, upper triang
+
+         ! Local variable
+      INTEGER                        :: INFO              ! = 0:  successful exit; < 0:  if INFO = -i, the i-th argument had an illegal value 
+      
+      
+      ErrStat = ErrID_None
+      ErrMsg  = ""
+      
+      
+      CALL DTPTTR( UPLO, N, AP, A, LDA, INFO )                
+      
+      IF (INFO /= 0) THEN
+         ErrStat = ErrID_FATAL
+         WRITE( ErrMsg, * ) INFO
+         IF (INFO < 0) THEN
+            ErrMsg  = "LAPACK_DTPTTR: illegal value in argument "//TRIM(ErrMsg)//"."
+         ELSE
+            ErrMsg = 'LAPACK_DTPTTR: Unknown error '//TRIM(ErrMsg)//'.'
+         END IF
+      END IF      
+ 
+      
+   RETURN
+   END SUBROUTINE LAPACK_DTPTTR
+!=======================================================================
+  SUBROUTINE LAPACK_STPTTR( UPLO, N, AP, A, LDA, ErrStat, ErrMsg )
+          
+      ! passed parameters
+ 
+      CHARACTER(1),    intent(in   ) :: UPLO              !< = 'U': A is an upper triangular matrix; 'L': A is a lower triangular matrix
+      INTEGER,         intent(in   ) :: N                 !< The order of matrix A and AP.
+      INTEGER,         intent(in)    :: LDA               !< The leading dimension of the matrix A. LDA ? max(1,N)
+      INTEGER(IntKi),  intent(  out) :: ErrStat           !< Error level 
+      CHARACTER(*),    intent(  out) :: ErrMsg            !< Message describing error
+
+      !     .. Array Arguments ..
+      REAL(SiKi),      intent(in)    :: AP( : )           !< Packed array
+      
+      REAL(SiKi),      intent(out)   :: A( :,: )          !< Unpacked array : Note AP(1)=A(1,1); AP(2)=A(1,2); AP(3)=A(2,2); AP(4)=A(1,3) etc. by column, upper triang
+
+         ! Local variable
+      INTEGER                        :: INFO              ! = 0:  successful exit; < 0:  if INFO = -i, the i-th argument had an illegal value 
+      
+      
+      ErrStat = ErrID_None
+      ErrMsg  = ""
+      
+      
+      CALL STPTTR( UPLO, N, AP, A, LDA, INFO )
+      
+      IF (INFO /= 0) THEN
+         ErrStat = ErrID_FATAL
+         WRITE( ErrMsg, * ) INFO
+         IF (INFO < 0) THEN
+            ErrMsg  = "LAPACK_STPTTR: illegal value in argument "//TRIM(ErrMsg)//"."
+         ELSE
+            ErrMsg = 'LAPACK_STPTTR: Unknown error '//TRIM(ErrMsg)//'.'
+         END IF
+      END IF
+ 
+   RETURN
+   END SUBROUTINE LAPACK_STPTTR
+!=======================================================================
+
 END MODULE NWTC_LAPACK
